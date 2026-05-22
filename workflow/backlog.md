@@ -23,9 +23,9 @@ When asked to complete an epic, do not attempt the whole epic in one pass. Compl
 
 ## Current Recommended Story
 
-`PRIV-002` - Screen Recording permission guidance is the current recommended story.
+`PRIV-004` - Ephemeral capture audit is the current recommended story.
 
-Reason: First-run privacy onboarding is now implemented. The next privacy slice is hardening Screen Recording permission guidance and manual recovery.
+Reason: First-run privacy onboarding and Screen Recording recovery are implemented. The next privacy slice is verifying the ephemeral screenshot handling promise at the implementation and QA level.
 
 ---
 
@@ -666,7 +666,7 @@ Notes:
 | ID | Story | Status | Depends On |
 |---|---|---|---|
 | `PRIV-001` | First-run onboarding | Done | `CORE-001` |
-| `PRIV-002` | Screen Recording permission guidance | Not Started | `CORE-003` |
+| `PRIV-002` | Screen Recording permission guidance | Done | `CORE-003` |
 | `PRIV-003` | Accessibility permission guidance for future event tap path | Not Started | Future `CGEventTap` decision |
 | `PRIV-004` | Ephemeral capture audit | Not Started | `CORE-003` |
 | `PRIV-005` | Local/cloud mode setting and enforcement | Done | `ACT-001` |
@@ -698,9 +698,13 @@ Goal: Make Screen Recording permission failures recoverable.
 
 Acceptance:
 
-- [ ] App detects capture permission failures.
-- [ ] UI explains the exact permission needed.
-- [ ] User can open System Settings or gets precise manual steps.
+- [x] App detects capture permission failures.
+- [x] UI explains the exact permission needed.
+- [x] User can open System Settings or gets precise manual steps.
+
+Notes:
+
+- Completed 2026-05-22. Capture denial already flows through `CaptureError.screenRecordingPermissionDenied`; this story hardened the user-facing recovery. Settings and the recovery panel now explain the exact macOS permission, show manual steps for System Settings -> Privacy & Security -> Screen & System Audio Recording, and remind users to quit/reopen Pixel Pane if macOS asks. Opening settings refreshes permission state. Local verification wrapper build succeeded.
 
 ### `PRIV-003` - Accessibility Permission Guidance For Future Event Tap Path
 

@@ -24,8 +24,16 @@ enum ScreenRecordingPermissionStatus: Equatable {
         case .granted:
             "Pixel Pane can capture selected screen regions."
         case .notGranted:
-            "Grant Screen Recording permission before using capture."
+            "Turn on Screen Recording for Pixel Pane in System Settings before using capture."
         }
+    }
+
+    var recoverySteps: [String] {
+        [
+            "Open System Settings -> Privacy & Security -> Screen & System Audio Recording.",
+            "Turn on Pixel Pane.",
+            "Quit and reopen Pixel Pane if macOS asks."
+        ]
     }
 }
 

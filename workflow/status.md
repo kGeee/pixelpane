@@ -4,13 +4,13 @@ Last updated: 2026-05-22
 
 ## Current Focus
 
-Epic 1, Epic 2, and the current Epic 7 notch-assistant alpha slice are closed. Pixel Pane now has a hover-open notch chat surface, capture-context chats, user-granted local file read/search, confirmed local file create/edit, local chat persistence, text-only MLX local chat setup, repeatable local build verification, and first-run privacy onboarding. Next: Screen Recording permission guidance.
+Epic 1, Epic 2, and the current Epic 7 notch-assistant alpha slice are closed. Pixel Pane now has a hover-open notch chat surface, capture-context chats, user-granted local file read/search, confirmed local file create/edit, local chat persistence, text-only MLX local chat setup, repeatable local build verification, first-run privacy onboarding, and Screen Recording recovery guidance. Next: ephemeral capture audit.
 
 Current phase: Notch assistant alpha.
 
 Current epic: Epic 3 - Privacy And Onboarding.
 
-Current recommended story: `PRIV-002` Screen Recording permission guidance.
+Current recommended story: `PRIV-004` Ephemeral capture audit.
 
 ## Current State
 
@@ -91,7 +91,7 @@ Epic 2 — Action Rail
 
 Epic 3 — Privacy And Onboarding
 - `PRIV-001` First-run onboarding: Done
-- `PRIV-002` Screen Recording permission guidance: Not Started
+- `PRIV-002` Screen Recording permission guidance: Done
 - `PRIV-005` Local/cloud mode setting and enforcement: Done
 
 Epic 6 — Cross-Cutting Quality
@@ -110,6 +110,7 @@ See `workflow/backlog.md` for all stories.
 
 ## Last Completed Work
 
+- 2026-05-22: Completed `PRIV-002`. Screen Recording denial recovery now uses clearer Settings and recovery-panel guidance: it names the exact macOS permission, gives manual steps for System Settings -> Privacy & Security -> Screen & System Audio Recording, reminds users to quit/reopen when macOS asks, and refreshes permission state after opening settings. Local verification wrapper build succeeded.
 - 2026-05-22: Follow-up chat source control polish. Reordered composer controls to New, Files, History, prompt, Send; removed the duplicate file-source context chip above the composer; and added Clear File Sources to the Files menu so users can remove all granted file references from chat. Local verification wrapper build succeeded.
 - 2026-05-22: Follow-up chat file-source polish. The notch composer now has a compact Files menu that lets users choose a folder, choose a file, see current granted sources, and remove a source without leaving the chat window. It reuses the existing explicit local file access store, so file context remains user-granted and local-first. Local verification wrapper build succeeded.
 - 2026-05-22: Follow-up new chat/history polish. The notch composer now exposes New Chat as a direct small action and History as a labeled recent-chat menu instead of hiding both behind a clock-only button. Recent chat menu items now show context type plus relative recency. Local verification wrapper build succeeded.
@@ -268,13 +269,16 @@ See `workflow/backlog.md` for all stories.
 
 ## Files Changed In Last Session
 
-- `PixelPane/PixelPane/App/LocalFileAccess.swift`
-- `PixelPane/PixelPane/Panel/ResultPanelView.swift`
+- `PixelPane/PixelPane/App/AppState.swift`
+- `PixelPane/PixelPane/App/SystemStatus.swift`
+- `PixelPane/PixelPane/Panel/RecoveryIssue.swift`
+- `PixelPane/PixelPane/Settings/SettingsView.swift`
 - `workflow/status.md`
 - `workflow/backlog.md`
 
 ## Last Verification
 
+- 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` succeeded after completing `PRIV-002` Screen Recording permission guidance.
 - 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` succeeded after reorganizing chat controls and adding Clear File Sources.
 - 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` succeeded after adding the chat-window Files source menu.
 - 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` succeeded after splitting New Chat and History into clearer minimal composer controls.
@@ -416,12 +420,12 @@ See `workflow/backlog.md` for all stories.
 
 ## Next Best Story
 
-`PRIV-002` - Screen Recording permission guidance.
+`PRIV-004` - Ephemeral capture audit.
 
 Suggested prompt:
 
 ```text
-Complete PRIV-002.
+Complete PRIV-004.
 ```
 
 ## Notes For Next Agent

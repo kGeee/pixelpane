@@ -34,7 +34,7 @@ enum RecoveryIssue: Identifiable, Equatable {
     var message: String {
         switch self {
         case .screenRecording:
-            "Pixel Pane needs Screen Recording permission to capture the region you select."
+            "Pixel Pane needs macOS Screen Recording permission before it can read pixels from the selected region."
         case .hotkeyRegistration(let message):
             "The global capture shortcut could not be registered. \(message)"
         }
@@ -43,7 +43,7 @@ enum RecoveryIssue: Identifiable, Equatable {
     var recoveryText: String {
         switch self {
         case .screenRecording:
-            "After enabling Pixel Pane, macOS may ask you to quit and reopen the app."
+            ScreenRecordingPermissionStatus.notGranted.recoverySteps.joined(separator: "\n")
         case .hotkeyRegistration:
             "Capture from the menu bar still works."
         }

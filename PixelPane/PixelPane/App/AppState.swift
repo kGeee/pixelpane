@@ -252,6 +252,7 @@ final class AppState: ObservableObject {
 
     func openScreenRecordingSettings() {
         permissionManager.openScreenRecordingSettings()
+        refreshSystemStatus()
     }
 
     func updateHotkeyRegistrationStatus(_ status: HotkeyRegistrationStatus) {

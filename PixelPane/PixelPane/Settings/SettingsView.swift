@@ -100,6 +100,23 @@ struct SettingsView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
 
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(appState.screenRecordingStatus.recoverySteps.enumerated()), id: \.offset) { index, step in
+                        HStack(alignment: .top, spacing: 8) {
+                            Text("\(index + 1).")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 18, alignment: .trailing)
+
+                            Text(step)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+
                 HStack {
                     Button {
                         appState.requestScreenRecordingAccess()
