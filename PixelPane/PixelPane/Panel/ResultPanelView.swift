@@ -1497,6 +1497,14 @@ struct ResultPanelView: View {
     }
 
     private func directAppStateAnswer(for question: String, grants: [LocalFileGrant]) -> (answer: String, backendLabel: String)? {
+        if let identityAnswer = assistantIdentityAnswer(for: question) {
+            return (identityAnswer, "Pixel Pane")
+        }
+
+        if let screenAnswer = unavailableScreenContextAnswer(for: question) {
+            return (screenAnswer, "Pixel Pane")
+        }
+
         if let modelAnswer = selectedModelAnswer(for: question) {
             return (modelAnswer, "Pixel Pane")
         }
@@ -1510,6 +1518,37 @@ struct ResultPanelView: View {
         }
 
         return nil
+    }
+
+    private func assistantIdentityAnswer(for question: String) -> String? {
+        let normalized = Self.normalizedQuestion(question)
+        let asksForAssistantName = [
+            "what is your name",
+            "whats your name",
+            "who are you",
+            "what are you called",
+            "your name"
+        ].contains { normalized.contains($0) }
+        guard asksForAssistantName else { return nil }
+        return "I am Pixel Pane."
+    }
+
+    private func unavailableScreenContextAnswer(for question: String) -> String? {
+        guard !hasCaptureContext else { return nil }
+        let normalized = Self.normalizedQuestion(question)
+        let asksAboutCurrentScreen = [
+            "what is on my screen",
+            "what's on my screen",
+            "what is onscreen",
+            "what's onscreen",
+            "what am i looking at",
+            "what do you see",
+            "what can you see",
+            "read my screen",
+            "look at my screen"
+        ].contains { normalized.contains($0) }
+        guard asksAboutCurrentScreen else { return nil }
+        return "I do not have a screen region attached to this chat yet."
     }
 
     private func selectedModelAnswer(for question: String) -> String? {

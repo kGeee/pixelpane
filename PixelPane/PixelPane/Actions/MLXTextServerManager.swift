@@ -10,6 +10,7 @@ actor MLXTextServerManager {
 
     private var server: WarmServer?
     private var idleTask: Task<Void, Never>?
+    private let formatter = ModelOutputFormatter()
 
     func response(
         prompt: String,
@@ -151,11 +152,7 @@ actor MLXTextServerManager {
             throw AIBackendError.unavailable(.generationFailed)
         }
 
-        return AIModelOutput(
-            finalText: text.trimmingCharacters(in: .whitespacesAndNewlines),
-            reasoningText: nil,
-            statistics: []
-        )
+        return formatter.format(text)
     }
 
     private func scheduleIdleShutdown() {

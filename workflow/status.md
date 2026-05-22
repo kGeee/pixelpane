@@ -112,11 +112,13 @@ Epic 7 — Notch Assistant
 - `ASSIST-010` Tune Brief-mode local generation budgets: Done
 - `ASSIST-011` Evaluate persistent MLX text runtime: Done
 - `ASSIST-012` Add app-managed warm MLX text server: Done
+- `ASSIST-013` QA local model responses and deterministic fallbacks: Done
 
 See `workflow/backlog.md` for all stories.
 
 ## Last Completed Work
 
+- 2026-05-22: Completed `ASSIST-013`. Tested the warm local MLX server path with the cached `mlx-community/Qwen3-30B-A3B-4bit` model. Brief prompts returned in about 0.24-0.40 seconds after startup and did not expose thinking, including an adversarial step-by-step prompt. Added deterministic Pixel Pane answers for assistant identity and no-capture screen-context questions, and routed warm-server output through the shared model-output formatter. Local verification wrapper build succeeded.
 - 2026-05-22: Completed `ASSIST-012`. Local MLX text chat now tries an app-managed warm `mlx_lm.server` helper before falling back to one-shot `mlx_lm.generate`. The helper starts lazily for the selected model, binds only to `127.0.0.1` on an app-selected free port, disables thinking through chat template args, reuses the server across turns, shuts down after idle time, and is stopped on model changes, Clear Selection, and app termination. Local verification wrapper build succeeded.
 - 2026-05-22: Completed `ASSIST-007` through `ASSIST-011`. Plain local chat now uses minimal context-specific prompts and no longer mentions absent screen/OCR/files/prior-chat context. Pixel Pane now answers selected-model/routing/file-source questions from app state without invoking a model, searches granted files only for file-aware questions, and uses adaptive Brief Ask budgets. Also enforced that Settings cannot remain in Local Mode with no selected MLX model: clearing or choosing "No MLX model selected" moves routing to Cloud Mode, and Local is disabled until a model is validated. Persistent MLX spike found `mlx_lm.server` available: one-shot 30B `mlx_lm.generate` took about 2.63s for a short prompt, while warm localhost server requests took about 0.43-0.55s. Recommendation: implement an app-managed warm MLX text server with one-shot fallback. Local verification wrapper build succeeded.
 - 2026-05-22: Planning update for local Qwen speed/model-agnostic QA. Added `ASSIST-007` through `ASSIST-011` to track minimal context prompts, deterministic app-state answers, lazy file context search, Brief-mode generation budget tuning, and a higher-risk persistent MLX runtime spike. No build run; backlog/status documentation only.

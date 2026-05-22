@@ -3,6 +3,8 @@ import Foundation
 struct ModelOutputFormatter: Sendable {
     private let displayTextNormalizer = ModelDisplayTextNormalizer()
 
+    nonisolated init() {}
+
     nonisolated func format(_ rawText: String) -> AIModelOutput {
         let assistantText = textAfterLastAssistantMarker(in: rawText)
         let extraction = extractReasoning(from: assistantText)

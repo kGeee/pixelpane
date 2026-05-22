@@ -1,6 +1,8 @@
 import Foundation
 
 struct ModelDisplayTextNormalizer: Sendable {
+    nonisolated init() {}
+
     nonisolated func normalize(_ text: String) -> String {
         var normalized = text
         normalized = normalizeMarkdownBlocks(in: normalized)

@@ -1232,6 +1232,7 @@ Notes:
 | `ASSIST-010` | Tune Brief-mode local generation budgets | Done | `ASSIST-007` |
 | `ASSIST-011` | Evaluate persistent MLX text runtime | Done | `ASSIST-005`, `ASSIST-010` |
 | `ASSIST-012` | Add app-managed warm MLX text server | Done | `ASSIST-011` |
+| `ASSIST-013` | QA local model responses and deterministic fallbacks | Done | `ASSIST-012` |
 
 ### `ASSIST-001` - Make The Notch A Chat-First Assistant Surface
 
@@ -1445,3 +1446,22 @@ Notes:
 
 - `mlx_lm.server` warns that it is not recommended for production as a public server, but a localhost-only app-managed helper is viable if we keep it bound to `127.0.0.1`, avoid broad CORS exposure, and retain one-shot fallback.
 - Implemented 2026-05-22. `MLXTextBackend` now tries a lazy warm `mlx_lm.server` first, bound to `127.0.0.1` on an app-selected free port with thinking disabled. The server is reused for the selected model, shut down after idle time, stopped on model changes/clear selection/app termination, and falls back to one-shot `mlx_lm.generate` if startup, health check, request, or parsing fails. Local verification wrapper build succeeded.
+
+### `ASSIST-013` - QA Local Model Responses And Deterministic Fallbacks
+
+Auto-created during local model QA on 2026-05-22.
+
+Goal: Exercise the selected local Qwen MLX path with representative prompts and patch model-agnostic behavior that should not depend on generation.
+
+Acceptance:
+
+- [x] Test simple Brief prompts against a warm local MLX model and record latency/behavior.
+- [x] Verify thinking does not leak for normal and adversarial Brief prompts.
+- [x] App answers assistant identity from Pixel Pane instead of the model's own identity.
+- [x] App does not let a model guess about the screen when no capture context is attached.
+- [x] Warm-server responses use the same output formatter as one-shot responses.
+- [x] App builds successfully.
+
+Notes:
+
+- Completed 2026-05-22. Warm `mlx_lm.server` responses on the cached `mlx-community/Qwen3-30B-A3B-4bit` test model returned in about 0.24-0.40 seconds after startup. Brief prompts did not leak thinking, including a direct request for step-by-step reasoning. The app now answers "what is your name?" as Pixel Pane and "what is on my screen?" without attached capture as unavailable screen context before calling a model. Warm-server output now passes through `ModelOutputFormatter`.
