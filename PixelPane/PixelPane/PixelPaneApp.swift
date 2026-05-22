@@ -8,9 +8,21 @@
 import AppKit
 import SwiftUI
 
+final class PixelPaneAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillTerminate(_ notification: Notification) {
+        let semaphore = DispatchSemaphore(value: 0)
+        Task {
+            await MLXTextServerManager.terminateCurrentProcess()
+            semaphore.signal()
+        }
+        _ = semaphore.wait(timeout: .now() + 1)
+    }
+}
+
 @main
 struct PixelPaneApp: App {
     @Environment(\.openSettings) private var openSettings
+    @NSApplicationDelegateAdaptor(PixelPaneAppDelegate.self) private var appDelegate
     @StateObject private var appState = AppState()
 
     var body: some Scene {

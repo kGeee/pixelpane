@@ -1231,7 +1231,7 @@ Notes:
 | `ASSIST-009` | Gate local file context search to file-aware questions | Done | `ASSIST-002`, `ASSIST-007` |
 | `ASSIST-010` | Tune Brief-mode local generation budgets | Done | `ASSIST-007` |
 | `ASSIST-011` | Evaluate persistent MLX text runtime | Done | `ASSIST-005`, `ASSIST-010` |
-| `ASSIST-012` | Add app-managed warm MLX text server | Not Started | `ASSIST-011` |
+| `ASSIST-012` | Add app-managed warm MLX text server | Done | `ASSIST-011` |
 
 ### `ASSIST-001` - Make The Notch A Chat-First Assistant Surface
 
@@ -1434,13 +1434,14 @@ Goal: Use `mlx_lm.server` as a warm local text backend so repeated MLX text chat
 
 Acceptance:
 
-- [ ] App starts or reuses a localhost `mlx_lm.server` process for the selected text-compatible MLX model.
-- [ ] Requests use the server's OpenAI-compatible chat completions endpoint with thinking disabled.
-- [ ] If server startup, health check, or request fails, the app falls back to the current one-shot `mlx_lm.generate` path.
-- [ ] Server lifecycle is tied to app/model selection and cleans up on model change or app quit.
-- [ ] The implementation avoids exposing the server beyond localhost.
-- [ ] App builds successfully.
+- [x] App starts or reuses a localhost `mlx_lm.server` process for the selected text-compatible MLX model.
+- [x] Requests use the server's OpenAI-compatible chat completions endpoint with thinking disabled.
+- [x] If server startup, health check, or request fails, the app falls back to the current one-shot `mlx_lm.generate` path.
+- [x] Server lifecycle is tied to app/model selection and cleans up on model change or app quit.
+- [x] The implementation avoids exposing the server beyond localhost.
+- [x] App builds successfully.
 
 Notes:
 
 - `mlx_lm.server` warns that it is not recommended for production as a public server, but a localhost-only app-managed helper is viable if we keep it bound to `127.0.0.1`, avoid broad CORS exposure, and retain one-shot fallback.
+- Implemented 2026-05-22. `MLXTextBackend` now tries a lazy warm `mlx_lm.server` first, bound to `127.0.0.1` on an app-selected free port with thinking disabled. The server is reused for the selected model, shut down after idle time, stopped on model changes/clear selection/app termination, and falls back to one-shot `mlx_lm.generate` if startup, health check, request, or parsing fails. Local verification wrapper build succeeded.

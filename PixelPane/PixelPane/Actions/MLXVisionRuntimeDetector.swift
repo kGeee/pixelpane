@@ -92,6 +92,17 @@ struct MLXVisionRuntimeDetector: Sendable {
             .first { fileManager.isExecutableFile(atPath: $0.path) }
     }
 
+    func mlxTextServerExecutableURL() -> URL? {
+        let candidates = pathCandidates(named: "mlx_lm.server") + userPythonBinCandidates(named: "mlx_lm.server") + [
+            "/opt/homebrew/bin/mlx_lm.server",
+            "/usr/local/bin/mlx_lm.server"
+        ]
+
+        return candidates
+            .map(URL.init(fileURLWithPath:))
+            .first { fileManager.isExecutableFile(atPath: $0.path) }
+    }
+
     func compatibleCachedModelURL() -> URL? {
         cachedModels().first { $0.isVisionCompatible }?.localURL
     }

@@ -209,6 +209,7 @@ final class AppState: ObservableObject {
                 self.mlxVisionSetupSnapshot = snapshot
                 self.localAICapabilities = capabilities
                 self.isRunningMLXSetupCheck = false
+                Task { await MLXTextServerManager.shared.stop() }
             }
         }
     }
@@ -233,6 +234,7 @@ final class AppState: ObservableObject {
                 self.mlxVisionSetupSnapshot = snapshot
                 self.localAICapabilities = capabilities
                 self.isRunningMLXSetupCheck = false
+                Task { await MLXTextServerManager.shared.stop() }
             }
         }
     }
@@ -241,6 +243,7 @@ final class AppState: ObservableObject {
         let snapshot = mlxVisionSetupRunner.clearSelection()
         mlxVisionSetupSnapshot = snapshot
         setUseCloudModels(true)
+        Task { await MLXTextServerManager.shared.stop() }
         refreshLocalAIStatus()
     }
 

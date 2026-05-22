@@ -53,66 +53,110 @@ final class MLXTextBackend: AIBackend, @unchecked Sendable {
                 return
             }
 
-            do {
-                let process = Process()
-                process.executableURL = executableURL
-                process.arguments = [
-                    "--model", snapshotURL.path,
-                    "--prompt", request.prompt,
-                    "--chat-template-config", "{\"enable_thinking\":false}",
-                    "--verbose", "False",
-                    "--max-tokens", "\(min(request.maxOutputTokens, AIModelLimits.defaultMaxOutputTokens))"
-                ]
-
-                let outputPipe = Pipe()
-                let errorPipe = Pipe()
-                process.standardOutput = outputPipe
-                process.standardError = errorPipe
-
-                outputPipe.fileHandleForReading.readabilityHandler = { handle in
-                    let data = handle.availableData
-                    guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8) else { return }
-                    state.append(chunk)
-                }
-
-                errorPipe.fileHandleForReading.readabilityHandler = { handle in
-                    let data = handle.availableData
-                    guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8) else { return }
-                    state.appendDiagnostics(chunk)
-                }
-
-                process.terminationHandler = { finishedProcess in
-                    outputPipe.fileHandleForReading.readabilityHandler = nil
-                    errorPipe.fileHandleForReading.readabilityHandler = nil
-
-                    if finishedProcess.terminationStatus == 0 {
-                        state.complete()
-                    } else {
-                        state.fail(reason: self.reason(for: state.diagnostics))
+            if let serverExecutableURL = detector.mlxTextServerExecutableURL() {
+                let warmTask = Task {
+                    do {
+                        let output = try await MLXTextServerManager.shared.response(
+                            prompt: request.prompt,
+                            maxOutputTokens: request.maxOutputTokens,
+                            modelURL: snapshotURL,
+                            executableURL: serverExecutableURL
+                        )
+                        state.finish(output: output)
+                    } catch {
+                        runOneShot(
+                            executableURL: executableURL,
+                            snapshotURL: snapshotURL,
+                            request: request,
+                            state: state,
+                            continuation: continuation
+                        )
                     }
                 }
-
-                try process.run()
-
-                let timeoutTask = Task.detached { [timeoutSeconds] in
-                    try? await Task.sleep(for: .seconds(timeoutSeconds))
-                    if process.isRunning {
-                        process.terminate()
-                        state.fail(reason: .mlxGenerationTimeout)
-                    }
-                }
-
                 continuation.onTermination = { _ in
-                    timeoutTask.cancel()
-                    outputPipe.fileHandleForReading.readabilityHandler = nil
-                    errorPipe.fileHandleForReading.readabilityHandler = nil
-                    if process.isRunning {
-                        process.terminate()
-                    }
+                    state.cancel()
+                    warmTask.cancel()
                 }
-            } catch {
-                state.fail(error: error)
+                return
             }
+
+            runOneShot(
+                executableURL: executableURL,
+                snapshotURL: snapshotURL,
+                request: request,
+                state: state,
+                continuation: continuation
+            )
+        }
+    }
+
+    private func runOneShot(
+        executableURL: URL,
+        snapshotURL: URL,
+        request: AIBackendRequest,
+        state: MLXProcessStreamState,
+        continuation: AsyncThrowingStream<AIBackendStreamEvent, Error>.Continuation
+    ) {
+        do {
+            let process = Process()
+            process.executableURL = executableURL
+            process.arguments = [
+                "--model", snapshotURL.path,
+                "--prompt", request.prompt,
+                "--chat-template-config", "{\"enable_thinking\":false}",
+                "--verbose", "False",
+                "--max-tokens", "\(min(request.maxOutputTokens, AIModelLimits.defaultMaxOutputTokens))"
+            ]
+
+            let outputPipe = Pipe()
+            let errorPipe = Pipe()
+            process.standardOutput = outputPipe
+            process.standardError = errorPipe
+
+            outputPipe.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8) else { return }
+                state.append(chunk)
+            }
+
+            errorPipe.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                guard !data.isEmpty, let chunk = String(data: data, encoding: .utf8) else { return }
+                state.appendDiagnostics(chunk)
+            }
+
+            process.terminationHandler = { finishedProcess in
+                outputPipe.fileHandleForReading.readabilityHandler = nil
+                errorPipe.fileHandleForReading.readabilityHandler = nil
+
+                if finishedProcess.terminationStatus == 0 {
+                    state.complete()
+                } else {
+                    state.fail(reason: self.reason(for: state.diagnostics))
+                }
+            }
+
+            try process.run()
+
+            let timeoutTask = Task.detached { [timeoutSeconds] in
+                try? await Task.sleep(for: .seconds(timeoutSeconds))
+                if process.isRunning {
+                    process.terminate()
+                    state.fail(reason: .mlxGenerationTimeout)
+                }
+            }
+
+            continuation.onTermination = { _ in
+                state.cancel()
+                timeoutTask.cancel()
+                outputPipe.fileHandleForReading.readabilityHandler = nil
+                errorPipe.fileHandleForReading.readabilityHandler = nil
+                if process.isRunning {
+                    process.terminate()
+                }
+            }
+        } catch {
+            state.fail(error: error)
         }
     }
 
@@ -159,6 +203,24 @@ private final class MLXProcessStreamState: @unchecked Sendable {
             guard !didFinish else { return }
             didFinish = true
             continuation.yield(.completed)
+            continuation.finish()
+        }
+    }
+
+    nonisolated func finish(output: AIModelOutput) {
+        lock.withLock {
+            guard !didFinish else { return }
+            didFinish = true
+            continuation.yield(.output(output))
+            continuation.yield(.completed)
+            continuation.finish()
+        }
+    }
+
+    nonisolated func cancel() {
+        lock.withLock {
+            guard !didFinish else { return }
+            didFinish = true
             continuation.finish()
         }
     }
