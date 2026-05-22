@@ -1,6 +1,6 @@
 # Pixel Pane Story Backlog
 
-Last updated: 2026-05-22 (ASSIST-006 chat history browser story added)
+Last updated: 2026-05-22 (ASSIST-007 through ASSIST-011 local chat speed stories added)
 
 This is the story-level source of truth. Claude/Codex should use this file when you say:
 
@@ -23,9 +23,9 @@ When asked to complete an epic, do not attempt the whole epic in one pass. Compl
 
 ## Current Recommended Story
 
-`PRIV-004` - Ephemeral capture audit is the current recommended story.
+`ASSIST-007` - Add minimal context prompt router is the current recommended story.
 
-Reason: First-run privacy onboarding and Screen Recording recovery are implemented. The next privacy slice is verifying the ephemeral screenshot handling promise at the implementation and QA level.
+Reason: User testing showed local Qwen text models are slowed and confused by a one-size prompt scaffold that mentions absent screen/file context. The next slice should make plain chat direct and add context only when it exists.
 
 ---
 
@@ -1226,6 +1226,11 @@ Notes:
 | `ASSIST-004` | Add local chat persistence | Done | `ASSIST-001` |
 | `ASSIST-005` | Expand local model setup to text-only MLX models | Done | `ASSIST-001` |
 | `ASSIST-006` | Add full chat history browser and search | Not Started | `ASSIST-004` |
+| `ASSIST-007` | Add minimal context prompt router | Not Started | `ASSIST-001`, `ASSIST-005` |
+| `ASSIST-008` | Answer app-state questions without calling the model | Not Started | `ASSIST-005`, `ASSIST-007` |
+| `ASSIST-009` | Gate local file context search to file-aware questions | Not Started | `ASSIST-002`, `ASSIST-007` |
+| `ASSIST-010` | Tune Brief-mode local generation budgets | Not Started | `ASSIST-007` |
+| `ASSIST-011` | Evaluate persistent MLX text runtime | Not Started | `ASSIST-005`, `ASSIST-010` |
 
 ### `ASSIST-001` - Make The Notch A Chat-First Assistant Surface
 
@@ -1323,3 +1328,94 @@ Acceptance:
 - [ ] Users can reopen an assistant chat without implying screen-region context.
 - [ ] Capture-context chats are clearly labeled and do not retain screenshot images.
 - [ ] Users can delete one chat or clear all chats from the same surface.
+
+### `ASSIST-007` - Add Minimal Context Prompt Router
+
+Auto-created during local Qwen speed/prompt QA on 2026-05-22.
+
+Goal: Make assistant prompts model-agnostic and as small as possible, adding screen/file/history context only when it is actually present and needed.
+
+Acceptance:
+
+- [ ] Plain chat with no capture, files, or prior turns sends only the user message plus the smallest necessary direct-answer/no-reasoning guard.
+- [ ] Screen/OCR instructions are included only for capture-context chats.
+- [ ] File context instructions are included only when file snippets are attached.
+- [ ] Prior-chat transcript is included only when there are previous turns relevant to the current chat.
+- [ ] Brief mode does not mention absent context labels such as `Screen: none`, `OCR: none`, `Files: none`, or `Prior: none`.
+- [ ] App builds successfully.
+
+Notes:
+
+- Risk: Low. The current prompt builder is centralized in the Ask flow and can be split into small prompt cases. The main risk is accidentally dropping useful context from capture or file chats, so QA should cover plain, capture, file, and follow-up turns.
+
+### `ASSIST-008` - Answer App-State Questions Without Calling The Model
+
+Auto-created during local Qwen speed/prompt QA on 2026-05-22.
+
+Goal: Return instant, accurate answers for questions Pixel Pane can answer from app state instead of asking the selected LLM to infer them.
+
+Acceptance:
+
+- [ ] Questions like "what model is this?", "which model?", and "what are you running?" answer from the selected MLX model/backend metadata.
+- [ ] Questions about Local vs Cloud routing answer from `AIRoutingSettings`.
+- [ ] Questions about granted file sources answer from the local file access store.
+- [ ] These deterministic answers do not start a local or cloud model request.
+- [ ] App builds successfully.
+
+Notes:
+
+- Risk: Low. This is a deterministic preflight before model routing. Keep patterns narrow so normal content questions still reach the model.
+
+### `ASSIST-009` - Gate Local File Context Search To File-Aware Questions
+
+Auto-created during local Qwen speed/prompt QA on 2026-05-22.
+
+Goal: Avoid scanning granted folders before every chat turn when the user is asking a plain conversational question.
+
+Acceptance:
+
+- [ ] Plain chat turns do not search granted files unless the question appears file/project/code/path/document related.
+- [ ] Explicit requests such as "search files", "in this project", "in README", or a visible file/path mention still attach local file snippets.
+- [ ] Direct file-source questions still use the existing instant local answer path.
+- [ ] If no snippets are attached, the prompt does not mention files at all.
+- [ ] App builds successfully.
+
+Notes:
+
+- Risk: Medium. A heuristic can miss implicit file questions. Bias toward clear triggers first, and leave a visible Files control plus natural-language "search files for..." escape hatch.
+
+### `ASSIST-010` - Tune Brief-Mode Local Generation Budgets
+
+Auto-created during local Qwen speed/prompt QA on 2026-05-22.
+
+Goal: Make Brief mode faster for local MLX text models without cutting off complete answers.
+
+Acceptance:
+
+- [ ] Simple Brief plain-chat turns use a small generation budget.
+- [ ] Brief follow-ups with light context use a moderate budget instead of the full Ask ceiling.
+- [ ] Questions that ask for detail, lists, code, or multi-step output still get enough room to finish.
+- [ ] Brief mode continues to hide model thinking/reasoning UI.
+- [ ] App builds successfully.
+
+Notes:
+
+- Risk: Medium. Token caps can make answers feel clipped if too aggressive. Treat caps as routing hints based on question shape, not a hard global limit for Brief.
+
+### `ASSIST-011` - Evaluate Persistent MLX Text Runtime
+
+Auto-created during local Qwen speed/prompt QA on 2026-05-22.
+
+Goal: Determine whether Pixel Pane can avoid the per-message `mlx_lm.generate` startup cost by using a persistent local MLX text worker or server.
+
+Acceptance:
+
+- [ ] Measure current one-shot MLX Text first-token latency on a simple prompt.
+- [ ] Identify a supported persistent MLX-LM serving path or a safe app-managed worker process.
+- [ ] Prototype or document why the persistent path is not viable.
+- [ ] Preserve fallback to the current one-shot process if the worker fails.
+- [ ] Record follow-up implementation or rejection notes in `workflow/status.md`.
+
+Notes:
+
+- Risk: High. This is the biggest likely speed win, but it depends on MLX-LM process/server behavior, memory residency, cancellation, app lifecycle cleanup, and packaging. Treat it as a spike before relying on it for product speed.
