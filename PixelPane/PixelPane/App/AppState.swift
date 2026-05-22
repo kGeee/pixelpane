@@ -1,0 +1,384 @@
+import AppKit
+import Combine
+import SwiftUI
+
+@MainActor
+final class AppState: ObservableObject {
+    @Published private(set) var isCapturing = false
+    @Published private(set) var lastResult: CaptureResult?
+    @Published private(set) var screenRecordingStatus: ScreenRecordingPermissionStatus = .notGranted
+    @Published private(set) var hotkeyRegistrationStatus: HotkeyRegistrationStatus = .notRegistered
+    @Published private(set) var localAICapabilities: AIBackendCapabilities = .unknown
+    @Published private(set) var mlxVisionSetupSnapshot = MLXVisionSetupRunner().snapshot()
+    @Published private(set) var isRunningMLXSetupCheck = false
+    @Published private(set) var hasCompletedOnboarding: Bool
+    @Published private(set) var aiRoutingSettings: AIRoutingSettings
+    @Published private(set) var responseDetailLevel: ResponseDetailLevel
+    let localFileAccess: LocalFileAccessStore
+    let chatHistory: ChatHistoryStore
+
+    private lazy var overlayCoordinator = OverlayCoordinator()
+    private lazy var panelController = ResultPanelController()
+    private lazy var onboardingController = OnboardingWindowController()
+    private let permissionManager = SystemPermissionManager()
+    private let screenCapturer = ScreenCapturer()
+    private let ocrEngine = OCREngine()
+    private let languageDetector = LanguageDetector()
+    private let technicalContentClassifier = TechnicalContentClassifier()
+    private let hotkeyManager = HotkeyManager()
+    private let mlxVisionSetupRunner = MLXVisionSetupRunner()
+    private let localAIBackend: any AIBackend = HybridLocalAIBackend()
+    private let userDefaults: UserDefaults
+    private let onboardingCompletedKey = "PrivacyOnboarding.Completed"
+
+    init(userDefaults: UserDefaults = .standard) {
+        self.userDefaults = userDefaults
+        localFileAccess = LocalFileAccessStore(userDefaults: userDefaults)
+        chatHistory = ChatHistoryStore(userDefaults: userDefaults)
+        hasCompletedOnboarding = userDefaults.bool(forKey: onboardingCompletedKey)
+        let storedUseCloudModels = userDefaults.bool(forKey: AIRoutingDefaults.useCloudModelsKey)
+        let storedAllowCloudImageContext = userDefaults.bool(forKey: AIRoutingDefaults.allowCloudImageContextKey)
+        aiRoutingSettings = AIRoutingSettings(
+            useCloudModels: storedUseCloudModels,
+            allowCloudImageContext: storedUseCloudModels
+                ? AIRoutingSettings.cloudBackendAvailable
+                : storedAllowCloudImageContext
+        )
+        if userDefaults.object(forKey: ResponseDetailDefaults.levelKey) == nil {
+            responseDetailLevel = .balanced
+        } else {
+            let raw = userDefaults.integer(forKey: ResponseDetailDefaults.levelKey)
+            responseDetailLevel = ResponseDetailLevel(rawValue: raw) ?? .balanced
+        }
+        persistAIRoutingSettings()
+        refreshSystemStatus()
+        refreshLocalAIStatus()
+        registerGlobalHotkey()
+        Task { @MainActor [weak self] in
+            self?.showInitialSurface()
+        }
+    }
+
+    private func showInitialSurface() {
+        if hasCompletedOnboarding {
+            showAssistant()
+        } else {
+            showOnboarding()
+        }
+    }
+
+    func showOnboarding() {
+        onboardingController.show(
+            onStartCapture: { [weak self] in
+                self?.completeOnboarding()
+                self?.startCapture()
+            },
+            onContinue: { [weak self] in
+                self?.completeOnboarding()
+                self?.showAssistant()
+            }
+        )
+    }
+
+    private func completeOnboarding() {
+        hasCompletedOnboarding = true
+        userDefaults.set(true, forKey: onboardingCompletedKey)
+        onboardingController.close()
+    }
+
+    func setResponseDetailLevel(_ level: ResponseDetailLevel) {
+        guard responseDetailLevel != level else { return }
+        responseDetailLevel = level
+        userDefaults.set(level.rawValue, forKey: ResponseDetailDefaults.levelKey)
+    }
+
+    func startCapture() {
+        guard !isCapturing else { return }
+        refreshSystemStatus()
+
+        guard screenRecordingStatus.isGranted else {
+            presentScreenRecordingRecovery()
+            return
+        }
+
+        isCapturing = true
+
+        overlayCoordinator.beginSelection(
+            onComplete: { [weak self] selection in
+                Task { @MainActor in
+                    await self?.process(selection: selection)
+                }
+            },
+            onCancel: { [weak self] in
+                self?.isCapturing = false
+            }
+        )
+    }
+
+    func showLastResult() {
+        guard let lastResult else { return }
+        panelController.show(
+            result: lastResult,
+            routingSettings: aiRoutingSettings,
+            responseDetail: responseDetailLevel,
+            localFileAccess: localFileAccess,
+            chatHistory: chatHistory,
+            startsInAssistantMode: true,
+            onTryAgain: { [weak self] in
+                self?.startCapture()
+            }
+        )
+    }
+
+    func showAssistant() {
+        panelController.showAssistant(
+            routingSettings: aiRoutingSettings,
+            responseDetail: responseDetailLevel,
+            localFileAccess: localFileAccess,
+            chatHistory: chatHistory,
+            onTryAgain: { [weak self] in
+                self?.startCapture()
+            }
+        )
+    }
+
+    func setUseCloudModels(_ isEnabled: Bool) {
+        let allowedValue = AIRoutingSettings.cloudBackendAvailable && isEnabled
+        aiRoutingSettings.useCloudModels = allowedValue
+        aiRoutingSettings.allowCloudImageContext = allowedValue
+        persistAIRoutingSettings()
+        panelController.refreshRoutingSettings(
+            aiRoutingSettings,
+            responseDetail: responseDetailLevel,
+            localFileAccess: localFileAccess,
+            chatHistory: chatHistory
+        )
+    }
+
+    func setAIRoutingMode(_ mode: AIRoutingMode) {
+        setUseCloudModels(mode == .cloud)
+    }
+
+    func setAllowCloudImageContext(_ isEnabled: Bool) {
+        let allowedValue = AIRoutingSettings.cloudBackendAvailable
+            && aiRoutingSettings.useCloudModels
+            && isEnabled
+        aiRoutingSettings.allowCloudImageContext = allowedValue
+        persistAIRoutingSettings()
+    }
+
+    func refreshSystemStatus() {
+        screenRecordingStatus = permissionManager.screenRecordingStatus()
+    }
+
+    func refreshLocalAIStatus() {
+        Task { [weak self] in
+            guard let self else { return }
+            let capabilities = await localAIBackend.capabilities()
+            let mlxSnapshot = mlxVisionSetupRunner.snapshot()
+            await MainActor.run {
+                self.localAICapabilities = capabilities
+                self.mlxVisionSetupSnapshot = mlxSnapshot
+            }
+        }
+    }
+
+    func runMLXSetupCheck(for model: MLXVisionModel) {
+        guard !isRunningMLXSetupCheck else { return }
+        isRunningMLXSetupCheck = true
+
+        Task { [weak self] in
+            guard let self else { return }
+            let snapshot = await mlxVisionSetupRunner.runSetupCheck(for: model)
+            let capabilities = await localAIBackend.capabilities()
+            await MainActor.run {
+                self.mlxVisionSetupSnapshot = snapshot
+                self.localAICapabilities = capabilities
+                self.isRunningMLXSetupCheck = false
+            }
+        }
+    }
+
+    func chooseMLXModelFolder() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose MLX Vision Model Folder"
+        panel.prompt = "Choose"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard !isRunningMLXSetupCheck else { return }
+        isRunningMLXSetupCheck = true
+
+        Task { [weak self] in
+            guard let self else { return }
+            let snapshot = await mlxVisionSetupRunner.runSetupCheck(forCustomModelDirectory: url)
+            let capabilities = await localAIBackend.capabilities()
+            await MainActor.run {
+                self.mlxVisionSetupSnapshot = snapshot
+                self.localAICapabilities = capabilities
+                self.isRunningMLXSetupCheck = false
+            }
+        }
+    }
+
+    func clearMLXModelSelection() {
+        let snapshot = mlxVisionSetupRunner.clearSelection()
+        mlxVisionSetupSnapshot = snapshot
+        refreshLocalAIStatus()
+    }
+
+    func openRecommendedMLXModelPage() {
+        mlxVisionSetupRunner.openRecommendedModelPage()
+    }
+
+    func requestScreenRecordingAccess() {
+        let granted = permissionManager.requestScreenRecordingAccess()
+        refreshSystemStatus()
+
+        if granted {
+            panelController.close()
+        } else {
+            permissionManager.openScreenRecordingSettings()
+        }
+    }
+
+    func openScreenRecordingSettings() {
+        permissionManager.openScreenRecordingSettings()
+    }
+
+    func updateHotkeyRegistrationStatus(_ status: HotkeyRegistrationStatus) {
+        hotkeyRegistrationStatus = status
+    }
+
+    func reportHotkeyRegistrationFailure(_ message: String) {
+        hotkeyRegistrationStatus = .failed(message: message)
+        panelController.show(
+            recovery: .hotkeyRegistration(message: message),
+            onPrimaryAction: { [weak self] in
+                self?.panelController.close()
+            }
+        )
+    }
+
+    var canTogglePauseHotkey: Bool {
+        switch hotkeyRegistrationStatus {
+        case .registered, .paused:
+            return true
+        case .notRegistered, .failed:
+            return false
+        }
+    }
+
+    var isHotkeyPaused: Bool {
+        if case .paused = hotkeyRegistrationStatus { return true }
+        return false
+    }
+
+    func togglePauseHotkey() {
+        switch hotkeyRegistrationStatus {
+        case .registered(let shortcut):
+            hotkeyManager.setPaused(true)
+            hotkeyRegistrationStatus = .paused(shortcut: shortcut)
+        case .paused(let shortcut):
+            hotkeyManager.setPaused(false)
+            hotkeyRegistrationStatus = .registered(shortcut: shortcut)
+        case .notRegistered, .failed:
+            break
+        }
+    }
+
+    private func registerGlobalHotkey() {
+        let result = hotkeyManager.register { [weak self] in
+            self?.startCapture()
+        }
+
+        switch result {
+        case .success(let shortcut):
+            updateHotkeyRegistrationStatus(.registered(shortcut: shortcut))
+        case .failure(let error):
+            reportHotkeyRegistrationFailure(error.description)
+        }
+    }
+
+    private func process(selection: CaptureSelection) async {
+        defer { isCapturing = false }
+
+        do {
+            let image = try await screenCapturer.capture(selection: selection)
+            let recognizedText = try await ocrEngine.recognizeText(in: image)
+            let displayText = recognizedText.isEmpty
+                ? "No text found. Try a larger region or higher contrast."
+                : recognizedText
+            let detectedLanguage = recognizedText.isEmpty
+                ? DetectedLanguage.unknown
+                : languageDetector.detect(in: recognizedText)
+            let technicalClassification = technicalContentClassifier.classify(recognizedText)
+            let result = CaptureResult(
+                image: image,
+                text: displayText,
+                isEmptyOCRResult: recognizedText.isEmpty,
+                selectionFrame: selection.screenRect,
+                createdAt: Date(),
+                sourceType: .ocr,
+                detectedLanguage: detectedLanguage,
+                technicalClassification: technicalClassification
+            )
+            lastResult = result
+            panelController.show(
+                result: result,
+                routingSettings: aiRoutingSettings,
+                responseDetail: responseDetailLevel,
+                localFileAccess: localFileAccess,
+                chatHistory: chatHistory,
+                startsInAssistantMode: true,
+                onTryAgain: { [weak self] in
+                    self?.startCapture()
+                }
+            )
+        } catch CaptureError.screenRecordingPermissionDenied {
+            screenRecordingStatus = .notGranted
+            presentScreenRecordingRecovery(near: selection.screenRect)
+        } catch {
+            let result = CaptureResult(
+                image: nil,
+                text: error.localizedDescription,
+                selectionFrame: selection.screenRect,
+                createdAt: Date(),
+                sourceType: .ocr,
+                detectedLanguage: .unknown
+            )
+            lastResult = result
+            panelController.show(
+                result: result,
+                routingSettings: aiRoutingSettings,
+                responseDetail: responseDetailLevel,
+                localFileAccess: localFileAccess,
+                chatHistory: chatHistory,
+                startsInAssistantMode: true,
+                onTryAgain: { [weak self] in
+                    self?.startCapture()
+                }
+            )
+        }
+    }
+
+    private func presentScreenRecordingRecovery(near selectionFrame: CGRect? = nil) {
+        panelController.show(
+            recovery: .screenRecording,
+            near: selectionFrame,
+            onPrimaryAction: { [weak self] in
+                self?.requestScreenRecordingAccess()
+            },
+            onSecondaryAction: { [weak self] in
+                self?.openScreenRecordingSettings()
+            }
+        )
+    }
+
+    private func persistAIRoutingSettings() {
+        userDefaults.set(aiRoutingSettings.useCloudModels, forKey: AIRoutingDefaults.useCloudModelsKey)
+        userDefaults.set(aiRoutingSettings.allowCloudImageContext, forKey: AIRoutingDefaults.allowCloudImageContextKey)
+    }
+}

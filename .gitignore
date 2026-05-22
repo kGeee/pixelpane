@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+
+# Xcode
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# App archives and exports
+*.xcarchive
+*.ipa
+*.dSYM.zip
+*.dmg
+
+# Local environment
+.env
+.env.*
+!.env.example
+.claude/
+.codex/
+
+# Node / Cloudflare Workers
+node_modules/
+.wrangler/

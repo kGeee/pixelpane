@@ -1,0 +1,12 @@
+name = "pixel-pane-api"
+main = "src/index.ts"
+compatibility_date = "2026-04-29"
+
+[vars]
+ANTHROPIC_MODEL = "claude-sonnet-4-6"
+FREE_DAILY_LIMIT = "100"
+
+[[kv_namespaces]]
+binding = "RATE_LIMIT_KV"
+id = "21f6345b912e4d7ab36c1c59b3826969"
+preview_id = "4bb28cd435ac4c85b13d346f208dbabc"
