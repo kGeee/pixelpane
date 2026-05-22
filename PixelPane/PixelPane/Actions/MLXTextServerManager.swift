@@ -35,6 +35,47 @@ actor MLXTextServerManager {
         }
     }
 
+    func responseIfReady(
+        prompt: String,
+        maxOutputTokens: Int,
+        modelURL: URL,
+        executableURL: URL
+    ) async throws -> AIModelOutput? {
+        guard let server,
+              server.modelPath == modelURL.path,
+              server.executablePath == executableURL.path,
+              server.process.isRunning
+        else {
+            return nil
+        }
+
+        guard await isHealthy(server) else {
+            return nil
+        }
+
+        do {
+            let output = try await requestResponse(
+                prompt: prompt,
+                maxOutputTokens: maxOutputTokens,
+                server: server
+            )
+            scheduleIdleShutdown()
+            return output
+        } catch {
+            stopServer()
+            throw error
+        }
+    }
+
+    func warmIfNeeded(modelURL: URL, executableURL: URL) async {
+        do {
+            _ = try await readyServer(modelURL: modelURL, executableURL: executableURL)
+            scheduleIdleShutdown()
+        } catch {
+            stopServer()
+        }
+    }
+
     func stop() {
         stopServer()
     }
@@ -47,8 +88,11 @@ actor MLXTextServerManager {
         if let server,
            server.modelPath == modelURL.path,
            server.executablePath == executableURL.path,
-           server.process.isRunning,
-           await isHealthy(server) {
+           server.process.isRunning {
+            if await isHealthy(server) {
+                return server
+            }
+            try await waitUntilHealthy(server)
             return server
         }
 

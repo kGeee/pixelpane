@@ -1447,6 +1447,7 @@ Notes:
 - `mlx_lm.server` warns that it is not recommended for production as a public server, but a localhost-only app-managed helper is viable if we keep it bound to `127.0.0.1`, avoid broad CORS exposure, and retain one-shot fallback.
 - Implemented 2026-05-22. `MLXTextBackend` now tries a lazy warm `mlx_lm.server` first, bound to `127.0.0.1` on an app-selected free port with thinking disabled. The server is reused for the selected model, shut down after idle time, stopped on model changes/clear selection/app termination, and falls back to one-shot `mlx_lm.generate` if startup, health check, request, or parsing fails. Local verification wrapper build succeeded.
 - Follow-up hardening 2026-05-22. Warm server output is now drained so helper logs cannot block startup. If an installed warm server fails to start or respond, Pixel Pane now surfaces the local-model failure instead of immediately launching `mlx_lm.generate`, avoiding two back-to-back large MLX model loads that can pressure memory and get the debug app killed. One-shot fallback remains for machines without `mlx_lm.server`.
+- Follow-up hybrid fix 2026-05-22. Active chat requests no longer wait for warm-server startup. If a matching `mlx_lm.server` process is already healthy, Pixel Pane uses it for fast local text responses. If not, Pixel Pane uses the known-good one-shot `mlx_lm.generate` path and starts the warm server in the background after the one-shot response succeeds.
 
 ### `ASSIST-013` - QA Local Model Responses And Deterministic Fallbacks
 

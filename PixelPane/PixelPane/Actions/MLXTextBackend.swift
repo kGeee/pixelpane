@@ -56,16 +56,36 @@ final class MLXTextBackend: AIBackend, @unchecked Sendable {
             if let serverExecutableURL = detector.mlxTextServerExecutableURL() {
                 let warmTask = Task {
                     do {
-                        let output = try await MLXTextServerManager.shared.response(
+                        if let output = try await MLXTextServerManager.shared.responseIfReady(
                             prompt: request.prompt,
                             maxOutputTokens: request.maxOutputTokens,
                             modelURL: snapshotURL,
                             executableURL: serverExecutableURL
-                        )
-                        state.finish(output: output)
+                        ) {
+                            state.finish(output: output)
+                            return
+                        }
                     } catch {
                         state.fail(error: error)
+                        return
                     }
+
+                    runOneShot(
+                        executableURL: executableURL,
+                        snapshotURL: snapshotURL,
+                        request: request,
+                        state: state,
+                        continuation: continuation,
+                        onSuccessfulCompletion: {
+                            Task {
+                                try? await Task.sleep(for: .seconds(2))
+                                await MLXTextServerManager.shared.warmIfNeeded(
+                                    modelURL: snapshotURL,
+                                    executableURL: serverExecutableURL
+                                )
+                            }
+                        }
+                    )
                 }
                 continuation.onTermination = { _ in
                     state.cancel()
@@ -79,7 +99,8 @@ final class MLXTextBackend: AIBackend, @unchecked Sendable {
                 snapshotURL: snapshotURL,
                 request: request,
                 state: state,
-                continuation: continuation
+                continuation: continuation,
+                onSuccessfulCompletion: nil
             )
         }
     }
@@ -89,7 +110,8 @@ final class MLXTextBackend: AIBackend, @unchecked Sendable {
         snapshotURL: URL,
         request: AIBackendRequest,
         state: MLXProcessStreamState,
-        continuation: AsyncThrowingStream<AIBackendStreamEvent, Error>.Continuation
+        continuation: AsyncThrowingStream<AIBackendStreamEvent, Error>.Continuation,
+        onSuccessfulCompletion: (@Sendable () -> Void)?
     ) {
         do {
             let process = Process()
@@ -125,6 +147,7 @@ final class MLXTextBackend: AIBackend, @unchecked Sendable {
 
                 if finishedProcess.terminationStatus == 0 {
                     state.complete()
+                    onSuccessfulCompletion?()
                 } else {
                     state.fail(reason: self.reason(for: state.diagnostics))
                 }

@@ -390,6 +390,25 @@ Consequences:
 Follow-up:
 Manual QA should verify Clear Selection, the "No MLX model selected" picker row, app relaunch with no saved model, and switching back to Local after validating a model.
 
+## 2026-05-22 - Hybrid Warm MLX Text Runtime
+
+Status: Accepted
+
+Decision:
+Pixel Pane may use a warm `mlx_lm.server` helper for local text chat only when the helper is already healthy. Active user chat requests must not block while starting or health-checking the warm server. If no matching healthy warm server is available, the app uses the existing one-shot `mlx_lm.generate` path, then starts or refreshes the warm server in the background after the one-shot response finishes.
+
+Context:
+Directly waiting on `mlx_lm.server` startup inside the chat request caused the notch UI to remain on "Thinking..." while localhost health checks returned connection refused. On large local models, startup/loading can take long enough that Xcode or the OS kills the debug session before the server reaches listen state.
+
+Consequences:
+- First/cold local text turns use the reliable one-shot path.
+- Follow-up turns can be fast when the background warm server is ready.
+- Warm startup failures no longer block the active chat turn.
+- The helper remains localhost-only and is still stopped on model changes, Clear Selection, idle timeout, and app termination.
+
+Follow-up:
+Manual QA should send one cold local prompt, wait for the response, then send a follow-up after the background warm server has had time to become healthy. If warm startup remains unreliable for large models, consider an external launcher/worker process with explicit readiness telemetry instead of starting the server from the app process.
+
 ## 2026-05-21 - Confirmed Local File Writes
 
 Status: Accepted
