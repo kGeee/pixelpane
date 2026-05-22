@@ -18,11 +18,11 @@ enum ResponseDetailLevel: Int, CaseIterable, Codable, Identifiable {
     var subtitle: String {
         switch self {
         case .brief:
-            "Quickest replies. Stays on the fast on-device text model and shortens output."
+            "Shorter replies when practical. Completeness still wins."
         case .balanced:
             "Default mix of speed and depth. Uses MLX Vision when ready."
         case .thorough:
-            "Longest replies. Lets the local model think more before answering."
+            "More detail when the question benefits from it."
         }
     }
 
@@ -45,37 +45,25 @@ enum ResponseDetailLevel: Int, CaseIterable, Codable, Identifiable {
         }
     }
 
-    /// Token cap for the given action. Returns the multiplied value rounded to a
-    /// model-friendly chunk size, never going below a small floor for legibility.
+    /// Completion budget for the given action. Response style is guidance, not
+    /// a truncation mechanism, so every level gets enough room to finish.
     func maxOutputTokens(for action: PanelActionKind) -> Int {
-        let base = baseMaxOutputTokens(for: action)
-        let scaled = Double(base) * tokenScale
-        let rounded = Int((scaled / 10).rounded()) * 10
-        return max(60, rounded)
-    }
-
-    private var tokenScale: Double {
-        switch self {
-        case .brief: 0.5
-        case .balanced: 1.0
-        case .thorough: 1.6
+        switch action {
+        case .extractText, .translate, .simplify:
+            2_048
+        case .explain, .debug, .ask:
+            AIModelLimits.defaultMaxOutputTokens
         }
     }
 
-    private func baseMaxOutputTokens(for action: PanelActionKind) -> Int {
-        switch action {
-        case .extractText:
-            return AIModelLimits.defaultMaxOutputTokens
-        case .translate:
-            return AIModelLimits.defaultMaxOutputTokens
-        case .simplify:
-            return 140
-        case .explain:
-            return 320
-        case .debug:
-            return AIModelLimits.defaultMaxOutputTokens
-        case .ask:
-            return 520
+    var outputGuidance: String {
+        switch self {
+        case .brief:
+            "Prefer a short, direct answer when practical. Still finish the answer; do not cut off a sentence, list, or required step just to stay brief."
+        case .balanced:
+            "Use enough detail to answer clearly. Still finish the answer; do not cut off a sentence, list, or required step to fit a target length."
+        case .thorough:
+            "Include extra detail when it improves the answer. Still keep structure readable and finish the answer completely."
         }
     }
 }

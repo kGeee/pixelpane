@@ -124,7 +124,7 @@ All endpoints accept this envelope. Fields that do not apply to an action are om
     "cloud_mode": true
   },
   "limits": {
-    "max_output_tokens": 768
+    "max_output_tokens": 4096
   }
 }
 ```
@@ -142,7 +142,7 @@ All endpoints accept this envelope. Fields that do not apply to an action are om
 - `image` is allowed only for image-capable endpoints. The proxy rejects image payloads unless `image.user_consented` is `true`.
 - `image.data_base64` should be PNG or JPEG, capped at 5 MB after base64 decoding.
 - `client_context` is metadata only. It must not include OCR text, prompt text, result text, filenames, or window/app names captured from the user's screen.
-- `limits.max_output_tokens` is optional. The server clamps it to the plan and action maximum.
+- `limits.max_output_tokens` is optional. The server clamps it to the plan and action maximum. Client response style should guide verbosity, not deliberately truncate a response before completion.
 
 ## Action-Specific Prompt Inputs
 

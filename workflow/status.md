@@ -110,6 +110,7 @@ See `workflow/backlog.md` for all stories.
 
 ## Last Completed Work
 
+- 2026-05-22: Follow-up response completion policy fix. Response Style now guides verbosity without shrinking completion token budgets; Brief/Balanced/Thorough prompts explicitly tell models to finish the answer instead of cutting off. Raised app/backend completion ceilings to 4096 tokens, updated Cloud API docs, and removed token-count labels from Settings. Local verification wrapper build and backend typecheck both succeeded.
 - 2026-05-22: Follow-up assistant/settings polish. The notch assistant now uses content-aware expanded sizing, removes the large framed empty chat workspace, starts blank chats at a smaller size, and grows as chat turns/answers need room. Settings -> AI now hides local model setup while Cloud Mode is active, reduces Local AI setup to compact status tiles plus one primary model action, adds a real "No MLX model selected" state, and detects user Python `mlx_lm.generate` installs. Local verification wrapper build succeeded.
 - 2026-05-22: Follow-up blank assistant sizing polish. Plain new assistant chats now open in a shorter expanded notch size and hide the empty transcript workspace until a capture context or chat turn exists.
 - 2026-05-22: Follow-up notch collapse speed polish. Hover-out collapse now starts after a much shorter delay and uses a faster shrink/fade animation so the expanded notch disappears quickly when the cursor leaves. Local verification wrapper build succeeded.
@@ -264,15 +265,17 @@ See `workflow/backlog.md` for all stories.
 
 ## Files Changed In Last Session
 
-- `PixelPane/PixelPane/Actions/MLXVisionRuntimeDetector.swift`
-- `PixelPane/PixelPane/Settings/SettingsView.swift`
-- `PixelPane/PixelPane/Panel/ResultPanelController.swift`
+- `PixelPane/Backend/src/index.ts`
+- `PixelPane/PixelPane/Actions/AIBackend.swift`
+- `PixelPane/PixelPane/App/ResponseDetailLevel.swift`
 - `PixelPane/PixelPane/Panel/ResultPanelView.swift`
-- `workflow/references.md`
+- `PixelPane/PixelPane/Settings/SettingsView.swift`
+- `docs/backend-api.md`
 - `workflow/status.md`
 
 ## Last Verification
 
+- 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` and `npm run typecheck` in `PixelPane/Backend` succeeded after making Response Style a verbosity hint instead of a truncating token cap.
 - 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` succeeded after content-aware notch chat sizing, simplified Local AI settings, Cloud Mode local-setup hiding, clear-selection behavior, and user Python MLX-LM runtime detection.
 - 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` succeeded after compacting blank new assistant chats.
 - 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` succeeded after speeding up notch hover-out collapse.

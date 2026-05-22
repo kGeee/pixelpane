@@ -322,7 +322,7 @@ async function streamAnthropic(
     },
     body: JSON.stringify({
       model: env.ANTHROPIC_MODEL ?? "claude-sonnet-4-6",
-      max_tokens: clamp(payload.limits?.max_output_tokens ?? 768, 64, 1200),
+      max_tokens: clamp(payload.limits?.max_output_tokens ?? 2048, 64, 4096),
       stream: true,
       system: systemPrompt(action),
       messages: buildMessages(action, payload)

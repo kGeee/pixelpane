@@ -1181,8 +1181,8 @@ struct ResultPanelView: View {
         Rules:
         - Return only the simplified text.
         - Keep the core meaning and important facts.
-        - Keep it under 70 words.
-        - Prefer 1 short paragraph.
+        - Prefer 1 short paragraph when the content allows it.
+        - \(responseDetail.outputGuidance)
         - Do not explain the argument, add examples, or describe why it matters.
         - Do not add background, labels, headings, bullets, or commentary.
         - Do not invent facts.
@@ -1230,7 +1230,7 @@ struct ResultPanelView: View {
             Rules:
             - Return only the useful answer.
             - Use 1 to 2 short paragraphs or up to 4 bullets.
-            - Keep it under 160 words.
+            - \(responseDetail.outputGuidance)
             - Explain the main point, relevant context, and why it matters.
             - Do not add background, labels, headings, or visual commentary.
             - Do not invent facts.
@@ -1244,7 +1244,7 @@ struct ResultPanelView: View {
             Rules:
             - Return only the useful answer.
             - Use 1 to 2 short paragraphs or up to 4 bullets.
-            - Keep it under 160 words.
+            - \(responseDetail.outputGuidance)
             - Explain what the screenshot is saying, asking, or implying.
             - Include the relevant context and why it matters.
             - Mention visual context only if it changes the meaning.
@@ -1293,7 +1293,7 @@ struct ResultPanelView: View {
         let prompt: String
         if imageInput == nil {
             prompt = """
-            Debug the following captured technical text. Explain the likely issue, cite the relevant error or code clue, and suggest concrete next steps. Be concise and avoid inventing missing project context.
+            Debug the following captured technical text. Explain the likely issue, cite the relevant error or code clue, and suggest concrete next steps. \(responseDetail.outputGuidance) Avoid inventing missing project context.
 
             Classifier evidence: \(evidence)
 
@@ -1302,7 +1302,7 @@ struct ResultPanelView: View {
             """
         } else {
             prompt = """
-            Debug this captured technical screenshot. Use both the OCR text and visible UI context, such as highlighted lines, terminal prompts, IDE panels, or error overlays. Explain the likely issue and suggest concrete next steps. Be concise and avoid inventing missing project context.
+            Debug this captured technical screenshot. Use both the OCR text and visible UI context, such as highlighted lines, terminal prompts, IDE panels, or error overlays. Explain the likely issue and suggest concrete next steps. \(responseDetail.outputGuidance) Avoid inventing missing project context.
 
             Classifier evidence: \(evidence)
 
@@ -1437,7 +1437,8 @@ struct ResultPanelView: View {
                 isCaptureImageAttached: imageInput != nil,
                 previousTranscript: previousTranscript,
                 localFileContext: localFileContext,
-                usesCloud: cloudModeEnabled
+                usesCloud: cloudModeEnabled,
+                responseGuidance: responseDetail.outputGuidance
             )
             let cloudContext = Self.cloudAskContext(
                 hasCaptureContext: hasCaptureContextValue,
@@ -1554,7 +1555,8 @@ struct ResultPanelView: View {
         isCaptureImageAttached: Bool,
         previousTranscript: String,
         localFileContext: LocalFileContext,
-        usesCloud: Bool
+        usesCloud: Bool,
+        responseGuidance: String
     ) -> String {
         let ocr = truncate(
             capturedOCRText.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -1574,7 +1576,7 @@ struct ResultPanelView: View {
         }
 
         return """
-        Answer concisely. Use screen context first, then files, then prior chat. Do not restate the question. Do not ask for coordinates; the selected region is already provided. File writes require the app's separate confirmation UI.
+        \(responseGuidance) Use screen context first, then files, then prior chat. Do not restate the question. Do not ask for coordinates; the selected region is already provided. File writes require the app's separate confirmation UI.
 
         \(screenLine)
         OCR: \(ocr.isEmpty ? "none" : ocr)
@@ -2023,6 +2025,7 @@ struct ResultPanelView: View {
         - Translate non-English text into English.
         - Keep text that is already English in English.
         - Preserve useful line breaks and section order.
+        - \(responseDetail.outputGuidance)
         - Return only the translated text, with no notes or explanation.
 
         Detected source language: \(result.detectedLanguage.displayName)

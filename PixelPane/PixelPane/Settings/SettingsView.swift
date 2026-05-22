@@ -652,10 +652,14 @@ private struct ResponseStyleSlider: View {
 
                 Spacer()
 
-                Text("\(level.maxOutputTokens(for: .ask)) chat tokens")
+                Text("Completion-safe")
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
                     .foregroundStyle(.secondary)
             }
+
+            Text(level.subtitle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             VStack(spacing: 8) {
                 sliderTrack
@@ -663,11 +667,9 @@ private struct ResponseStyleSlider: View {
 
                 HStack(spacing: 0) {
                     ForEach(ResponseDetailLevel.allCases) { stop in
-                        VStack(alignment: tickHorizontalAlignment(for: stop), spacing: 2) {
+                        VStack(alignment: tickHorizontalAlignment(for: stop), spacing: 0) {
                             Text(stop.title)
                                 .font(.caption2.weight(stop == level ? .bold : .regular))
-                            Text("\(stop.maxOutputTokens(for: .ask))")
-                                .font(.system(size: 9, weight: stop == level ? .bold : .regular, design: .rounded))
                         }
                         .foregroundStyle(stop == level ? .primary : .tertiary)
                         .frame(maxWidth: .infinity, alignment: tickAlignment(for: stop))

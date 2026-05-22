@@ -285,5 +285,5 @@ enum AIBackendError: LocalizedError, Sendable {
 
 enum AIModelLimits {
     static let maxPromptCharacters = 12_000
-    static let defaultMaxOutputTokens = 1_200
+    static let defaultMaxOutputTokens = 4_096
 }
