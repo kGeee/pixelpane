@@ -95,8 +95,9 @@ private struct OnboardingView: View {
                     onContinue()
                 } label: {
                     Text("Continue")
-                        .frame(minWidth: 92)
+                        .frame(minWidth: 120)
                 }
+                .buttonStyle(OnboardingSecondaryButtonStyle())
 
                 Spacer()
 
@@ -112,6 +113,24 @@ private struct OnboardingView: View {
         .padding(24)
         .frame(width: 520)
         .frame(minHeight: 460)
+    }
+}
+
+private struct OnboardingSecondaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(.white.opacity(configuration.isPressed ? 0.12 : 0.06))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(.white.opacity(configuration.isPressed ? 0.28 : 0.16), lineWidth: 1)
+            )
     }
 }
 
