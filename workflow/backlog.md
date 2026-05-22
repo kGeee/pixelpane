@@ -1287,6 +1287,7 @@ Acceptance:
 Notes:
 
 - Implemented 2026-05-21. Added a local `ChatHistoryStore` backed by UserDefaults for text-only chat transcripts. Plain notch chats resume the latest assistant session, capture chats persist their message transcript with a lightweight "Screen region" label, and screenshots are not saved in history. The composer now has a small history menu for recent chats and a New Chat action. Settings now includes a History tab with saved-chat count, per-chat delete, and Clear History. Debug build succeeded.
+- Follow-up 2026-05-22: Split the composer controls so New Chat is a direct small action and History is a labeled recent-chat menu with relative recency, keeping the UI minimal while making the two entry points easier to find. Full search/browser work remains tracked in `ASSIST-006`.
 
 ### `ASSIST-005` - Expand Local Model Setup To Text-Only MLX Models
 

@@ -841,10 +841,17 @@ struct ResultPanelView: View {
     private var askInputBar: some View {
         if selectedAction == .ask {
             HStack(spacing: 8) {
+                OverlayPillButton(
+                    title: "New",
+                    systemImage: "square.and.pencil",
+                    style: .secondary,
+                    action: startNewAssistantChat
+                )
+                .disabled(!canStartNewChat)
+
                 ChatHistoryMenuButton(
                     sessions: chatHistory.recentSessions(),
                     isDisabled: !loadingActions.isEmpty,
-                    onNewChat: startNewAssistantChat,
                     onSelect: loadChatSession
                 )
 
@@ -940,6 +947,12 @@ struct ResultPanelView: View {
             && askTurns.isEmpty
             && !hasCaptureContext
             && recoveryState == nil
+    }
+
+    private var canStartNewChat: Bool {
+        selectedAction == .ask
+            && !loadingActions.contains(.ask)
+            && (!askTurns.isEmpty || hasCaptureContext || recoveryState != nil)
     }
 
     private var preferredNotchExpandedSize: CGSize {
@@ -2806,43 +2819,52 @@ private struct OverlayPillButton: View {
 private struct ChatHistoryMenuButton: View {
     let sessions: [StoredChatSession]
     let isDisabled: Bool
-    let onNewChat: () -> Void
     let onSelect: (StoredChatSession) -> Void
 
     var body: some View {
         Menu {
-            Button {
-                onNewChat()
-            } label: {
-                Label("New Chat", systemImage: "square.and.pencil")
-            }
-            .disabled(isDisabled)
-
-            if !sessions.isEmpty {
-                Divider()
+            if sessions.isEmpty {
+                Text("No recent chats")
+                    .foregroundStyle(.secondary)
+            } else {
                 ForEach(sessions) { session in
                     Button {
                         onSelect(session)
                     } label: {
-                        Label(session.displayTitle, systemImage: session.contextKind == .capture ? "viewfinder" : "bubble.left.and.bubble.right")
+                        Label {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(session.displayTitle)
+                                Text(session.updatedAt, style: .relative)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: session.contextKind == .capture ? "viewfinder" : "bubble.left.and.bubble.right")
+                        }
                     }
                     .disabled(isDisabled)
                 }
             }
         } label: {
-            Image(systemName: "clock")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 40, height: 40)
-                .background(.black.opacity(0.24), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 13, style: .continuous)
-                        .stroke(.white.opacity(0.08), lineWidth: 1)
-                }
+            HStack(spacing: 7) {
+                Image(systemName: "clock")
+                    .font(.system(size: 12, weight: .semibold))
+
+                Text("History")
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+            }
+            .foregroundStyle(sessions.isEmpty ? .tertiary : .secondary)
+            .frame(height: 40)
+            .padding(.horizontal, 13)
+            .background(.black.opacity(0.24), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .stroke(.white.opacity(0.08), lineWidth: 1)
+            }
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .help("Chat history")
+        .disabled(isDisabled || sessions.isEmpty)
+        .help(sessions.isEmpty ? "No recent chats yet" : "Open a recent chat")
     }
 }
 
