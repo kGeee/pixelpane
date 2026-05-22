@@ -58,6 +58,11 @@ struct ModelOutputFormatter: Sendable {
                 }
             }
         }
+        let untagged = removeUntaggedReasoning(from: visible)
+        visible = untagged.visible
+        if !untagged.reasoning.isEmpty {
+            reasoningBlocks.append(untagged.reasoning)
+        }
 
         return (
             visible: visible,
@@ -94,6 +99,37 @@ struct ModelOutputFormatter: Sendable {
                 options: [.regularExpression, .caseInsensitive]
             )
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private nonisolated func removeUntaggedReasoning(from text: String) -> (visible: String, reasoning: String) {
+        let lowered = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard lowered.hasPrefix("here's a thinking process:")
+            || lowered.hasPrefix("here is a thinking process:")
+            || lowered.hasPrefix("thinking process:")
+        else {
+            return (text, "")
+        }
+
+        let finalMarkers = [
+            "\nfinal:",
+            "\nfinal answer:",
+            "\noutput:",
+            "\nanswer:"
+        ]
+
+        let markerRanges = finalMarkers.compactMap { marker in
+            text.range(of: marker, options: [.caseInsensitive, .backwards])
+        }
+
+        guard let markerRange = markerRanges.max(by: { $0.lowerBound < $1.lowerBound }) else {
+            return ("", text)
+        }
+
+        let answer = String(text[markerRange.upperBound...])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let reasoning = String(text[..<markerRange.lowerBound])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (answer, reasoning)
     }
 
     private nonisolated func cleanVisibleText(_ text: String) -> String {

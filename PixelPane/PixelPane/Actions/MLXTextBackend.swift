@@ -59,6 +59,8 @@ final class MLXTextBackend: AIBackend, @unchecked Sendable {
                 process.arguments = [
                     "--model", snapshotURL.path,
                     "--prompt", request.prompt,
+                    "--chat-template-config", "{\"enable_thinking\":false}",
+                    "--verbose", "False",
                     "--max-tokens", "\(min(request.maxOutputTokens, AIModelLimits.defaultMaxOutputTokens))"
                 ]
 

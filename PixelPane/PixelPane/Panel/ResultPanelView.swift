@@ -1713,7 +1713,11 @@ struct ResultPanelView: View {
                         )
                         updateLastAskStatistics(output.statistics)
                         setOutputState(
-                            askOutputState(reasoning: output.reasoningText.map(displayTextNormalizer.normalize)),
+                            askOutputState(
+                                reasoning: responseDetail == .brief
+                                    ? nil
+                                    : output.reasoningText.map(displayTextNormalizer.normalize)
+                            ),
                             for: .ask
                         )
                     }
