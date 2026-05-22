@@ -56,13 +56,14 @@ final class MLXVisionBackend: AIBackend, @unchecked Sendable {
                 return
             }
 
+            var temporaryImageURL: URL?
             do {
-                let temporaryImageURL: URL?
                 if let image = request.capturedImage {
                     temporaryImageURL = try writeTemporaryPNG(image)
                 } else {
                     temporaryImageURL = nil
                 }
+                let cleanupImageURL = temporaryImageURL
 
                 let process = Process()
                 process.executableURL = executableURL
@@ -71,8 +72,8 @@ final class MLXVisionBackend: AIBackend, @unchecked Sendable {
                     "--prompt", request.prompt,
                     "--max-tokens", "\(min(request.maxOutputTokens, AIModelLimits.defaultMaxOutputTokens))"
                 ]
-                if let temporaryImageURL {
-                    arguments.append(contentsOf: ["--image", temporaryImageURL.path])
+                if let cleanupImageURL {
+                    arguments.append(contentsOf: ["--image", cleanupImageURL.path])
                 }
                 process.arguments = arguments
 
@@ -96,8 +97,8 @@ final class MLXVisionBackend: AIBackend, @unchecked Sendable {
                 process.terminationHandler = { finishedProcess in
                     outputPipe.fileHandleForReading.readabilityHandler = nil
                     errorPipe.fileHandleForReading.readabilityHandler = nil
-                    if let temporaryImageURL {
-                        try? FileManager.default.removeItem(at: temporaryImageURL)
+                    if let cleanupImageURL {
+                        try? FileManager.default.removeItem(at: cleanupImageURL)
                     }
 
                     if finishedProcess.terminationStatus == 0 {
@@ -124,11 +125,14 @@ final class MLXVisionBackend: AIBackend, @unchecked Sendable {
                     if process.isRunning {
                         process.terminate()
                     }
-                    if let temporaryImageURL {
-                        try? FileManager.default.removeItem(at: temporaryImageURL)
+                    if let cleanupImageURL {
+                        try? FileManager.default.removeItem(at: cleanupImageURL)
                     }
                 }
             } catch {
+                if let temporaryImageURL {
+                    try? FileManager.default.removeItem(at: temporaryImageURL)
+                }
                 state.fail(error: error)
             }
         }
@@ -145,6 +149,7 @@ final class MLXVisionBackend: AIBackend, @unchecked Sendable {
 
         CGImageDestinationAddImage(destination, image, nil)
         guard CGImageDestinationFinalize(destination) else {
+            try? FileManager.default.removeItem(at: url)
             throw AIBackendError.generationFailed("Could not write temporary image for MLX.")
         }
 

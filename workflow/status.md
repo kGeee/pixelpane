@@ -10,7 +10,7 @@ Current phase: Notch assistant alpha.
 
 Current epic: Epic 3 - Privacy And Onboarding.
 
-Current recommended story: `PRIV-004` Ephemeral capture audit.
+Current recommended story: `PRIV-009` Remove or formalize onboarding QA reset.
 
 ## Current State
 
@@ -92,6 +92,7 @@ Epic 2 — Action Rail
 Epic 3 — Privacy And Onboarding
 - `PRIV-001` First-run onboarding: Done
 - `PRIV-002` Screen Recording permission guidance: Done
+- `PRIV-004` Ephemeral capture audit: Done
 - `PRIV-005` Local/cloud mode setting and enforcement: Done
 
 Epic 6 — Cross-Cutting Quality
@@ -120,6 +121,7 @@ See `workflow/backlog.md` for all stories.
 
 ## Last Completed Work
 
+- 2026-05-22: Completed `PRIV-004`. Audited the capture image lifecycle across capture, OCR, panel presentation, chat history, cloud image conversion, and MLX Vision. Fixed `AppState.lastResult` so "Show Last Result" retains OCR text/metadata only and not the captured `CGImage`; the active panel still holds image context only while open. Hardened MLX Vision temporary PNG cleanup on success, cancellation, timeout, launch failure, and image-write failure. Added file-system spot-check QA steps and recorded the last-result privacy decision. Local verification wrapper build succeeded.
 - 2026-05-22: Revised `ASSIST-015`. New Chat now returns immediately to the compact empty-chat expanded layout, cancels pending collapse work, briefly suppresses only resize-caused hover collapse, and refocuses the chat input so the window stays usable without leaving a large blank panel. Local verification wrapper build succeeded.
 - 2026-05-22: Completed `ASSIST-014`. Local MLX chat turn metadata now shows the parsed one-shot `Peak memory:` statistic as `Peak <value>` for MLX Text/Vision turns, making max memory usage visible in the notch chat without adding a diagnostics panel. Local verification wrapper build succeeded.
 - 2026-05-22: Follow-up hybrid warm-server fix for `ASSIST-012`. Xcode logs showed repeated localhost health-check connection refusals because the app waited for `mlx_lm.server` startup during the active chat request; the debug session could then be killed while the UI stayed on "Thinking...". The chat path now uses the warm server only when it is already healthy, otherwise it answers with one-shot `mlx_lm.generate` and starts the warm server in the background after a successful response. This preserves fast follow-up turns without blocking the first/cold turn on warm startup. Local verification wrapper build succeeded.

@@ -93,7 +93,8 @@ PixelPane/
 ## Privacy Architecture
 
 - OCR runs entirely in-process using Vision from an in-memory `CGImage`; the normal capture pipeline does not write screenshots to disk.
-- If an error state needs retry support, the capture may remain in memory only until the user dismisses the panel or retries the action.
+- If an error state needs retry support, the active capture may remain in memory only until the user dismisses the panel or retries the action. The menu-bar "Show Last Result" path keeps OCR text and metadata only, not the screenshot image.
+- Optional MLX Vision actions may export the active in-memory image to a temporary `pixel-pane-mlx-*.png` helper file because the MLX command-line runtime accepts image paths. That file must be deleted on success, cancellation, timeout, or launch/write failure.
 - In local mode, `ClaudeAPIClient` is never called. Text-only local actions may use Apple frameworks. Image-aware local actions require an installed MLX/VLM model selected through setup; until setup passes a smoke test, image-aware actions must be disabled or fall back to OCR-text-only behavior with clear labeling.
 - No analytics data is sent without explicit opt-in from the user.
 

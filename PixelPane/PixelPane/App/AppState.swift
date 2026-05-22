@@ -344,7 +344,7 @@ final class AppState: ObservableObject {
                 detectedLanguage: detectedLanguage,
                 technicalClassification: technicalClassification
             )
-            lastResult = result
+            lastResult = result.withoutCapturedImage
             panelController.show(
                 result: result,
                 routingSettings: aiRoutingSettings,

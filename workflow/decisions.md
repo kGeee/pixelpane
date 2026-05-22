@@ -409,6 +409,24 @@ Consequences:
 Follow-up:
 Manual QA should send one cold local prompt, wait for the response, then send a follow-up after the background warm server has had time to become healthy. If warm startup remains unreliable for large models, consider an external launcher/worker process with explicit readiness telemetry instead of starting the server from the app process.
 
+## 2026-05-22 - Ephemeral Capture Last Result
+
+Status: Accepted
+
+Decision:
+Pixel Pane may keep the last capture's OCR text and metadata for the menu-bar "Show Last Result" convenience path, but it must not keep the captured screenshot image in `AppState.lastResult`. The active panel may hold the `CGImage` only while the panel is open so capture-context actions can run, and panel close releases that active reference.
+
+Context:
+The privacy promise says screenshots are processed in memory by default and discarded when the panel closes. Keeping `AppState.lastResult` as the full `CaptureResult` retained the screenshot beyond the active panel lifetime, even though chat history persisted only text.
+
+Consequences:
+- "Show Last Result" can reopen the last OCR/text result, but cannot rehydrate screenshot/image context.
+- Capture-context image actions remain available while the active result panel is open.
+- Future screenshot thumbnails or capture history must be explicit opt-in work, not a side effect of the normal capture path.
+
+Follow-up:
+Manual QA should confirm closing a capture panel and reopening "Show Last Result" does not show image-aware context chips or allow image-backed local/cloud analysis from the retained result.
+
 ## 2026-05-21 - Confirmed Local File Writes
 
 Status: Accepted

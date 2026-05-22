@@ -38,4 +38,17 @@ struct CaptureResult: Identifiable {
         self.detectedLanguage = detectedLanguage
         self.technicalClassification = technicalClassification
     }
+
+    var withoutCapturedImage: CaptureResult {
+        CaptureResult(
+            image: nil,
+            text: text,
+            isEmptyOCRResult: isEmptyOCRResult,
+            selectionFrame: selectionFrame,
+            createdAt: createdAt,
+            sourceType: sourceType,
+            detectedLanguage: detectedLanguage,
+            technicalClassification: technicalClassification
+        )
+    }
 }

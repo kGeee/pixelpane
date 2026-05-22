@@ -34,6 +34,9 @@ xcodebuild -project PixelPane/PixelPane.xcodeproj -scheme PixelPane -configurati
 
 - [ ] Capture is kept in memory in the normal flow.
 - [ ] No screenshot files are created during capture.
+- [ ] After a normal capture, close the panel and confirm the menu-bar "Show Last Result" path reopens text/OCR only, without image-aware context.
+- [ ] File-system spot check: before and after a normal capture, run `find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'pixel-pane-*.png' -print` and confirm no new files appear.
+- [ ] If MLX Vision is used, run `find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'pixel-pane-mlx-*.png' -print` after completion/cancel/failure and confirm temporary helper images were deleted.
 - [ ] Cloud actions are clearly labeled before sending content.
 - [ ] Local Mode disables cloud-only actions unless user explicitly allows cloud.
 

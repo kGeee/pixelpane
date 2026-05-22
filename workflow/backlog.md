@@ -668,7 +668,7 @@ Notes:
 | `PRIV-001` | First-run onboarding | Done | `CORE-001` |
 | `PRIV-002` | Screen Recording permission guidance | Done | `CORE-003` |
 | `PRIV-003` | Accessibility permission guidance for future event tap path | Not Started | Future `CGEventTap` decision |
-| `PRIV-004` | Ephemeral capture audit | Not Started | `CORE-003` |
+| `PRIV-004` | Ephemeral capture audit | Done | `CORE-003` |
 | `PRIV-005` | Local/cloud mode setting and enforcement | Done | `ACT-001` |
 | `PRIV-006` | Result source transparency | Not Started | `CORE-008` |
 | `PRIV-007` | Settings structure | Not Started | `CORE-001` |
@@ -722,10 +722,18 @@ Goal: Verify privacy promise at implementation level.
 
 Acceptance:
 
-- [ ] Normal capture path writes no screenshots to disk.
-- [ ] Capture reference is released when panel closes.
-- [ ] Any retained image is in-memory only.
-- [ ] QA checklist includes file-system spot check.
+- [x] Normal capture path writes no screenshots to disk.
+- [x] Capture reference is released when panel closes.
+- [x] Any retained image is in-memory only.
+- [x] QA checklist includes file-system spot check.
+
+Notes:
+
+- Completed 2026-05-22. Audited `ScreenCapturer`, `AppState`, `ResultPanelController`, `ResultPanelView`, `ChatHistoryStore`, `CloudAIBackend`, and `MLXVisionBackend`.
+- Normal capture/OCR remains in memory through `SCScreenshotManager.captureImage(in:)` and Vision OCR; `ChatHistoryStore` persists text turns only.
+- Fixed `AppState.lastResult` so the menu-bar "Show Last Result" convenience path retains OCR text and metadata only, not the captured `CGImage`.
+- Hardened MLX Vision helper cleanup so temporary `pixel-pane-mlx-*.png` files are removed on success, cancellation, timeout, process launch failure, and image-write failure.
+- Added privacy spot-check steps to `workflow/qa-checklist.md` and recorded the last-result image-retention decision in `workflow/decisions.md`.
 
 ### `PRIV-005` - Local/Cloud Mode Setting And Enforcement
 
