@@ -70,10 +70,14 @@ actor MLXTextServerManager {
         let outputPipe = Pipe()
         process.standardOutput = outputPipe
         process.standardError = outputPipe
+        outputPipe.fileHandleForReading.readabilityHandler = { handle in
+            _ = handle.availableData
+        }
         try process.run()
 
         let newServer = WarmServer(
             process: process,
+            outputPipe: outputPipe,
             modelPath: modelURL.path,
             executablePath: executableURL.path,
             port: port
@@ -170,6 +174,7 @@ actor MLXTextServerManager {
         if let process = server?.process, process.isRunning {
             process.terminate()
         }
+        server?.outputPipe.fileHandleForReading.readabilityHandler = nil
         server = nil
     }
 
@@ -215,6 +220,7 @@ actor MLXTextServerManager {
 
 private struct WarmServer {
     let process: Process
+    let outputPipe: Pipe
     let modelPath: String
     let executablePath: String
     let port: Int

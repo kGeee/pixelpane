@@ -64,13 +64,7 @@ final class MLXTextBackend: AIBackend, @unchecked Sendable {
                         )
                         state.finish(output: output)
                     } catch {
-                        runOneShot(
-                            executableURL: executableURL,
-                            snapshotURL: snapshotURL,
-                            request: request,
-                            state: state,
-                            continuation: continuation
-                        )
+                        state.fail(error: error)
                     }
                 }
                 continuation.onTermination = { _ in
