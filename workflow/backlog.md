@@ -1234,6 +1234,7 @@ Notes:
 | `ASSIST-012` | Add app-managed warm MLX text server | Done | `ASSIST-011` |
 | `ASSIST-013` | QA local model responses and deterministic fallbacks | Done | `ASSIST-012` |
 | `ASSIST-014` | Show local model peak memory in chat | Done | `ASSIST-005` |
+| `ASSIST-015` | Keep notch stable after New Chat | Done | `ASSIST-001` |
 
 ### `ASSIST-001` - Make The Notch A Chat-First Assistant Surface
 
@@ -1484,3 +1485,20 @@ Acceptance:
 Notes:
 
 - Completed 2026-05-22. The existing `Peak memory:` statistic parsed from MLX one-shot output now appears in local MLX chat metadata as `Peak <value>`.
+
+### `ASSIST-015` - Keep Notch Stable After New Chat
+
+Auto-created during notch assistant polish on 2026-05-22.
+
+Goal: Prevent the expanded notch from shrinking under the cursor and immediately collapsing when New Chat clears the transcript.
+
+Acceptance:
+
+- [x] New Chat keeps the current expanded notch size briefly after clearing chat content.
+- [x] Hover-out collapse is suppressed during that short size hold.
+- [x] Empty chats can still use the compact empty size on later opens.
+- [x] App builds successfully.
+
+Notes:
+
+- Completed 2026-05-22. New Chat now holds the active expanded size for one second, cancels pending collapse work, and makes collapse/hover checks respect that hold so clearing the transcript does not immediately minimize the window.

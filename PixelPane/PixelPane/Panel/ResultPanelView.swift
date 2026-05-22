@@ -47,6 +47,8 @@ struct ResultPanelView: View {
     @State private var isNotchContentVisible = false
     @State private var notchShellOpacity = 1.0
     @State private var pendingNotchCollapse: DispatchWorkItem?
+    @State private var expandedNotchSizeHoldUntil = Date.distantPast
+    @State private var heldExpandedNotchSize: CGSize?
     @State private var compactNotchNotification: CompactNotchNotificationState?
 
     init(
@@ -264,6 +266,7 @@ struct ResultPanelView: View {
 
     private func collapseNotch() {
         guard presentationStyle == .notchAttached, isNotchExpanded else { return }
+        guard !isExpandedNotchSizeHeld else { return }
         pendingNotchCollapse?.cancel()
         pendingNotchCollapse = nil
         isNotchContentVisible = false
@@ -292,7 +295,8 @@ struct ResultPanelView: View {
             expandNotch()
         } else {
             let workItem = DispatchWorkItem {
-                guard !isMouseInsideNotchBounds(size: preferredNotchExpandedSize) else { return }
+                guard !isExpandedNotchSizeHeld else { return }
+                guard !isMouseInsideNotchBounds(size: activeNotchExpandedSize) else { return }
                 collapseNotch()
             }
             pendingNotchCollapse?.cancel()
@@ -965,9 +969,28 @@ struct ResultPanelView: View {
         return ResultPanelPresentationStyle.notchExpandedSize
     }
 
+    private var activeNotchExpandedSize: CGSize {
+        if isExpandedNotchSizeHeld, let heldExpandedNotchSize {
+            return heldExpandedNotchSize
+        }
+        return preferredNotchExpandedSize
+    }
+
+    private var isExpandedNotchSizeHeld: Bool {
+        Date() < expandedNotchSizeHoldUntil
+    }
+
+    private func holdCurrentExpandedNotchSizeBriefly() {
+        guard presentationStyle == .notchAttached, isNotchExpanded else { return }
+        pendingNotchCollapse?.cancel()
+        pendingNotchCollapse = nil
+        heldExpandedNotchSize = activeNotchExpandedSize
+        expandedNotchSizeHoldUntil = Date().addingTimeInterval(1.0)
+    }
+
     private func updateExpandedNotchSizeIfNeeded() {
         guard presentationStyle == .notchAttached, isNotchExpanded else { return }
-        onPresentationSizeChange?(preferredNotchExpandedSize)
+        onPresentationSizeChange?(activeNotchExpandedSize)
     }
 
     private var preferredAskNotchSize: CGSize {
@@ -1991,6 +2014,7 @@ struct ResultPanelView: View {
 
     private func startNewAssistantChat() {
         guard loadingActions.isEmpty else { return }
+        holdCurrentExpandedNotchSizeBriefly()
         chatContextID = Self.defaultChatContextID(
             for: CaptureResult(
                 image: nil,

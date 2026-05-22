@@ -114,11 +114,13 @@ Epic 7 — Notch Assistant
 - `ASSIST-012` Add app-managed warm MLX text server: Done
 - `ASSIST-013` QA local model responses and deterministic fallbacks: Done
 - `ASSIST-014` Show local model peak memory in chat: Done
+- `ASSIST-015` Keep notch stable after New Chat: Done
 
 See `workflow/backlog.md` for all stories.
 
 ## Last Completed Work
 
+- 2026-05-22: Completed `ASSIST-015`. New Chat now holds the current expanded notch size briefly after clearing the transcript and suppresses hover-out collapse during that hold, preventing the empty-chat resize from moving the cursor outside the window and minimizing it. Local verification wrapper build succeeded.
 - 2026-05-22: Completed `ASSIST-014`. Local MLX chat turn metadata now shows the parsed one-shot `Peak memory:` statistic as `Peak <value>` for MLX Text/Vision turns, making max memory usage visible in the notch chat without adding a diagnostics panel. Local verification wrapper build succeeded.
 - 2026-05-22: Follow-up hybrid warm-server fix for `ASSIST-012`. Xcode logs showed repeated localhost health-check connection refusals because the app waited for `mlx_lm.server` startup during the active chat request; the debug session could then be killed while the UI stayed on "Thinking...". The chat path now uses the warm server only when it is already healthy, otherwise it answers with one-shot `mlx_lm.generate` and starts the warm server in the background after a successful response. This preserves fast follow-up turns without blocking the first/cold turn on warm startup. Local verification wrapper build succeeded.
 - 2026-05-22: Follow-up hardening for `ASSIST-012` after Xcode testing showed the app could hang and then be killed while waiting on a warm-server health check. Warm `mlx_lm.server` logs are now drained, and if an installed warm server fails to start/respond the app fails cleanly instead of launching a second heavy one-shot `mlx_lm.generate` process. One-shot fallback remains for systems without `mlx_lm.server`. Local verification wrapper build succeeded.
