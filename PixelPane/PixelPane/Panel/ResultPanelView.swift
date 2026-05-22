@@ -1396,6 +1396,10 @@ struct ResultPanelView: View {
         let previousTranscript = formattedAskTranscript()
         let detectedLanguage = cloudDetectedLanguage
         let conversation = cloudConversationTurns(beforeLastTurn: true)
+        let isSimpleBriefPlainChat = responseDetail == .brief
+            && !hasCaptureContextValue
+            && fileGrants.isEmpty
+            && previousTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
         if hasCaptureContextValue,
            !cloudModeEnabled,
@@ -1450,6 +1454,7 @@ struct ResultPanelView: View {
                 previousTranscript: previousTranscript,
                 localFileContext: localFileContext,
                 usesCloud: cloudModeEnabled,
+                responseDetail: responseDetail,
                 responseGuidance: responseDetail.outputGuidance
             )
             let cloudContext = Self.cloudAskContext(
@@ -1464,7 +1469,7 @@ struct ResultPanelView: View {
                     actionKind: hasCaptureContextValue ? .ask : .chat,
                     prompt: prompt,
                     capturedImage: imageInput,
-                    maxOutputTokens: responseDetail.maxOutputTokens(for: .ask),
+                    maxOutputTokens: isSimpleBriefPlainChat ? 256 : responseDetail.maxOutputTokens(for: .ask),
                     preferredProvider: preferredProvider,
                     cloudOCRText: cloudModeEnabled ? cloudContext : (hasCaptureContextValue ? capturedOCRText : nil),
                     cloudDetectedLanguage: hasCaptureContextValue ? detectedLanguage : nil,
@@ -1568,8 +1573,22 @@ struct ResultPanelView: View {
         previousTranscript: String,
         localFileContext: LocalFileContext,
         usesCloud: Bool,
+        responseDetail: ResponseDetailLevel,
         responseGuidance: String
     ) -> String {
+        let trimmedQuestion = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasFiles = localFileContext.hasGrantedFiles
+        if responseDetail == .brief,
+           !hasCaptureContext,
+           !hasFiles,
+           previousTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return """
+            \(responseGuidance)
+            Answer directly. No hidden reasoning or <think> text. /no_think
+            Q: \(trimmedQuestion) /no_think
+            """
+        }
+
         let ocr = truncate(
             capturedOCRText.trimmingCharacters(in: .whitespacesAndNewlines),
             limit: 1_400

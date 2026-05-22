@@ -47,6 +47,16 @@ struct ModelOutputFormatter: Sendable {
             let result = removeTaggedBlocks(named: tag, from: visible)
             visible = result.visible
             reasoningBlocks.append(contentsOf: result.reasoning)
+
+            let openTagPattern = "<\\s*\(tag)\\s*>"
+            if let regex = try? NSRegularExpression(pattern: openTagPattern, options: [.caseInsensitive]) {
+                let nsRange = NSRange(visible.startIndex..<visible.endIndex, in: visible)
+                if let match = regex.matches(in: visible, options: [], range: nsRange).last,
+                   let range = Range(match.range, in: visible) {
+                    reasoningBlocks.append(stripReasoningTags(String(visible[range.lowerBound...]), tag: tag))
+                    visible = String(visible[..<range.lowerBound])
+                }
+            }
         }
 
         return (

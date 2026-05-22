@@ -59,11 +59,11 @@ enum ResponseDetailLevel: Int, CaseIterable, Codable, Identifiable {
     var outputGuidance: String {
         switch self {
         case .brief:
-            "Prefer a short, direct answer when practical. Still finish the answer; do not cut off a sentence, list, or required step just to stay brief."
+            "Answer in one short sentence when practical. Do not show reasoning, analysis, scratchpad, or <think> text. Still finish the answer."
         case .balanced:
-            "Use enough detail to answer clearly. Still finish the answer; do not cut off a sentence, list, or required step to fit a target length."
+            "Use enough detail to answer clearly. Do not show reasoning, analysis, scratchpad, or <think> text. Still finish the answer."
         case .thorough:
-            "Include extra detail when it improves the answer. Still keep structure readable and finish the answer completely."
+            "Include extra detail when it improves the answer. Do not show reasoning, analysis, scratchpad, or <think> text. Keep structure readable and finish completely."
         }
     }
 }

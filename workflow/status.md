@@ -110,6 +110,7 @@ See `workflow/backlog.md` for all stories.
 
 ## Last Completed Work
 
+- 2026-05-22: Follow-up Brief local chat speed fix. Brief no-context Ask prompts are now much shorter, include Qwen `/no_think` guidance, and use a small 256-token generation budget for simple plain-chat turns. The MLX output formatter now suppresses both closed and still-streaming `<think>`/analysis blocks so chain-of-thought does not appear in the transcript. Local verification wrapper build succeeded.
 - 2026-05-22: Completed `PRIV-002`. Screen Recording denial recovery now uses clearer Settings and recovery-panel guidance: it names the exact macOS permission, gives manual steps for System Settings -> Privacy & Security -> Screen & System Audio Recording, reminds users to quit/reopen when macOS asks, and refreshes permission state after opening settings. Local verification wrapper build succeeded.
 - 2026-05-22: Follow-up chat source control polish. Reordered composer controls to New, Files, History, prompt, Send; removed the duplicate file-source context chip above the composer; and added Clear File Sources to the Files menu so users can remove all granted file references from chat. Local verification wrapper build succeeded.
 - 2026-05-22: Follow-up chat file-source polish. The notch composer now has a compact Files menu that lets users choose a folder, choose a file, see current granted sources, and remove a source without leaving the chat window. It reuses the existing explicit local file access store, so file context remains user-granted and local-first. Local verification wrapper build succeeded.
@@ -269,15 +270,14 @@ See `workflow/backlog.md` for all stories.
 
 ## Files Changed In Last Session
 
-- `PixelPane/PixelPane/App/AppState.swift`
-- `PixelPane/PixelPane/App/SystemStatus.swift`
-- `PixelPane/PixelPane/Panel/RecoveryIssue.swift`
-- `PixelPane/PixelPane/Settings/SettingsView.swift`
+- `PixelPane/PixelPane/Actions/ModelOutputFormatter.swift`
+- `PixelPane/PixelPane/App/ResponseDetailLevel.swift`
+- `PixelPane/PixelPane/Panel/ResultPanelView.swift`
 - `workflow/status.md`
-- `workflow/backlog.md`
 
 ## Last Verification
 
+- 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` succeeded after suppressing streamed `<think>` output and shortening Brief plain-chat prompts.
 - 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` succeeded after completing `PRIV-002` Screen Recording permission guidance.
 - 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` succeeded after reorganizing chat controls and adding Clear File Sources.
 - 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` succeeded after adding the chat-window Files source menu.
