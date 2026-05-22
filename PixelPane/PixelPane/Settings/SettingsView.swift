@@ -19,7 +19,7 @@ struct SettingsView: View {
 
             localAISettings
                 .tabItem {
-                    Label("Local AI", systemImage: "cpu")
+                    Label("AI", systemImage: "sparkles")
                 }
 
             localFilesSettings
@@ -30,11 +30,6 @@ struct SettingsView: View {
             chatHistorySettings
                 .tabItem {
                     Label("History", systemImage: "clock")
-                }
-
-            aiModeSettings
-                .tabItem {
-                    Label("AI Mode", systemImage: "switch.2")
                 }
         }
         .padding(20)
@@ -273,13 +268,6 @@ struct SettingsView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
-        }
-        .formStyle(.grouped)
-    }
-
-    private var aiModeSettings: some View {
-        Form {
-            routingModeSection
         }
         .formStyle(.grouped)
     }

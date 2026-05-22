@@ -252,7 +252,7 @@ final class ResultPanelController {
         )
 
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = size.width > panel.frame.width ? 0.48 : 0.46
+            context.duration = size.width > panel.frame.width ? 0.36 : 0.12
             context.timingFunction = CAMediaTimingFunction(controlPoints: 0.18, 0.86, 0.24, 1.0)
             panel.animator().setFrame(targetFrame, display: true)
         }
@@ -471,6 +471,7 @@ enum ResultPanelPresentationStyle {
 
     static let notchCompactSize = CGSize(width: 52, height: 32)
     static let notchHoverTargetSize = CGSize(width: 260, height: 32)
+    static let notchEmptyAssistantSize = CGSize(width: 780, height: 190)
     static let notchExpandedSize = CGSize(width: 780, height: 560)
     static let notchCompactOverlap: CGFloat = 18
     static let notchTopOverscan: CGFloat = 3

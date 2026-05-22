@@ -217,7 +217,9 @@ struct ResultPanelView: View {
             Color.clear
                 .frame(height: 40)
             notchAssistantHeaderSection
-            workspaceSection
+            if !isBlankAssistantChat {
+                workspaceSection
+            }
             recoverySection
             assistantContextSection
             localFileWriteConfirmationSection
@@ -242,14 +244,15 @@ struct ResultPanelView: View {
         pendingNotchCollapse?.cancel()
         pendingNotchCollapse = nil
         notchShellOpacity = 1
+        let targetSize = preferredNotchExpandedSize
         if isNotchExpanded {
-            onPresentationSizeChange?(ResultPanelPresentationStyle.notchExpandedSize)
+            onPresentationSizeChange?(targetSize)
             isNotchContentVisible = true
             focusChatInputSoon()
             return
         }
         isNotchContentVisible = false
-        onPresentationSizeChange?(ResultPanelPresentationStyle.notchExpandedSize)
+        onPresentationSizeChange?(targetSize)
         isNotchExpanded = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.10) {
             guard isNotchExpanded else { return }
@@ -267,7 +270,7 @@ struct ResultPanelView: View {
         if hasNotification {
             onPresentationSizeChange?(ResultPanelPresentationStyle.notchCompactSize)
         } else {
-            withAnimation(.easeOut(duration: 0.28)) {
+            withAnimation(.easeOut(duration: 0.10)) {
                 notchShellOpacity = 0
             }
             onPresentationSizeChange?(ResultPanelPresentationStyle.notchHoverTargetSize)
@@ -278,7 +281,7 @@ struct ResultPanelView: View {
             notchShellOpacity = 1
         }
         pendingNotchCollapse = completion
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.46, execute: completion)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.14, execute: completion)
     }
 
     private func handleNotchHover(_ isHovering: Bool) {
@@ -288,12 +291,12 @@ struct ResultPanelView: View {
             expandNotch()
         } else {
             let workItem = DispatchWorkItem {
-                guard !isMouseInsideNotchBounds(size: ResultPanelPresentationStyle.notchExpandedSize) else { return }
+                guard !isMouseInsideNotchBounds(size: preferredNotchExpandedSize) else { return }
                 collapseNotch()
             }
             pendingNotchCollapse?.cancel()
             pendingNotchCollapse = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.28, execute: workItem)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.06, execute: workItem)
         }
     }
 
@@ -928,6 +931,24 @@ struct ResultPanelView: View {
         result.sourceType != .assistant && chatContextKind == .capture
     }
 
+    private var isBlankAssistantChat: Bool {
+        selectedAction == .ask
+            && askTurns.isEmpty
+            && !hasCaptureContext
+            && recoveryState == nil
+    }
+
+    private var preferredNotchExpandedSize: CGSize {
+        isBlankAssistantChat
+            ? ResultPanelPresentationStyle.notchEmptyAssistantSize
+            : ResultPanelPresentationStyle.notchExpandedSize
+    }
+
+    private func updateExpandedNotchSizeIfNeeded() {
+        guard presentationStyle == .notchAttached, isNotchExpanded else { return }
+        onPresentationSizeChange?(preferredNotchExpandedSize)
+    }
+
     private func startSmartDefaultActionIfNeeded() {
         guard !didStartSmartDefault else { return }
         didStartSmartDefault = true
@@ -1355,6 +1376,7 @@ struct ResultPanelView: View {
         )
         persistAskSession()
         setOutputState(askOutputState(), for: .ask)
+        updateExpandedNotchSizeIfNeeded()
 
         Task {
             let localFileContext = await Task.detached {
@@ -1692,6 +1714,7 @@ struct ResultPanelView: View {
         askTurns = session.turns.map { AskConversationTurn(storedTurn: $0) }
         selectedAction = .ask
         setOutputState(askOutputState(backendLabel: askTurns.last?.backendLabel), for: .ask)
+        updateExpandedNotchSizeIfNeeded()
         focusChatInputSoon()
     }
 
@@ -1723,6 +1746,7 @@ struct ResultPanelView: View {
             ),
             for: .ask
         )
+        updateExpandedNotchSizeIfNeeded()
         focusChatInputSoon()
     }
 

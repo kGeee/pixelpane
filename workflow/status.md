@@ -110,6 +110,9 @@ See `workflow/backlog.md` for all stories.
 
 ## Last Completed Work
 
+- 2026-05-22: Follow-up blank assistant sizing polish. Plain new assistant chats now open in a shorter expanded notch size and hide the empty transcript workspace until a capture context or chat turn exists.
+- 2026-05-22: Follow-up notch collapse speed polish. Hover-out collapse now starts after a much shorter delay and uses a faster shrink/fade animation so the expanded notch disappears quickly when the cursor leaves. Local verification wrapper build succeeded.
+- 2026-05-22: Follow-up Settings organization polish. Removed the duplicate AI Mode tab and renamed Local AI to AI, keeping routing mode, response style, and local runtime/model setup in one consolidated settings tab. Local verification wrapper build succeeded.
 - 2026-05-22: Follow-up notch chat chip polish. The assistant context chips now show "Local" instead of "On-device", and the Screen region chip/placeholder now depend on the active chat context instead of the original panel source. Starting a new plain assistant chat now shows a blank transcript with no capture copy. Added `ASSIST-006` to track a full chat history browser/search surface. Local verification wrapper build succeeded.
 - 2026-05-22: Follow-up onboarding visual polish for `PRIV-001`. Replaced the Continue button's default macOS button styling with a subdued custom secondary style so it no longer appears highlighted/focused when onboarding opens. Local verification wrapper build succeeded.
 - 2026-05-22: Follow-up QA reset for `PRIV-001`. Added a temporary Settings -> Permissions -> Onboarding QA control that shows first-run onboarding again without relying on Terminal defaults commands. Auto-created `PRIV-009` to remove or formalize the reset before beta.
@@ -260,12 +263,16 @@ See `workflow/backlog.md` for all stories.
 
 ## Files Changed In Last Session
 
+- `PixelPane/PixelPane/Settings/SettingsView.swift`
+- `PixelPane/PixelPane/Panel/ResultPanelController.swift`
 - `PixelPane/PixelPane/Panel/ResultPanelView.swift`
-- `workflow/backlog.md`
 - `workflow/status.md`
 
 ## Last Verification
 
+- 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` succeeded after compacting blank new assistant chats.
+- 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` succeeded after speeding up notch hover-out collapse.
+- 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` succeeded after consolidating duplicate AI settings tabs.
 - 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` succeeded after blanking new assistant chats and adding `ASSIST-006`.
 - 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` succeeded after fixing notch chat context/routing chip labels.
 - 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` succeeded after removing the highlighted default Continue button styling from onboarding.
