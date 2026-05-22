@@ -1,6 +1,6 @@
 # Pixel Pane Story Backlog
 
-Last updated: 2026-05-22 (PRIV-001 onboarding QA reset follow-up)
+Last updated: 2026-05-22 (ASSIST-006 chat history browser story added)
 
 This is the story-level source of truth. Claude/Codex should use this file when you say:
 
@@ -1221,6 +1221,7 @@ Notes:
 | `ASSIST-003` | Add confirmed local file create/edit tools | Done | `ASSIST-002` |
 | `ASSIST-004` | Add local chat persistence | Done | `ASSIST-001` |
 | `ASSIST-005` | Expand local model setup to text-only MLX models | Done | `ASSIST-001` |
+| `ASSIST-006` | Add full chat history browser and search | Not Started | `ASSIST-004` |
 
 ### `ASSIST-001` - Make The Notch A Chat-First Assistant Surface
 
@@ -1301,3 +1302,17 @@ Acceptance:
 Notes:
 
 - Implemented 2026-05-21. Added MLX model capability detection for Text, Vision, Text + Vision, and Unsupported models; Settings now displays capability labels and separate text/vision runtime status. Local setup accepts usable text-only MLX models instead of requiring VLM metadata, and `HybridLocalAIBackend` routes text-only local chat/actions through a selected MLX text model via `mlx_lm.generate` when available, falling back to Apple Foundation Models otherwise. Existing MLX Vision routing remains gated on a vision-capable selected model. Debug build succeeded.
+
+### `ASSIST-006` - Add Full Chat History Browser And Search
+
+Auto-created during `ASSIST-004` follow-up on 2026-05-22.
+
+Goal: Make previous assistant chats easy to find and reopen, beyond the compact composer history menu.
+
+Acceptance:
+
+- [ ] A dedicated chat history surface opens from the assistant and/or menu bar.
+- [ ] Users can search saved chat titles and message text.
+- [ ] Users can reopen an assistant chat without implying screen-region context.
+- [ ] Capture-context chats are clearly labeled and do not retain screenshot images.
+- [ ] Users can delete one chat or clear all chats from the same surface.

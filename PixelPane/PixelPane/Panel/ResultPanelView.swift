@@ -602,7 +602,7 @@ struct ResultPanelView: View {
                 turns: askTurns,
                 emptyText: hasCaptureContext
                     ? "Chat about this capture."
-                    : "Chat with Pixel Pane using the selected AI mode."
+                    : ""
             )
         } else {
             ScrollView {
@@ -781,7 +781,7 @@ struct ResultPanelView: View {
     private var routingBadgeText: String {
         switch routingSettings.effectiveMode {
         case .local:
-            "On-device"
+            "Local"
         case .cloud:
             "Cloud"
         }
@@ -925,7 +925,7 @@ struct ResultPanelView: View {
     }
 
     private var hasCaptureContext: Bool {
-        result.sourceType != .assistant
+        result.sourceType != .assistant && chatContextKind == .capture
     }
 
     private func startSmartDefaultActionIfNeeded() {
@@ -1329,7 +1329,7 @@ struct ResultPanelView: View {
             askTurns.append(
                 AskConversationTurn(
                     question: question,
-                    answer: "I have the selected screen region, but On-device text mode did not get readable OCR from it and cannot inspect the pixels directly. Switch to Cloud mode or set up a local vision model to ask visual questions about this capture.",
+                    answer: "I have the selected screen region, but Local text mode did not get readable OCR from it and cannot inspect the pixels directly. Switch to Cloud mode or set up a local vision model to ask visual questions about this capture.",
                     backendLabel: backendLabel
                 )
             )
@@ -1711,7 +1711,18 @@ struct ResultPanelView: View {
         chatContextKind = .assistant
         askTurns = []
         selectedAction = .ask
-        setOutputState(askOutputState(backendLabel: askBackendLabelForNextTurn()), for: .ask)
+        setOutputState(
+            PanelActionOutputState(
+                text: "",
+                sourceLabel: nil,
+                targetLabel: nil,
+                backendLabel: routingSettings.effectiveMode == .cloud ? Self.cloudBackendLabel : localTextBackendLabel(),
+                statistics: [],
+                reasoning: nil,
+                recovery: nil
+            ),
+            for: .ask
+        )
         focusChatInputSoon()
     }
 
@@ -1920,7 +1931,7 @@ struct ResultPanelView: View {
             text: askTurns.isEmpty
                 ? (hasCaptureContext
                     ? "Chat about this capture."
-                    : "Chat with Pixel Pane using the selected AI mode.")
+                    : "")
                 : formattedAskTranscript(),
             sourceLabel: hasCaptureContext ? "Source: \(result.detectedLanguage.displayName)" : nil,
             targetLabel: nil,
@@ -2903,7 +2914,7 @@ private struct AskTranscriptView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    if turns.isEmpty {
+                    if turns.isEmpty, !emptyText.isEmpty {
                         Text(emptyText)
                             .font(.system(size: 13))
                             .foregroundStyle(.secondary)
@@ -3016,7 +3027,7 @@ private struct AskTurnView: View {
         case "Local Files":
             return "Files"
         default:
-            return "On-device"
+            return "Local"
         }
     }
 
