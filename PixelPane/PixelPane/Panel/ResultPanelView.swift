@@ -47,8 +47,7 @@ struct ResultPanelView: View {
     @State private var isNotchContentVisible = false
     @State private var notchShellOpacity = 1.0
     @State private var pendingNotchCollapse: DispatchWorkItem?
-    @State private var expandedNotchSizeHoldUntil = Date.distantPast
-    @State private var heldExpandedNotchSize: CGSize?
+    @State private var notchHoverCollapseSuppressedUntil = Date.distantPast
     @State private var compactNotchNotification: CompactNotchNotificationState?
 
     init(
@@ -266,7 +265,6 @@ struct ResultPanelView: View {
 
     private func collapseNotch() {
         guard presentationStyle == .notchAttached, isNotchExpanded else { return }
-        guard !isExpandedNotchSizeHeld else { return }
         pendingNotchCollapse?.cancel()
         pendingNotchCollapse = nil
         isNotchContentVisible = false
@@ -295,8 +293,8 @@ struct ResultPanelView: View {
             expandNotch()
         } else {
             let workItem = DispatchWorkItem {
-                guard !isExpandedNotchSizeHeld else { return }
-                guard !isMouseInsideNotchBounds(size: activeNotchExpandedSize) else { return }
+                guard !isNotchHoverCollapseSuppressed else { return }
+                guard !isMouseInsideNotchBounds(size: preferredNotchExpandedSize) else { return }
                 collapseNotch()
             }
             pendingNotchCollapse?.cancel()
@@ -969,28 +967,20 @@ struct ResultPanelView: View {
         return ResultPanelPresentationStyle.notchExpandedSize
     }
 
-    private var activeNotchExpandedSize: CGSize {
-        if isExpandedNotchSizeHeld, let heldExpandedNotchSize {
-            return heldExpandedNotchSize
-        }
-        return preferredNotchExpandedSize
+    private var isNotchHoverCollapseSuppressed: Bool {
+        Date() < notchHoverCollapseSuppressedUntil
     }
 
-    private var isExpandedNotchSizeHeld: Bool {
-        Date() < expandedNotchSizeHoldUntil
-    }
-
-    private func holdCurrentExpandedNotchSizeBriefly() {
+    private func suppressNextNotchHoverCollapseBriefly() {
         guard presentationStyle == .notchAttached, isNotchExpanded else { return }
         pendingNotchCollapse?.cancel()
         pendingNotchCollapse = nil
-        heldExpandedNotchSize = activeNotchExpandedSize
-        expandedNotchSizeHoldUntil = Date().addingTimeInterval(1.0)
+        notchHoverCollapseSuppressedUntil = Date().addingTimeInterval(0.9)
     }
 
     private func updateExpandedNotchSizeIfNeeded() {
         guard presentationStyle == .notchAttached, isNotchExpanded else { return }
-        onPresentationSizeChange?(activeNotchExpandedSize)
+        onPresentationSizeChange?(preferredNotchExpandedSize)
     }
 
     private var preferredAskNotchSize: CGSize {
@@ -2014,7 +2004,7 @@ struct ResultPanelView: View {
 
     private func startNewAssistantChat() {
         guard loadingActions.isEmpty else { return }
-        holdCurrentExpandedNotchSizeBriefly()
+        suppressNextNotchHoverCollapseBriefly()
         chatContextID = Self.defaultChatContextID(
             for: CaptureResult(
                 image: nil,
@@ -2042,6 +2032,7 @@ struct ResultPanelView: View {
             for: .ask
         )
         updateExpandedNotchSizeIfNeeded()
+        isChatInputFocused = true
         focusChatInputSoon()
     }
 

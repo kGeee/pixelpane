@@ -1494,11 +1494,12 @@ Goal: Prevent the expanded notch from shrinking under the cursor and immediately
 
 Acceptance:
 
-- [x] New Chat keeps the current expanded notch size briefly after clearing chat content.
-- [x] Hover-out collapse is suppressed during that short size hold.
-- [x] Empty chats can still use the compact empty size on later opens.
+- [x] New Chat immediately returns to the compact empty-chat expanded size after clearing chat content.
+- [x] Hover-out collapse is briefly suppressed only for resize-caused hover loss.
+- [x] The chat input stays focused after starting the new empty chat.
 - [x] App builds successfully.
 
 Notes:
 
-- Completed 2026-05-22. New Chat now holds the active expanded size for one second, cancels pending collapse work, and makes collapse/hover checks respect that hold so clearing the transcript does not immediately minimize the window.
+- Completed 2026-05-22. New Chat originally held the active expanded size for one second, but that left a large blank panel.
+- Revised 2026-05-22. New Chat now resizes immediately to the compact empty-chat layout, cancels pending collapse work, briefly suppresses only hover-collapse caused by the resize, and refocuses the chat input.
