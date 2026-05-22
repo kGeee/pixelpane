@@ -1,6 +1,6 @@
 # Pixel Pane Story Backlog
 
-Last updated: 2026-05-22 (ASSIST-007 through ASSIST-011 local chat speed stories added)
+Last updated: 2026-05-22 (QUAL-014 performance pass completed)
 
 This is the story-level source of truth. Claude/Codex should use this file when you say:
 
@@ -23,9 +23,9 @@ When asked to complete an epic, do not attempt the whole epic in one pass. Compl
 
 ## Current Recommended Story
 
-`PRIV-004` - Ephemeral capture audit is the current recommended story.
+`PRIV-009` - Remove or formalize onboarding QA reset is the current recommended story.
 
-Reason: The local Qwen prompt/speed slice is complete. The next privacy slice is verifying the ephemeral screenshot handling promise at the implementation and QA level.
+Reason: The local Qwen prompt/speed slice and ephemeral capture audit are complete. The remaining privacy cleanup is deciding whether the onboarding QA reset is a temporary debug-only control or a supported reset path.
 
 ---
 
@@ -1025,6 +1025,7 @@ Acceptance:
 | `QUAL-011` | Normalize model-output math and special characters | Done | `ACT-006`, `ACT-007`, `ACT-011` |
 | `QUAL-012` | Notch-attached result surface | Done | `CORE-005`, `ACT-001`, `QUAL-009` |
 | `QUAL-013` | Hover-expanded notch interaction polish | Done | `QUAL-012` |
+| `QUAL-014` | Performance pass for capture, chat, and local context | Done | `QUAL-013`, `ASSIST-002`, `ASSIST-012` |
 
 ### `QUAL-001` - Accessibility Labels And VoiceOver Order
 
@@ -1221,6 +1222,25 @@ Notes:
 - The notch container now uses square top corners and rounded lower corners so it reads as an extension of the physical/menu-bar notch rather than a detached rounded pill.
 - Follow-up manual QA polish keeps expanded controls below the hardware notch, hardens notch-safe-area placement across notched Macs, and disables background dragging for notch-attached result panels.
 - Follow-up manual QA polish also hides the top panel seam with slight screen-edge overscan, makes collapse shrink back into the notch, and pins compact notifications to the physical notch's right edge.
+
+### `QUAL-014` - Performance Pass For Capture, Chat, And Local Context
+
+Auto-created during performance review follow-up on 2026-05-22.
+
+Goal: Remove obvious UI-thread and per-token churn from the current capture/chat/local-context paths without changing product behavior.
+
+Acceptance:
+
+- [x] Vision OCR request execution no longer runs synchronously on the main actor.
+- [x] Streamed Ask responses no longer persist the full chat store or resize the notch on every token/snapshot.
+- [x] Ask transcript autoscroll no longer runs on every streamed text mutation.
+- [x] Local file context search caps full-content reads and prioritizes path matches before expensive content scans.
+- [x] Result panel routing uses cached local AI capability state instead of rescanning MLX capability paths during panel actions.
+- [x] App builds successfully.
+
+Notes:
+
+- Implemented 2026-05-22. This is a targeted hot-path cleanup, not full profiling instrumentation.
 
 ---
 

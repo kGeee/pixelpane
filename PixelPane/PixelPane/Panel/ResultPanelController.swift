@@ -13,6 +13,7 @@ final class ResultPanelController {
         result: CaptureResult,
         routingSettings: AIRoutingSettings,
         responseDetail: ResponseDetailLevel,
+        localAICapabilities: AIBackendCapabilities,
         localFileAccess: LocalFileAccessStore,
         chatHistory: ChatHistoryStore,
         startsInAssistantMode: Bool = false,
@@ -30,6 +31,7 @@ final class ResultPanelController {
                 result: result,
                 routingSettings: routingSettings,
                 responseDetail: responseDetail,
+                localAICapabilities: localAICapabilities,
                 localFileAccess: localFileAccess,
                 chatHistory: chatHistory,
                 presentationStyle: resultPresentationStyle,
@@ -65,6 +67,7 @@ final class ResultPanelController {
     func refreshRoutingSettings(
         _ routingSettings: AIRoutingSettings,
         responseDetail: ResponseDetailLevel,
+        localAICapabilities: AIBackendCapabilities,
         localFileAccess: LocalFileAccessStore,
         chatHistory: ChatHistoryStore
     ) {
@@ -74,6 +77,7 @@ final class ResultPanelController {
             result: currentResult,
             routingSettings: routingSettings,
             responseDetail: responseDetail,
+            localAICapabilities: localAICapabilities,
             localFileAccess: localFileAccess,
             chatHistory: chatHistory,
             startsInAssistantMode: currentStartsInAssistantMode,
@@ -89,6 +93,7 @@ final class ResultPanelController {
     func showAssistant(
         routingSettings: AIRoutingSettings,
         responseDetail: ResponseDetailLevel,
+        localAICapabilities: AIBackendCapabilities,
         localFileAccess: LocalFileAccessStore,
         chatHistory: ChatHistoryStore,
         onTryAgain: @escaping @MainActor () -> Void
@@ -107,6 +112,7 @@ final class ResultPanelController {
             result: result,
             routingSettings: routingSettings,
             responseDetail: responseDetail,
+            localAICapabilities: localAICapabilities,
             localFileAccess: localFileAccess,
             chatHistory: chatHistory,
             startsInAssistantMode: true,

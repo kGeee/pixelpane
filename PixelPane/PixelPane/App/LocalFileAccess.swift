@@ -459,6 +459,7 @@ enum LocalFileWriteExecutor: Sendable {
 
 struct LocalFileContextProvider: Sendable {
     private let maxCandidateFiles = 700
+    private let maxFilesToRead = 120
     private let maxFileBytes = 700_000
     private let maxSnippets = 5
     private let snippetRadius = 520
@@ -478,18 +479,31 @@ struct LocalFileContextProvider: Sendable {
 
         var snippets: [LocalFileSnippet] = []
         var visitedFiles = 0
+        var filesRead = 0
+        var contentCandidates: [URL] = []
 
         for grant in activeGrants {
             guard visitedFiles < maxCandidateFiles else { break }
             for fileURL in fileURLs(in: grant) {
-                guard visitedFiles < maxCandidateFiles else { break }
+                guard visitedFiles < maxCandidateFiles, !Task.isCancelled else { break }
                 visitedFiles += 1
 
+                let searchablePath = [
+                    fileURL.deletingLastPathComponent().lastPathComponent,
+                    fileURL.lastPathComponent
+                ].joined(separator: " ")
+                let pathScore = score(text: searchablePath, terms: terms) * 3
+                guard pathScore > 0 else {
+                    if contentCandidates.count < maxFilesToRead {
+                        contentCandidates.append(fileURL)
+                    }
+                    continue
+                }
+                guard filesRead < maxFilesToRead else { continue }
                 guard let content = readTextFile(fileURL) else { continue }
-                let pathScore = score(text: fileURL.lastPathComponent, terms: terms) * 3
+                filesRead += 1
                 let contentScore = score(text: content, terms: terms)
                 let totalScore = pathScore + contentScore
-                guard totalScore > 0 else { continue }
 
                 snippets.append(
                     LocalFileSnippet(
@@ -500,6 +514,23 @@ struct LocalFileContextProvider: Sendable {
                     )
                 )
             }
+        }
+
+        for fileURL in contentCandidates {
+            guard filesRead < maxFilesToRead, !Task.isCancelled else { break }
+            guard let content = readTextFile(fileURL) else { continue }
+            filesRead += 1
+            let contentScore = score(text: content, terms: terms)
+            guard contentScore > 0 else { continue }
+
+            snippets.append(
+                LocalFileSnippet(
+                    id: fileURL.path,
+                    path: fileURL.path,
+                    preview: snippet(from: content, terms: terms),
+                    score: contentScore
+                )
+            )
         }
 
         return LocalFileContext(

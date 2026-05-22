@@ -99,6 +99,7 @@ Epic 6 — Cross-Cutting Quality
 - `QUAL-011` Normalize model-output math and special characters: Done
 - `QUAL-012` Notch-attached result surface: Done
 - `QUAL-013` Hover-expanded notch interaction polish: Done
+- `QUAL-014` Performance pass for capture, chat, and local context: Done
 
 Epic 7 — Notch Assistant
 - `ASSIST-001` Make the notch a chat-first assistant surface: Done
@@ -121,6 +122,7 @@ See `workflow/backlog.md` for all stories.
 
 ## Last Completed Work
 
+- 2026-05-22: Completed `QUAL-014`. Moved Vision OCR request execution off the main actor, stopped streamed Ask turns from persisting chat history and resizing the notch on every token/snapshot, limited Ask transcript autoscroll to new turns, capped local file context full-content reads while prioritizing path matches, and routed panel local AI decisions through cached capability state instead of repeated MLX detector scans. Local verification wrapper build succeeded.
 - 2026-05-22: Completed `PRIV-004`. Audited the capture image lifecycle across capture, OCR, panel presentation, chat history, cloud image conversion, and MLX Vision. Fixed `AppState.lastResult` so "Show Last Result" retains OCR text/metadata only and not the captured `CGImage`; the active panel still holds image context only while open. Hardened MLX Vision temporary PNG cleanup on success, cancellation, timeout, launch failure, and image-write failure. Added file-system spot-check QA steps and recorded the last-result privacy decision. Local verification wrapper build succeeded.
 - 2026-05-22: Revised `ASSIST-015`. New Chat now returns immediately to the compact empty-chat expanded layout, cancels pending collapse work, briefly suppresses only resize-caused hover collapse, and refocuses the chat input so the window stays usable without leaving a large blank panel. Local verification wrapper build succeeded.
 - 2026-05-22: Completed `ASSIST-014`. Local MLX chat turn metadata now shows the parsed one-shot `Peak memory:` statistic as `Peak <value>` for MLX Text/Vision turns, making max memory usage visible in the notch chat without adding a diagnostics panel. Local verification wrapper build succeeded.

@@ -9,6 +9,7 @@ struct ResultPanelView: View {
     let result: CaptureResult
     let routingSettings: AIRoutingSettings
     let responseDetail: ResponseDetailLevel
+    let localAICapabilities: AIBackendCapabilities
     @ObservedObject var localFileAccess: LocalFileAccessStore
     @ObservedObject var chatHistory: ChatHistoryStore
     let presentationStyle: ResultPanelPresentationStyle
@@ -54,6 +55,7 @@ struct ResultPanelView: View {
         result: CaptureResult,
         routingSettings: AIRoutingSettings,
         responseDetail: ResponseDetailLevel,
+        localAICapabilities: AIBackendCapabilities,
         localFileAccess: LocalFileAccessStore,
         chatHistory: ChatHistoryStore,
         presentationStyle: ResultPanelPresentationStyle = .floatingNearSelection,
@@ -67,6 +69,7 @@ struct ResultPanelView: View {
         self.result = result
         self.routingSettings = routingSettings
         self.responseDetail = responseDetail
+        self.localAICapabilities = localAICapabilities
         self.localFileAccess = localFileAccess
         self.chatHistory = chatHistory
         self.presentationStyle = presentationStyle
@@ -1136,7 +1139,7 @@ struct ResultPanelView: View {
         }
 
         guard responseDetail.usesImageInput(for: action) else { return nil }
-        guard mlxDetector.imageCapabilityStatus().isAvailable else { return nil }
+        guard localAICapabilities.image.isAvailable else { return nil }
         return result.image
     }
 
@@ -1156,7 +1159,7 @@ struct ResultPanelView: View {
     }
 
     private func localTextBackendLabel() -> String {
-        mlxDetector.textCapabilityStatus().isAvailable ? Self.mlxTextBackendLabel : Self.appleTextBackendLabel
+        localAICapabilities.text.isAvailable ? Self.mlxTextBackendLabel : Self.appleTextBackendLabel
     }
 
     private var cloudDetectedLanguage: String? {
@@ -1381,7 +1384,7 @@ struct ResultPanelView: View {
         let hasReadableCaptureText = !capturedOCRText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let askUsesMLX = !cloudModeEnabled
             && hasCaptureContextValue
-            && mlxDetector.imageCapabilityStatus().isAvailable
+            && localAICapabilities.image.isAvailable
             && result.image != nil
         let cloudImageInput = cloudModeEnabled
             && hasCaptureContextValue
@@ -1922,6 +1925,8 @@ struct ResultPanelView: View {
                 case .completed:
                     await MainActor.run {
                         _ = loadingActions.remove(.ask)
+                        persistAskSession()
+                        updateExpandedNotchSizeIfNeeded()
                         focusChatInputSoon()
                     }
                 }
@@ -1943,6 +1948,8 @@ struct ResultPanelView: View {
                     for: .ask
                 )
                 loadingActions.remove(.ask)
+                persistAskSession()
+                updateExpandedNotchSizeIfNeeded()
                 focusChatInputSoon()
             }
         }
@@ -1965,6 +1972,7 @@ struct ResultPanelView: View {
                 for: .ask
             )
             loadingActions.remove(.ask)
+            updateExpandedNotchSizeIfNeeded()
             focusChatInputSoon()
         }
     }
@@ -1972,8 +1980,6 @@ struct ResultPanelView: View {
     private func updateLastAskAnswer(_ answer: String) {
         guard let lastIndex = askTurns.indices.last else { return }
         askTurns[lastIndex].answer = answer
-        persistAskSession()
-        updateExpandedNotchSizeIfNeeded()
     }
 
     private func updateLastAskStatistics(_ statistics: [AIModelOutputStatistic]) {
@@ -2227,7 +2233,7 @@ struct ResultPanelView: View {
             return Self.cloudBackendLabel
         }
         let askUsesMLX = hasCaptureContext
-            && mlxDetector.imageCapabilityStatus().isAvailable
+            && localAICapabilities.image.isAvailable
             && result.image != nil
         return askUsesMLX ? Self.mlxVisionBackendLabel : localTextBackendLabel()
     }
@@ -2559,34 +2565,6 @@ struct ResultPanelView: View {
         )
     }
 
-    private static func initialActionSelection(
-        for result: CaptureResult,
-        routingSettings: AIRoutingSettings,
-        responseDetail: ResponseDetailLevel
-    ) -> SmartDefaultActionSelection {
-        let smartDefaultSelection = SmartDefaultActionSelector().selectDefaultAction(for: result)
-        guard result.isEmptyOCRResult, result.image != nil else {
-            return smartDefaultSelection
-        }
-
-        if routingSettings.effectiveMode == .cloud,
-           PanelActionKind.explain.supportsCloudImageInput {
-            return SmartDefaultActionSelection(
-                action: .explain,
-                reason: "empty OCR with cloud image input"
-            )
-        }
-
-        if responseDetail.usesImageInput(for: .explain),
-           MLXVisionRuntimeDetector().imageCapabilityStatus().isAvailable {
-            return SmartDefaultActionSelection(
-                action: .explain,
-                reason: "empty OCR with local image input"
-            )
-        }
-
-        return smartDefaultSelection
-    }
 }
 
 // MARK: - Glass Overlay Container
@@ -3339,10 +3317,10 @@ private struct AskTranscriptView: View {
                 .padding(.bottom, 2)
             }
             .scrollIndicators(.hidden)
-            .onChange(of: turns) { _, newTurns in
-                guard !newTurns.isEmpty else { return }
+            .onChange(of: turns.count) { _, newCount in
+                guard newCount > 0 else { return }
                 withAnimation(.easeOut(duration: 0.18)) {
-                    proxy.scrollTo(newTurns.count - 1, anchor: .bottom)
+                    proxy.scrollTo(newCount - 1, anchor: .bottom)
                 }
             }
         }

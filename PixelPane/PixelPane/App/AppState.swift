@@ -131,6 +131,7 @@ final class AppState: ObservableObject {
             result: lastResult,
             routingSettings: aiRoutingSettings,
             responseDetail: responseDetailLevel,
+            localAICapabilities: localAICapabilities,
             localFileAccess: localFileAccess,
             chatHistory: chatHistory,
             startsInAssistantMode: true,
@@ -144,6 +145,7 @@ final class AppState: ObservableObject {
         panelController.showAssistant(
             routingSettings: aiRoutingSettings,
             responseDetail: responseDetailLevel,
+            localAICapabilities: localAICapabilities,
             localFileAccess: localFileAccess,
             chatHistory: chatHistory,
             onTryAgain: { [weak self] in
@@ -160,6 +162,7 @@ final class AppState: ObservableObject {
         panelController.refreshRoutingSettings(
             aiRoutingSettings,
             responseDetail: responseDetailLevel,
+            localAICapabilities: localAICapabilities,
             localFileAccess: localFileAccess,
             chatHistory: chatHistory
         )
@@ -349,6 +352,7 @@ final class AppState: ObservableObject {
                 result: result,
                 routingSettings: aiRoutingSettings,
                 responseDetail: responseDetailLevel,
+                localAICapabilities: localAICapabilities,
                 localFileAccess: localFileAccess,
                 chatHistory: chatHistory,
                 startsInAssistantMode: true,
@@ -373,6 +377,7 @@ final class AppState: ObservableObject {
                 result: result,
                 routingSettings: aiRoutingSettings,
                 responseDetail: responseDetailLevel,
+                localAICapabilities: localAICapabilities,
                 localFileAccess: localFileAccess,
                 chatHistory: chatHistory,
                 startsInAssistantMode: true,
