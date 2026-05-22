@@ -372,6 +372,24 @@ Consequences:
 Follow-up:
 Manual QA should validate one selected text-only MLX model through a plain notch chat turn and one selected Text + Vision model through a capture-context chat turn.
 
+## 2026-05-22 - Local Mode Requires A Validated MLX Model
+
+Status: Accepted
+
+Decision:
+Pixel Pane should not allow AI Mode to remain Local when no MLX model is selected. Clearing the selected MLX model or choosing the explicit "No MLX model selected" state moves routing to Cloud Mode, and Local Mode can be selected again only after a model has been validated.
+
+Context:
+Settings previously allowed the confusing combination of "No MLX model selected" and "Local". Even though Apple Foundation Models can still be a local text fallback internally, the visible routing choice should map to a concrete user-selected local model.
+
+Consequences:
+- Settings must keep local setup reachable when Cloud Mode is active only because no local model exists.
+- The Local AI Mode control is disabled until setup has an active selected model.
+- Clearing local model selection returns the assistant to Cloud Mode instead of leaving a contradictory Local/no-model state.
+
+Follow-up:
+Manual QA should verify Clear Selection, the "No MLX model selected" picker row, app relaunch with no saved model, and switching back to Local after validating a model.
+
 ## 2026-05-21 - Confirmed Local File Writes
 
 Status: Accepted

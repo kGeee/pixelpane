@@ -23,9 +23,9 @@ When asked to complete an epic, do not attempt the whole epic in one pass. Compl
 
 ## Current Recommended Story
 
-`ASSIST-007` - Add minimal context prompt router is the current recommended story.
+`PRIV-004` - Ephemeral capture audit is the current recommended story.
 
-Reason: User testing showed local Qwen text models are slowed and confused by a one-size prompt scaffold that mentions absent screen/file context. The next slice should make plain chat direct and add context only when it exists.
+Reason: The local Qwen prompt/speed slice is complete. The next privacy slice is verifying the ephemeral screenshot handling promise at the implementation and QA level.
 
 ---
 
@@ -1226,11 +1226,12 @@ Notes:
 | `ASSIST-004` | Add local chat persistence | Done | `ASSIST-001` |
 | `ASSIST-005` | Expand local model setup to text-only MLX models | Done | `ASSIST-001` |
 | `ASSIST-006` | Add full chat history browser and search | Not Started | `ASSIST-004` |
-| `ASSIST-007` | Add minimal context prompt router | Not Started | `ASSIST-001`, `ASSIST-005` |
-| `ASSIST-008` | Answer app-state questions without calling the model | Not Started | `ASSIST-005`, `ASSIST-007` |
-| `ASSIST-009` | Gate local file context search to file-aware questions | Not Started | `ASSIST-002`, `ASSIST-007` |
-| `ASSIST-010` | Tune Brief-mode local generation budgets | Not Started | `ASSIST-007` |
-| `ASSIST-011` | Evaluate persistent MLX text runtime | Not Started | `ASSIST-005`, `ASSIST-010` |
+| `ASSIST-007` | Add minimal context prompt router | Done | `ASSIST-001`, `ASSIST-005` |
+| `ASSIST-008` | Answer app-state questions without calling the model | Done | `ASSIST-005`, `ASSIST-007` |
+| `ASSIST-009` | Gate local file context search to file-aware questions | Done | `ASSIST-002`, `ASSIST-007` |
+| `ASSIST-010` | Tune Brief-mode local generation budgets | Done | `ASSIST-007` |
+| `ASSIST-011` | Evaluate persistent MLX text runtime | Done | `ASSIST-005`, `ASSIST-010` |
+| `ASSIST-012` | Add app-managed warm MLX text server | Not Started | `ASSIST-011` |
 
 ### `ASSIST-001` - Make The Notch A Chat-First Assistant Surface
 
@@ -1347,6 +1348,7 @@ Acceptance:
 Notes:
 
 - Risk: Low. The current prompt builder is centralized in the Ask flow and can be split into small prompt cases. The main risk is accidentally dropping useful context from capture or file chats, so QA should cover plain, capture, file, and follow-up turns.
+- Implemented 2026-05-22. The Ask prompt builder now emits small, context-specific prompts. Plain chat no longer mentions absent screen, OCR, file, or prior-chat sections. Capture OCR/image, file snippets, and prior transcript are added only when present.
 
 ### `ASSIST-008` - Answer App-State Questions Without Calling The Model
 
@@ -1365,6 +1367,7 @@ Acceptance:
 Notes:
 
 - Risk: Low. This is a deterministic preflight before model routing. Keep patterns narrow so normal content questions still reach the model.
+- Implemented 2026-05-22. Ask now answers selected-model/routing/file-source questions from app state before invoking local or cloud AI. "Which one?" after a model question is handled from the stored MLX selection.
 
 ### `ASSIST-009` - Gate Local File Context Search To File-Aware Questions
 
@@ -1383,6 +1386,7 @@ Acceptance:
 Notes:
 
 - Risk: Medium. A heuristic can miss implicit file questions. Bias toward clear triggers first, and leave a visible Files control plus natural-language "search files for..." escape hatch.
+- Implemented 2026-05-22. Granted files are searched only when the question has file/project/code/path signals or names a granted source. If no search runs, the prompt omits file context entirely.
 
 ### `ASSIST-010` - Tune Brief-Mode Local Generation Budgets
 
@@ -1401,6 +1405,7 @@ Acceptance:
 Notes:
 
 - Risk: Medium. Token caps can make answers feel clipped if too aggressive. Treat caps as routing hints based on question shape, not a hard global limit for Brief.
+- Implemented 2026-05-22. Brief mode now uses adaptive Ask budgets: 128 tokens for simple plain turns, 256-512 for light follow-ups, and 1024 when context or long-answer signals are present.
 
 ### `ASSIST-011` - Evaluate Persistent MLX Text Runtime
 
@@ -1419,3 +1424,23 @@ Acceptance:
 Notes:
 
 - Risk: High. This is the biggest likely speed win, but it depends on MLX-LM process/server behavior, memory residency, cancellation, app lifecycle cleanup, and packaging. Treat it as a spike before relying on it for product speed.
+- Completed 2026-05-22. On the user's cached `mlx-community/Qwen3-30B-A3B-4bit`, one-shot `mlx_lm.generate` answered a 32-token identity prompt in about 2.63 seconds. A warm `mlx_lm.server` on localhost answered comparable chat-completion requests in about 0.43-0.55 seconds after startup. Recommendation: add a follow-up implementation story for an app-managed persistent MLX text server with lifecycle cleanup and fallback to one-shot generation.
+
+### `ASSIST-012` - Add App-Managed Warm MLX Text Server
+
+Auto-created during `ASSIST-011` on 2026-05-22.
+
+Goal: Use `mlx_lm.server` as a warm local text backend so repeated MLX text chat turns avoid one-shot process startup overhead.
+
+Acceptance:
+
+- [ ] App starts or reuses a localhost `mlx_lm.server` process for the selected text-compatible MLX model.
+- [ ] Requests use the server's OpenAI-compatible chat completions endpoint with thinking disabled.
+- [ ] If server startup, health check, or request fails, the app falls back to the current one-shot `mlx_lm.generate` path.
+- [ ] Server lifecycle is tied to app/model selection and cleans up on model change or app quit.
+- [ ] The implementation avoids exposing the server beyond localhost.
+- [ ] App builds successfully.
+
+Notes:
+
+- `mlx_lm.server` warns that it is not recommended for production as a public server, but a localhost-only app-managed helper is viable if we keep it bound to `127.0.0.1`, avoid broad CORS exposure, and retain one-shot fallback.

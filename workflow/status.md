@@ -4,13 +4,13 @@ Last updated: 2026-05-22
 
 ## Current Focus
 
-Epic 1, Epic 2, and the current Epic 7 notch-assistant alpha slice are closed. Pixel Pane now has a hover-open notch chat surface, capture-context chats, user-granted local file read/search, confirmed local file create/edit, local chat persistence, text-only MLX local chat setup, repeatable local build verification, first-run privacy onboarding, and Screen Recording recovery guidance. Current user-driven focus: make local text chat faster and more model-agnostic with minimal prompts.
+Epic 1, Epic 2, and the current Epic 7 notch-assistant alpha slice are closed. Pixel Pane now has a hover-open notch chat surface, capture-context chats, user-granted local file read/search, confirmed local file create/edit, local chat persistence, text-only MLX local chat setup, repeatable local build verification, first-run privacy onboarding, and Screen Recording recovery guidance. The local Qwen prompt/speed slice is complete.
 
 Current phase: Notch assistant alpha.
 
-Current epic: Epic 7 - Notch Assistant.
+Current epic: Epic 3 - Privacy And Onboarding.
 
-Current recommended story: `ASSIST-007` Add minimal context prompt router.
+Current recommended story: `PRIV-004` Ephemeral capture audit.
 
 ## Current State
 
@@ -106,16 +106,18 @@ Epic 7 — Notch Assistant
 - `ASSIST-004` Add local chat persistence: Done
 - `ASSIST-005` Expand local model setup to text-only MLX models: Done
 - `ASSIST-006` Add full chat history browser and search: Not Started
-- `ASSIST-007` Add minimal context prompt router: Not Started
-- `ASSIST-008` Answer app-state questions without calling the model: Not Started
-- `ASSIST-009` Gate local file context search to file-aware questions: Not Started
-- `ASSIST-010` Tune Brief-mode local generation budgets: Not Started
-- `ASSIST-011` Evaluate persistent MLX text runtime: Not Started
+- `ASSIST-007` Add minimal context prompt router: Done
+- `ASSIST-008` Answer app-state questions without calling the model: Done
+- `ASSIST-009` Gate local file context search to file-aware questions: Done
+- `ASSIST-010` Tune Brief-mode local generation budgets: Done
+- `ASSIST-011` Evaluate persistent MLX text runtime: Done
+- `ASSIST-012` Add app-managed warm MLX text server: Not Started
 
 See `workflow/backlog.md` for all stories.
 
 ## Last Completed Work
 
+- 2026-05-22: Completed `ASSIST-007` through `ASSIST-011`. Plain local chat now uses minimal context-specific prompts and no longer mentions absent screen/OCR/files/prior-chat context. Pixel Pane now answers selected-model/routing/file-source questions from app state without invoking a model, searches granted files only for file-aware questions, and uses adaptive Brief Ask budgets. Also enforced that Settings cannot remain in Local Mode with no selected MLX model: clearing or choosing "No MLX model selected" moves routing to Cloud Mode, and Local is disabled until a model is validated. Persistent MLX spike found `mlx_lm.server` available: one-shot 30B `mlx_lm.generate` took about 2.63s for a short prompt, while warm localhost server requests took about 0.43-0.55s. Recommendation: implement an app-managed warm MLX text server with one-shot fallback. Local verification wrapper build succeeded.
 - 2026-05-22: Planning update for local Qwen speed/model-agnostic QA. Added `ASSIST-007` through `ASSIST-011` to track minimal context prompts, deterministic app-state answers, lazy file context search, Brief-mode generation budget tuning, and a higher-risk persistent MLX runtime spike. No build run; backlog/status documentation only.
 - 2026-05-22: Follow-up Brief local chat speed fix. Brief no-context Ask prompts are now much shorter, include Qwen `/no_think` guidance, and use a small 256-token generation budget for simple plain-chat turns. MLX Text now passes `enable_thinking: false` through the chat template config and disables verbose generation logs. The output formatter suppresses closed, still-streaming, and common untagged "thinking process" reasoning blocks so chain-of-thought does not appear in the transcript. Brief Ask also hides the Model Thinking disclosure. Local verification wrapper build succeeded.
 - 2026-05-22: Completed `PRIV-002`. Screen Recording denial recovery now uses clearer Settings and recovery-panel guidance: it names the exact macOS permission, gives manual steps for System Settings -> Privacy & Security -> Screen & System Audio Recording, reminds users to quit/reopen when macOS asks, and refreshes permission state after opening settings. Local verification wrapper build succeeded.

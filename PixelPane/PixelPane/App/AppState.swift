@@ -50,6 +50,10 @@ final class AppState: ObservableObject {
             let raw = userDefaults.integer(forKey: ResponseDetailDefaults.levelKey)
             responseDetailLevel = ResponseDetailLevel(rawValue: raw) ?? .balanced
         }
+        if mlxVisionSetupSnapshot.selectedModel == nil {
+            aiRoutingSettings.useCloudModels = AIRoutingSettings.cloudBackendAvailable
+            aiRoutingSettings.allowCloudImageContext = AIRoutingSettings.cloudBackendAvailable
+        }
         persistAIRoutingSettings()
         refreshSystemStatus()
         refreshLocalAIStatus()
@@ -162,6 +166,10 @@ final class AppState: ObservableObject {
     }
 
     func setAIRoutingMode(_ mode: AIRoutingMode) {
+        if mode == .local && mlxVisionSetupSnapshot.selectedModel == nil {
+            setUseCloudModels(true)
+            return
+        }
         setUseCloudModels(mode == .cloud)
     }
 
@@ -232,6 +240,7 @@ final class AppState: ObservableObject {
     func clearMLXModelSelection() {
         let snapshot = mlxVisionSetupRunner.clearSelection()
         mlxVisionSetupSnapshot = snapshot
+        setUseCloudModels(true)
         refreshLocalAIStatus()
     }
 

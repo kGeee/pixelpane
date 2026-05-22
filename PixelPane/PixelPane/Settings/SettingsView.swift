@@ -174,7 +174,7 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var localAISectionContent: some View {
-        if appState.aiRoutingSettings.effectiveMode == .cloud {
+        if appState.aiRoutingSettings.effectiveMode == .cloud && hasActiveMLXModel {
             VStack(alignment: .leading, spacing: 10) {
                 Label("Cloud Mode is active", systemImage: "cloud")
                     .font(.headline)
@@ -189,6 +189,8 @@ struct SettingsView: View {
                 } label: {
                     Label("Switch to Local", systemImage: "lock.shield")
                 }
+                .disabled(!hasActiveMLXModel)
+                .help(hasActiveMLXModel ? "Route AI through the selected local MLX model." : "Select and validate an MLX model before using Local.")
             }
             .padding(.vertical, 2)
         } else {
@@ -216,7 +218,8 @@ struct SettingsView: View {
             .padding(.vertical, 2)
 
             Picker("Model", selection: selectedModelBinding) {
-                Text("No MLX model selected").tag(noMLXModelSelectionID)
+                Text("No MLX model selected")
+                    .tag(noMLXModelSelectionID)
                 ForEach(mlxModelChoices) { model in
                     Text(model.displayName).tag(model.id)
                 }
@@ -299,10 +302,18 @@ struct SettingsView: View {
                 "Mode",
                 selection: Binding(
                     get: { appState.aiRoutingSettings.effectiveMode },
-                    set: { appState.setAIRoutingMode($0) }
+                    set: { mode in
+                        if mode == .local && !hasActiveMLXModel {
+                            appState.setAIRoutingMode(.cloud)
+                        } else {
+                            appState.setAIRoutingMode(mode)
+                        }
+                    }
                 )
             ) {
-                Label("Local", systemImage: "lock.shield").tag(AIRoutingMode.local)
+                Label("Local", systemImage: "lock.shield")
+                    .tag(AIRoutingMode.local)
+                    .disabled(!hasActiveMLXModel)
                 Label("Cloud", systemImage: "cloud").tag(AIRoutingMode.cloud)
             }
             .pickerStyle(.segmented)
@@ -318,7 +329,17 @@ struct SettingsView: View {
             Text(appState.aiRoutingSettings.detail)
                 .font(.callout)
                 .foregroundStyle(.secondary)
+
+            if !hasActiveMLXModel {
+                Text("Choose and validate an MLX model before using Local.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
         }
+    }
+
+    private var hasActiveMLXModel: Bool {
+        appState.mlxVisionSetupSnapshot.selectedModel != nil
     }
 
     private var mlxModelChoices: [MLXVisionModel] {
@@ -343,7 +364,13 @@ struct SettingsView: View {
     private var selectedModelBinding: Binding<String> {
         Binding(
             get: { selectedMLXModelID ?? noMLXModelSelectionID },
-            set: { selectedMLXModelID = $0 }
+            set: { selectionID in
+                if selectionID == noMLXModelSelectionID {
+                    clearSelectedMLXModel()
+                } else {
+                    selectedMLXModelID = selectionID
+                }
+            }
         )
     }
 
@@ -354,10 +381,7 @@ struct SettingsView: View {
 
     private var mlxSetupDetailText: String {
         if selectedMLXModelID == noMLXModelSelectionID {
-            if appState.mlxVisionSetupSnapshot.selectedModel != nil {
-                return "No MLX model is selected in this view. The saved model remains active until you clear it."
-            }
-            return "Use Apple local text AI as-is, or select an MLX model to enable local MLX chat and optional vision."
+            return "No MLX model selected. Pixel Pane will stay in Cloud Mode until you validate a local model."
         }
 
         guard hasStagedMLXModelSelection, let model = selectedMLXModel else {

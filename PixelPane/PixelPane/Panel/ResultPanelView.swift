@@ -22,6 +22,7 @@ struct ResultPanelView: View {
     private let localAIBackend: any AIBackend = HybridLocalAIBackend()
     private let cloudAIBackend: any AIBackend
     private let mlxDetector = MLXVisionRuntimeDetector()
+    private let mlxModelStore = MLXVisionModelStore()
     private let displayTextNormalizer = ModelDisplayTextNormalizer()
     @State private var selectedAction: PanelActionKind = .extractText
     @State private var loadingActions: Set<PanelActionKind> = []
@@ -1356,21 +1357,8 @@ struct ResultPanelView: View {
             return
         }
 
-        if let directAnswer = LocalFileContextProvider().directAnswer(for: question, grants: fileGrants) {
-            askInput = ""
-            recoveryState = nil
-            hiddenReasoning = nil
-            outputStatistics = []
-            askTurns.append(
-                AskConversationTurn(
-                    question: question,
-                    answer: directAnswer,
-                    backendLabel: "Local Files"
-                )
-            )
-            persistAskSession()
-            setOutputState(askOutputState(), for: .ask)
-            focusChatInputSoon()
+        if let directAnswer = directAppStateAnswer(for: question, grants: fileGrants) {
+            appendDirectAskAnswer(question: question, answer: directAnswer.answer, backendLabel: directAnswer.backendLabel)
             return
         }
 
@@ -1398,8 +1386,8 @@ struct ResultPanelView: View {
         let conversation = cloudConversationTurns(beforeLastTurn: true)
         let isSimpleBriefPlainChat = responseDetail == .brief
             && !hasCaptureContextValue
-            && fileGrants.isEmpty
             && previousTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !Self.shouldSearchLocalFiles(for: question, grants: fileGrants)
 
         if hasCaptureContextValue,
            !cloudModeEnabled,
@@ -1443,9 +1431,12 @@ struct ResultPanelView: View {
         updateExpandedNotchSizeIfNeeded()
 
         Task {
-            let localFileContext = await Task.detached {
-                LocalFileContextProvider().context(for: question, grants: fileGrants)
-            }.value
+            let shouldSearchFiles = Self.shouldSearchLocalFiles(for: question, grants: fileGrants)
+            let localFileContext = shouldSearchFiles
+                ? await Task.detached {
+                    LocalFileContextProvider().context(for: question, grants: fileGrants)
+                }.value
+                : LocalFileContext(grants: [], snippets: [])
             let prompt = Self.askPrompt(
                 question: question,
                 hasCaptureContext: hasCaptureContextValue,
@@ -1469,7 +1460,14 @@ struct ResultPanelView: View {
                     actionKind: hasCaptureContextValue ? .ask : .chat,
                     prompt: prompt,
                     capturedImage: imageInput,
-                    maxOutputTokens: isSimpleBriefPlainChat ? 256 : responseDetail.maxOutputTokens(for: .ask),
+                    maxOutputTokens: Self.askMaxOutputTokens(
+                        responseDetail: responseDetail,
+                        question: question,
+                        hasCaptureContext: hasCaptureContextValue,
+                        hasFileContext: localFileContext.hasSnippets,
+                        hasPreviousTranscript: !previousTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                        isSimpleBriefPlainChat: isSimpleBriefPlainChat
+                    ),
                     preferredProvider: preferredProvider,
                     cloudOCRText: cloudModeEnabled ? cloudContext : (hasCaptureContextValue ? capturedOCRText : nil),
                     cloudDetectedLanguage: hasCaptureContextValue ? detectedLanguage : nil,
@@ -1477,6 +1475,93 @@ struct ResultPanelView: View {
                     cloudConversation: conversation
                 )
             )
+        }
+    }
+
+    private func appendDirectAskAnswer(question: String, answer: String, backendLabel: String) {
+        askInput = ""
+        recoveryState = nil
+        hiddenReasoning = nil
+        outputStatistics = []
+        actionBackendLabel = backendLabel
+        askTurns.append(
+            AskConversationTurn(
+                question: question,
+                answer: answer,
+                backendLabel: backendLabel
+            )
+        )
+        persistAskSession()
+        setOutputState(askOutputState(), for: .ask)
+        focusChatInputSoon()
+    }
+
+    private func directAppStateAnswer(for question: String, grants: [LocalFileGrant]) -> (answer: String, backendLabel: String)? {
+        if let modelAnswer = selectedModelAnswer(for: question) {
+            return (modelAnswer, "Pixel Pane")
+        }
+
+        if let routingAnswer = routingAnswer(for: question) {
+            return (routingAnswer, "Pixel Pane")
+        }
+
+        if let fileAnswer = LocalFileContextProvider().directAnswer(for: question, grants: grants) {
+            return (fileAnswer, "Local Files")
+        }
+
+        return nil
+    }
+
+    private func selectedModelAnswer(for question: String) -> String? {
+        let normalized = Self.normalizedQuestion(question)
+        let asksForModel = [
+            "what model",
+            "what is this model",
+            "which model",
+            "what are you running",
+            "what llm",
+            "which llm",
+            "model name"
+        ].contains { normalized.contains($0) }
+            || (
+                normalized == "which one"
+                    && askTurns.last.map {
+                        Self.normalizedQuestion($0.question).contains("model")
+                            || Self.normalizedQuestion($0.answer).contains("language model")
+                    } == true
+            )
+        guard asksForModel else { return nil }
+
+        if routingSettings.effectiveMode == .cloud {
+            return "Pixel Pane is using Cloud Mode."
+        }
+
+        if let selection = mlxModelStore.selectedModel {
+            return "Pixel Pane is using \(selection.repositoryID)."
+        }
+
+        return localTextBackendLabel() == Self.appleTextBackendLabel
+            ? "Pixel Pane is using Apple Foundation Models."
+            : "No local MLX model is selected."
+    }
+
+    private func routingAnswer(for question: String) -> String? {
+        let normalized = Self.normalizedQuestion(question)
+        let asksForRouting = [
+            "local or cloud",
+            "using cloud",
+            "using local",
+            "cloud mode",
+            "local mode",
+            "where is this running"
+        ].contains { normalized.contains($0) }
+        guard asksForRouting else { return nil }
+
+        switch routingSettings.effectiveMode {
+        case .local:
+            return "Pixel Pane is in Local Mode."
+        case .cloud:
+            return "Pixel Pane is in Cloud Mode."
         }
     }
 
@@ -1577,44 +1662,64 @@ struct ResultPanelView: View {
         responseGuidance: String
     ) -> String {
         let trimmedQuestion = question.trimmingCharacters(in: .whitespacesAndNewlines)
-        let hasFiles = localFileContext.hasGrantedFiles
-        if responseDetail == .brief,
-           !hasCaptureContext,
-           !hasFiles,
-           previousTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return """
-            \(responseGuidance)
-            Answer directly. No hidden reasoning or <think> text. /no_think
-            Q: \(trimmedQuestion) /no_think
-            """
-        }
-
+        let transcript = truncate(previousTranscript.trimmingCharacters(in: .whitespacesAndNewlines), limit: 1_600)
         let ocr = truncate(
             capturedOCRText.trimmingCharacters(in: .whitespacesAndNewlines),
             limit: 1_400
         )
-        let transcript = truncate(previousTranscript, limit: 1_600)
         let fileContext = compactFileContext(localFileContext, usesCloud: usesCloud)
-        let screenLine: String
-        if hasCaptureContext, isCaptureImageAttached {
-            screenLine = "Screen: attached image is primary. OCR is secondary."
-        } else if hasCaptureContext, !ocr.isEmpty {
-            screenLine = "Screen: OCR is primary; no image vision."
-        } else if hasCaptureContext {
-            screenLine = "Screen: selected, but no image vision/OCR."
+        var sections: [String] = []
+
+        if responseDetail == .brief {
+            sections.append("Answer directly in one short sentence when practical. Do not show reasoning.")
         } else {
-            screenLine = "Screen: none."
+            sections.append(responseGuidance)
         }
 
-        return """
-        \(responseGuidance) Use screen context first, then files, then prior chat. Do not restate the question. Do not ask for coordinates; the selected region is already provided. File writes require the app's separate confirmation UI.
+        if hasCaptureContext {
+            if isCaptureImageAttached {
+                sections.append(
+                    ocr.isEmpty
+                        ? "Use the attached screen image as context."
+                        : "Use the attached screen image as context. OCR:\n\(ocr)"
+                )
+            } else if !ocr.isEmpty {
+                sections.append("Use this screen OCR as context:\n\(ocr)")
+            } else {
+                sections.append("A screen region was selected, but no readable OCR or image input is available.")
+            }
+        }
 
-        \(screenLine)
-        OCR: \(ocr.isEmpty ? "none" : ocr)
-        Files: \(fileContext)
-        Prior: \(transcript.isEmpty ? "none" : transcript)
-        Q: \(question)
-        """
+        if fileContext != "none granted", fileContext != "none relevant" {
+            sections.append("Use these file snippets only when relevant:\n\(fileContext)")
+        }
+
+        if !transcript.isEmpty {
+            sections.append("Prior chat:\n\(transcript)")
+        }
+
+        sections.append("User: \(trimmedQuestion)")
+        return sections.joined(separator: "\n\n")
+    }
+
+    private static func askMaxOutputTokens(
+        responseDetail: ResponseDetailLevel,
+        question: String,
+        hasCaptureContext: Bool,
+        hasFileContext: Bool,
+        hasPreviousTranscript: Bool,
+        isSimpleBriefPlainChat: Bool
+    ) -> Int {
+        guard responseDetail == .brief else {
+            return responseDetail.maxOutputTokens(for: .ask)
+        }
+        if isSimpleBriefPlainChat {
+            return 128
+        }
+        if asksForLongAnswer(question) || hasCaptureContext || hasFileContext {
+            return 1_024
+        }
+        return hasPreviousTranscript ? 512 : 256
     }
 
     private static func compactFileContext(_ context: LocalFileContext, usesCloud: Bool) -> String {
@@ -1660,6 +1765,47 @@ struct ResultPanelView: View {
         guard value.count > limit else { return value }
         let end = value.index(value.startIndex, offsetBy: limit)
         return String(value[..<end]).trimmingCharacters(in: .whitespacesAndNewlines) + "..."
+    }
+
+    private static func shouldSearchLocalFiles(for question: String, grants: [LocalFileGrant]) -> Bool {
+        guard !grants.isEmpty else { return false }
+        let normalized = normalizedQuestion(question)
+        let fileSignals = [
+            "file", "files", "folder", "folders", "project", "repo", "repository",
+            "code", "source", "readme", "document", "docs", "path", "search",
+            "find", "where is", "show me", "open", "swift", "python", "json",
+            "markdown", "md", "this project", "this repo"
+        ]
+        if fileSignals.contains(where: { normalized.contains($0) }) {
+            return true
+        }
+        return grants.contains { grant in
+            let name = URL(fileURLWithPath: grant.path).lastPathComponent.lowercased()
+            return !name.isEmpty && normalized.contains(name)
+        }
+    }
+
+    private static func asksForLongAnswer(_ question: String) -> Bool {
+        let normalized = normalizedQuestion(question)
+        return [
+            "explain",
+            "steps",
+            "list",
+            "compare",
+            "summarize",
+            "write",
+            "draft",
+            "code",
+            "why",
+            "how"
+        ].contains { normalized.contains($0) }
+    }
+
+    private static func normalizedQuestion(_ value: String) -> String {
+        value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .lowercased()
     }
 
     private static func questionReferencesCapture(_ question: String) -> Bool {
