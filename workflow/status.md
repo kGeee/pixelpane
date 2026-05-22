@@ -110,6 +110,7 @@ See `workflow/backlog.md` for all stories.
 
 ## Last Completed Work
 
+- 2026-05-22: Follow-up chat source control polish. Reordered composer controls to New, Files, History, prompt, Send; removed the duplicate file-source context chip above the composer; and added Clear File Sources to the Files menu so users can remove all granted file references from chat. Local verification wrapper build succeeded.
 - 2026-05-22: Follow-up chat file-source polish. The notch composer now has a compact Files menu that lets users choose a folder, choose a file, see current granted sources, and remove a source without leaving the chat window. It reuses the existing explicit local file access store, so file context remains user-granted and local-first. Local verification wrapper build succeeded.
 - 2026-05-22: Follow-up new chat/history polish. The notch composer now exposes New Chat as a direct small action and History as a labeled recent-chat menu instead of hiding both behind a clock-only button. Recent chat menu items now show context type plus relative recency. Local verification wrapper build succeeded.
 - 2026-05-22: Follow-up response completion policy fix. Response Style now guides verbosity without shrinking completion token budgets; Brief/Balanced/Thorough prompts explicitly tell models to finish the answer instead of cutting off. Raised app/backend completion ceilings to 4096 tokens, updated Cloud API docs, and removed token-count labels from Settings. Local verification wrapper build and backend typecheck both succeeded.
@@ -267,12 +268,14 @@ See `workflow/backlog.md` for all stories.
 
 ## Files Changed In Last Session
 
+- `PixelPane/PixelPane/App/LocalFileAccess.swift`
 - `PixelPane/PixelPane/Panel/ResultPanelView.swift`
 - `workflow/status.md`
 - `workflow/backlog.md`
 
 ## Last Verification
 
+- 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` succeeded after reorganizing chat controls and adding Clear File Sources.
 - 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` succeeded after adding the chat-window Files source menu.
 - 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` succeeded after splitting New Chat and History into clearer minimal composer controls.
 - 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` and `npm run typecheck` in `PixelPane/Backend` succeeded after making Response Style a verbosity hint instead of a truncating token cap.

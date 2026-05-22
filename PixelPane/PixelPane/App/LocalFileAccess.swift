@@ -69,6 +69,11 @@ final class LocalFileAccessStore: ObservableObject {
         persist()
     }
 
+    func clearGrants() {
+        grants = []
+        userDefaults.removeObject(forKey: key)
+    }
+
     func clearMissingGrants() {
         grants.removeAll { !FileManager.default.fileExists(atPath: $0.path) }
         persist()

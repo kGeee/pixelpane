@@ -764,16 +764,6 @@ struct ResultPanelView: View {
             )
         }
 
-        if !localFileAccess.grants.isEmpty {
-            badges.append(
-                MetadataBadge(
-                    text: "\(localFileAccess.grants.count) file source\(localFileAccess.grants.count == 1 ? "" : "s")",
-                    systemImage: "folder",
-                    help: "Pixel Pane can read and search user-granted local files and folders."
-                )
-            )
-        }
-
         badges.append(
             MetadataBadge(
                 text: routingBadgeText,
@@ -849,18 +839,19 @@ struct ResultPanelView: View {
                 )
                 .disabled(!canStartNewChat)
 
-                ChatHistoryMenuButton(
-                    sessions: chatHistory.recentSessions(),
-                    isDisabled: !loadingActions.isEmpty,
-                    onSelect: loadChatSession
-                )
-
                 FileSourceMenuButton(
                     grants: localFileAccess.grants,
                     isDisabled: !loadingActions.isEmpty,
                     onGrantFolder: localFileAccess.grantFolder,
                     onGrantFile: localFileAccess.grantFile,
-                    onRemove: localFileAccess.removeGrant
+                    onRemove: localFileAccess.removeGrant,
+                    onClear: localFileAccess.clearGrants
+                )
+
+                ChatHistoryMenuButton(
+                    sessions: chatHistory.recentSessions(),
+                    isDisabled: !loadingActions.isEmpty,
+                    onSelect: loadChatSession
                 )
 
                 OverlayTextField(
@@ -2882,6 +2873,7 @@ private struct FileSourceMenuButton: View {
     let onGrantFolder: () -> Void
     let onGrantFile: () -> Void
     let onRemove: (LocalFileGrant) -> Void
+    let onClear: () -> Void
 
     var body: some View {
         Menu {
@@ -2922,6 +2914,13 @@ private struct FileSourceMenuButton: View {
                         }
                     }
                 }
+
+                Divider()
+                Button(role: .destructive) {
+                    onClear()
+                } label: {
+                    Label("Clear File Sources", systemImage: "xmark.circle")
+                }
             }
         } label: {
             HStack(spacing: 7) {
@@ -2932,7 +2931,7 @@ private struct FileSourceMenuButton: View {
                     .font(.system(size: 13, weight: .semibold, design: .rounded))
                     .lineLimit(1)
             }
-            .foregroundStyle(grants.isEmpty ? .tertiary : .secondary)
+            .foregroundStyle(.secondary)
             .frame(height: 40)
             .padding(.horizontal, 13)
             .background(.black.opacity(0.24), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
@@ -2951,7 +2950,7 @@ private struct FileSourceMenuButton: View {
         if grants.isEmpty {
             return "Files"
         }
-        return "\(grants.count) file\(grants.count == 1 ? "" : "s")"
+        return "Files \(grants.count)"
     }
 }
 

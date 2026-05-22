@@ -1257,6 +1257,7 @@ Notes:
 
 - Implemented 2026-05-21. Added a read-only local file access store with explicit user-granted file/folder selection from the assistant and Settings. The notch chat can list granted paths, search text-like files inside granted locations, and include bounded relevant snippets in local or cloud chat prompts depending on the selected routing mode. Writes, edits, deletes, and moves remain intentionally out of scope for this story. Debug app build, backend typecheck, and Worker deploy succeeded.
 - Follow-up 2026-05-22: Added a compact Files menu directly in the chat composer so users can choose a folder, choose a file, review granted sources, and remove a source without opening Settings.
+- Follow-up 2026-05-22: Reordered the composer controls and added Clear File Sources so all granted file references can be removed from the chat window.
 
 ### `ASSIST-003` - Add Confirmed Local File Create/Edit Tools
 
