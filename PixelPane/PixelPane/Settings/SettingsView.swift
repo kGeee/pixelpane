@@ -121,6 +121,18 @@ struct SettingsView: View {
                     }
                 }
             }
+
+            Section("Onboarding QA") {
+                Text("Temporarily reset the first-run privacy explanation during local testing.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    appState.resetPrivacyOnboardingForQA()
+                } label: {
+                    Label("Show First-Run Onboarding Again", systemImage: "arrow.counterclockwise")
+                }
+            }
         }
         .formStyle(.grouped)
     }

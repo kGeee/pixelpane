@@ -1,6 +1,6 @@
 # Pixel Pane Story Backlog
 
-Last updated: 2026-05-22 (PRIV-001 onboarding layout follow-up)
+Last updated: 2026-05-22 (PRIV-001 onboarding QA reset follow-up)
 
 This is the story-level source of truth. Claude/Codex should use this file when you say:
 
@@ -673,6 +673,7 @@ Notes:
 | `PRIV-006` | Result source transparency | Not Started | `CORE-008` |
 | `PRIV-007` | Settings structure | Not Started | `CORE-001` |
 | `PRIV-008` | First-capture tutorial | Not Started | `CORE-002` |
+| `PRIV-009` | Remove or formalize onboarding QA reset | Not Started | Beta readiness |
 
 ### `PRIV-001` - First-Run Onboarding
 
@@ -689,6 +690,7 @@ Notes:
 
 - Completed 2026-05-21. Added a first-run onboarding window shown before the default assistant surface when `PrivacyOnboarding.Completed` is unset. It explains selected-region capture, no continuous recording, and ephemeral in-memory screenshot handling. Continue marks onboarding complete and opens the assistant; Start First Capture marks onboarding complete and starts the capture flow. Local verification wrapper build succeeded.
 - Follow-up 2026-05-22. Increased the onboarding window/content minimum height so the bottom action buttons do not clip or overflow. Local verification wrapper build succeeded.
+- Follow-up 2026-05-22. Added a temporary Settings -> Permissions -> Onboarding QA control to show the first-run onboarding again during local testing. Tracked removal/formalization in `PRIV-009`.
 
 ### `PRIV-002` - Screen Recording Permission Guidance
 
@@ -767,6 +769,19 @@ Acceptance:
 - [ ] Overlay has first-use tip.
 - [ ] Tutorial state is separate from onboarding state.
 - [ ] Tutorial does not repeat after success.
+
+### `PRIV-009` - Remove Or Formalize Onboarding QA Reset
+
+Auto-created during `PRIV-001` follow-up on 2026-05-22.
+
+Goal: Do not ship a rough QA-only onboarding reset control by accident.
+
+Acceptance:
+
+- [ ] Decide whether the onboarding reset belongs in production Settings or should be debug-only.
+- [ ] If production-facing, move it into the final Privacy/About settings structure with user-facing copy.
+- [ ] If debug-only, hide it from release builds or remove it before beta.
+- [ ] Update `workflow/status.md` with the final decision.
 
 ---
 

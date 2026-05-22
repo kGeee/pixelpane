@@ -86,6 +86,12 @@ final class AppState: ObservableObject {
         onboardingController.close()
     }
 
+    func resetPrivacyOnboardingForQA() {
+        hasCompletedOnboarding = false
+        userDefaults.removeObject(forKey: onboardingCompletedKey)
+        showOnboarding()
+    }
+
     func setResponseDetailLevel(_ level: ResponseDetailLevel) {
         guard responseDetailLevel != level else { return }
         responseDetailLevel = level
