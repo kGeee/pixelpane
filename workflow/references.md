@@ -48,6 +48,7 @@ Primary references:
 - Use MLX/VLM as the optional local image-understanding runtime for Explain, Ask, and Debug when the user installs or selects a compatible local model.
 - Current development-machine discovery:
   - `mlx_vlm.generate` exists at `/opt/homebrew/bin/mlx_vlm.generate`.
+  - `mlx_lm.generate` exists at `/Users/nayak/Library/Python/3.13/bin/mlx_lm.generate`; GUI app runtime detection must search per-user Python bin directories because LaunchServices apps may not inherit the user's shell `PATH`.
   - `mlx-run35` was not found on PATH during the 2026-04-29 check.
   - Hugging Face cache includes `mlx-community/Qwen3.6-35B-A3B-6bit`.
 - Recommended default model for the setup flow:

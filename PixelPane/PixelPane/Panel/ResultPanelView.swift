@@ -552,9 +552,9 @@ struct ResultPanelView: View {
 
     private var outputPane: some View {
         outputPaneContent
-            .padding(presentationStyle == .notchAttached ? 18 : 0)
+            .padding(usesFramedNotchOutputPane ? 18 : 0)
             .background {
-                if presentationStyle == .notchAttached {
+                if usesFramedNotchOutputPane {
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
                         .fill(.white.opacity(0.04))
                         .overlay {
@@ -564,6 +564,10 @@ struct ResultPanelView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var usesFramedNotchOutputPane: Bool {
+        presentationStyle == .notchAttached && selectedAction != .ask
     }
 
     private var outputPaneContent: some View {
@@ -939,14 +943,58 @@ struct ResultPanelView: View {
     }
 
     private var preferredNotchExpandedSize: CGSize {
-        isBlankAssistantChat
-            ? ResultPanelPresentationStyle.notchEmptyAssistantSize
-            : ResultPanelPresentationStyle.notchExpandedSize
+        if isBlankAssistantChat {
+            return ResultPanelPresentationStyle.notchEmptyAssistantSize
+        }
+        if selectedAction == .ask {
+            return preferredAskNotchSize
+        }
+        return ResultPanelPresentationStyle.notchExpandedSize
     }
 
     private func updateExpandedNotchSizeIfNeeded() {
         guard presentationStyle == .notchAttached, isNotchExpanded else { return }
         onPresentationSizeChange?(preferredNotchExpandedSize)
+    }
+
+    private var preferredAskNotchSize: CGSize {
+        let width: CGFloat = hasCaptureContext ? 780 : 720
+        let headerHeight: CGFloat = 82
+        let chipHeight: CGFloat = assistantContextBadges.isEmpty ? 0 : 34
+        let composerHeight: CGFloat = 58
+        let recoveryHeight: CGFloat = recoveryState == nil ? 0 : 96
+        let writeConfirmationHeight: CGFloat = pendingLocalFileWriteProposal == nil ? 0 : 136
+        let transcriptHeight = estimatedAskTranscriptHeight
+        let height = headerHeight
+            + transcriptHeight
+            + chipHeight
+            + composerHeight
+            + recoveryHeight
+            + writeConfirmationHeight
+            + 14
+
+        return CGSize(
+            width: width,
+            height: min(ResultPanelPresentationStyle.notchExpandedSize.height, max(250, height))
+        )
+    }
+
+    private var estimatedAskTranscriptHeight: CGFloat {
+        guard !askTurns.isEmpty else {
+            return hasCaptureContext ? 52 : 0
+        }
+
+        let visibleTurns = askTurns.suffix(3)
+        let estimated = visibleTurns.reduce(CGFloat(0)) { total, turn in
+            let questionLines = max(1, ceil(CGFloat(turn.question.count) / 56))
+            let answerText = turn.answer.isEmpty ? "Thinking..." : turn.answer
+            let answerLines = max(1, ceil(CGFloat(answerText.count) / 82))
+            let questionHeight = 32 + questionLines * 17
+            let answerHeight = 50 + answerLines * 19
+            return total + questionHeight + answerHeight + 22
+        }
+
+        return min(340, max(112, estimated))
     }
 
     private func startSmartDefaultActionIfNeeded() {
@@ -1690,6 +1738,7 @@ struct ResultPanelView: View {
         guard let lastIndex = askTurns.indices.last else { return }
         askTurns[lastIndex].answer = answer
         persistAskSession()
+        updateExpandedNotchSizeIfNeeded()
     }
 
     private func updateLastAskStatistics(_ statistics: [AIModelOutputStatistic]) {

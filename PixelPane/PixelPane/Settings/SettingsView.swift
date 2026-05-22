@@ -1,6 +1,8 @@
 import AppKit
 import SwiftUI
 
+private let noMLXModelSelectionID = "__pixelpane_no_mlx_model__"
+
 struct SettingsView: View {
     @EnvironmentObject private var appState: AppState
     @State private var selectedMLXModelID: String?
@@ -38,16 +40,19 @@ struct SettingsView: View {
             appState.refreshSystemStatus()
             appState.refreshLocalAIStatus()
             selectedMLXModelID = appState.mlxVisionSetupSnapshot.selectedModel?.id
-                ?? appState.mlxVisionSetupSnapshot.installedModels.first?.id
-                ?? appState.mlxVisionSetupSnapshot.recommendedModel.id
+                ?? noMLXModelSelectionID
         }
         .background(SettingsWindowAccessor())
         .onChange(of: appState.mlxVisionSetupSnapshot.installedModels) { _, installedModels in
-            if selectedMLXModelID == nil || selectedMLXModel == nil {
+            if selectedMLXModelID != noMLXModelSelectionID,
+               selectedMLXModelID == nil || selectedMLXModel == nil {
                 selectedMLXModelID = appState.mlxVisionSetupSnapshot.selectedModel?.id
                     ?? installedModels.first?.id
                     ?? appState.mlxVisionSetupSnapshot.recommendedModel.id
             }
+        }
+        .onChange(of: appState.mlxVisionSetupSnapshot.selectedModel?.id) { _, selectedID in
+            selectedMLXModelID = selectedID ?? noMLXModelSelectionID
         }
     }
 
@@ -144,132 +149,123 @@ struct SettingsView: View {
             }
 
             Section("Local AI") {
-                LabeledContent("Text") {
-                    StatusPill(
-                        title: appState.localAICapabilities.text.label,
+                localAISectionContent
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    @ViewBuilder
+    private var localAISectionContent: some View {
+        if appState.aiRoutingSettings.effectiveMode == .cloud {
+            VStack(alignment: .leading, spacing: 10) {
+                Label("Cloud Mode is active", systemImage: "cloud")
+                    .font(.headline)
+                    .foregroundStyle(.blue)
+
+                Text("Local model setup is hidden while Pixel Pane routes AI through Cloud.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    appState.setAIRoutingMode(.local)
+                } label: {
+                    Label("Switch to Local", systemImage: "lock.shield")
+                }
+            }
+            .padding(.vertical, 2)
+        } else {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 12) {
+                    LocalAIStatusTile(
+                        title: "Text",
+                        detail: compactCapabilityLabel(appState.localAICapabilities.text),
                         systemImage: appState.localAICapabilities.text.isAvailable ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
                         tint: appState.localAICapabilities.text.isAvailable ? .green : .orange
                     )
-                }
 
-                LabeledContent("Vision") {
-                    StatusPill(
-                        title: appState.localAICapabilities.image.label,
+                    LocalAIStatusTile(
+                        title: "Vision",
+                        detail: compactCapabilityLabel(appState.localAICapabilities.image),
                         systemImage: appState.localAICapabilities.image.isAvailable ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
                         tint: appState.localAICapabilities.image.isAvailable ? .green : .orange
                     )
                 }
 
-                Text(appState.mlxVisionSetupSnapshot.setupDetail)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-
-                LabeledContent("Runtime") {
-                    Text(runtimeStatusText)
-                        .foregroundStyle(runtimeStatusTint)
-                }
-
-                if !runtimePathText.isEmpty {
-                    Text(runtimePathText)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                if !mlxModelChoices.isEmpty {
-                    Picker("Model", selection: selectedModelBinding) {
-                        ForEach(mlxModelChoices) { model in
-                            Text(model.displayName).tag(model.id)
-                        }
-                    }
-
-                    if let model = selectedMLXModel {
-                        HStack(spacing: 8) {
-                            Button {
-                                appState.chooseMLXModelFolder()
-                            } label: {
-                                Label("Choose Folder", systemImage: "folder")
-                            }
-                            .disabled(appState.isRunningMLXSetupCheck)
-
-                            Button {
-                                appState.runMLXSetupCheck(for: model)
-                            } label: {
-                                Label("Run Setup Check", systemImage: "checkmark.shield")
-                            }
-                            .disabled(appState.isRunningMLXSetupCheck || !model.isInstalled)
-                            .help(model.capability == .unsupported ? "This model is visible for clarity, but Pixel Pane cannot use it for local MLX chat or vision." : "Validate this MLX model for local chat or vision.")
-
-                            Button {
-                                appState.refreshLocalAIStatus()
-                            } label: {
-                                Label("Refresh", systemImage: "arrow.clockwise")
-                            }
-                        }
-
-                        HStack(spacing: 8) {
-                            Button {
-                                appState.openRecommendedMLXModelPage()
-                            } label: {
-                                Label("Open Model Page", systemImage: "safari")
-                            }
-
-                            Button {
-                                copyInstallCommand(for: model)
-                            } label: {
-                                Label("Copy Install Command", systemImage: "doc.on.doc")
-                            }
-
-                            Button {
-                                appState.clearMLXModelSelection()
-                            } label: {
-                                Label("Clear Selection", systemImage: "xmark.circle")
-                            }
-                            .disabled(appState.mlxVisionSetupSnapshot.selectedModel == nil)
-                        }
-
-                        DisclosureGroup("Model details") {
-                            MLXModelDetailView(model: model)
-                        }
-                    }
-                } else {
-                    HStack(spacing: 8) {
-                        Button {
-                            appState.chooseMLXModelFolder()
-                        } label: {
-                            Label("Choose Folder", systemImage: "folder")
-                        }
-                        .disabled(appState.isRunningMLXSetupCheck)
-
-                        Button {
-                            appState.openRecommendedMLXModelPage()
-                        } label: {
-                            Label("Open Model Page", systemImage: "safari")
-                        }
-
-                        Button {
-                            copyInstallCommand(for: appState.mlxVisionSetupSnapshot.recommendedModel)
-                        } label: {
-                            Label("Copy Install Command", systemImage: "doc.on.doc")
-                        }
-
-                        Button {
-                            appState.refreshLocalAIStatus()
-                        } label: {
-                            Label("Refresh", systemImage: "arrow.clockwise")
-                        }
-                    }
-
-                    DisclosureGroup("Recommended model") {
-                        MLXModelDetailView(model: appState.mlxVisionSetupSnapshot.recommendedModel)
-                    }
-                }
-
-                Text("Choose any local MLX text or vision model folder, or use a model discovered in the Hugging Face cache. Pixel Pane never downloads large models automatically.")
+                Text(mlxSetupDetailText)
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
+            .padding(.vertical, 2)
+
+            Picker("Model", selection: selectedModelBinding) {
+                Text("No MLX model selected").tag(noMLXModelSelectionID)
+                ForEach(mlxModelChoices) { model in
+                    Text(model.displayName).tag(model.id)
+                }
+            }
+
+            HStack(spacing: 8) {
+                Button {
+                    applySelectedMLXModel()
+                } label: {
+                    Label(primaryMLXActionTitle, systemImage: "checkmark.shield")
+                }
+                .disabled(!canApplySelectedMLXModel)
+                .help(primaryMLXActionHelp)
+
+                Button {
+                    appState.chooseMLXModelFolder()
+                } label: {
+                    Label("Choose Folder", systemImage: "folder")
+                }
+                .disabled(appState.isRunningMLXSetupCheck)
+
+                Menu {
+                    Button {
+                        appState.refreshLocalAIStatus()
+                    } label: {
+                        Label("Refresh Status", systemImage: "arrow.clockwise")
+                    }
+
+                    Button {
+                        copyFullMLXSetupCommand()
+                    } label: {
+                        Label("Copy Setup Command", systemImage: "doc.on.doc")
+                    }
+
+                    Button {
+                        appState.openRecommendedMLXModelPage()
+                    } label: {
+                        Label("Open Recommended Model", systemImage: "safari")
+                    }
+
+                    Divider()
+
+                    Button(role: .destructive) {
+                        clearSelectedMLXModel()
+                    } label: {
+                        Label("Clear Selection", systemImage: "xmark.circle")
+                    }
+                    .disabled(selectedMLXModelID == noMLXModelSelectionID && appState.mlxVisionSetupSnapshot.selectedModel == nil)
+                } label: {
+                    Label("More", systemImage: "ellipsis.circle")
+                }
+                .disabled(appState.isRunningMLXSetupCheck)
+            }
+
+            DisclosureGroup("Details") {
+                Text(runtimePathText.isEmpty ? "No MLX command-line tools found yet." : runtimePathText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if let model = selectedMLXModel {
+                    MLXModelDetailView(model: model)
+                } else {
+                    MLXModelDetailView(model: appState.mlxVisionSetupSnapshot.recommendedModel)
+                }
+            }
         }
-        .formStyle(.grouped)
     }
 
     private var localFilesSettings: some View {
@@ -321,49 +317,120 @@ struct SettingsView: View {
     }
 
     private var selectedMLXModel: MLXVisionModel? {
-        let selectedID = selectedMLXModelID
-        return mlxModelChoices.first { $0.id == selectedID } ?? mlxModelChoices.first
+        guard let selectedID = selectedMLXModelID, selectedID != noMLXModelSelectionID else {
+            return nil
+        }
+        return mlxModelChoices.first { $0.id == selectedID }
     }
 
     private var selectedModelBinding: Binding<String> {
         Binding(
-            get: { selectedMLXModelID ?? selectedMLXModel?.id ?? "" },
+            get: { selectedMLXModelID ?? noMLXModelSelectionID },
             set: { selectedMLXModelID = $0 }
         )
     }
 
-    private var runtimeStatusText: String {
-        let hasText = appState.mlxVisionSetupSnapshot.textRuntimeURL != nil
-        let hasVision = appState.mlxVisionSetupSnapshot.runtimeURL != nil
-        switch (hasText, hasVision) {
-        case (true, true):
-            return "Text + Vision found"
-        case (true, false):
-            return "Text found"
-        case (false, true):
-            return "Vision found"
-        case (false, false):
-            return "Not found"
-        }
+    private var hasStagedMLXModelSelection: Bool {
+        guard let selectedMLXModel else { return false }
+        return selectedMLXModel.id != appState.mlxVisionSetupSnapshot.selectedModel?.id
     }
 
-    private var runtimeStatusTint: Color {
-        appState.mlxVisionSetupSnapshot.textRuntimeURL == nil
-            && appState.mlxVisionSetupSnapshot.runtimeURL == nil ? .orange : .green
+    private var mlxSetupDetailText: String {
+        if selectedMLXModelID == noMLXModelSelectionID {
+            if appState.mlxVisionSetupSnapshot.selectedModel != nil {
+                return "No MLX model is selected in this view. The saved model remains active until you clear it."
+            }
+            return "Use Apple local text AI as-is, or select an MLX model to enable local MLX chat and optional vision."
+        }
+
+        guard hasStagedMLXModelSelection, let model = selectedMLXModel else {
+            return appState.mlxVisionSetupSnapshot.setupDetail
+        }
+
+        return "Selected \(model.repositoryID) for \(model.capability.displayName). Use this model to make it active."
     }
 
     private var runtimePathText: String {
         [
-            appState.mlxVisionSetupSnapshot.textRuntimeURL.map { "Text: \($0.path)" },
-            appState.mlxVisionSetupSnapshot.runtimeURL.map { "Vision: \($0.path)" }
+            appState.mlxVisionSetupSnapshot.textRuntimeURL.map { "Text runtime: \($0.path)" },
+            appState.mlxVisionSetupSnapshot.runtimeURL.map { "Vision runtime: \($0.path)" }
         ]
         .compactMap { $0 }
         .joined(separator: "\n")
     }
 
-    private func copyInstallCommand(for model: MLXVisionModel) {
+    private func applySelectedMLXModel() {
+        guard let model = selectedMLXModel, model.isInstalled else {
+            appState.refreshLocalAIStatus()
+            return
+        }
+        appState.runMLXSetupCheck(for: model)
+    }
+
+    private var canApplySelectedMLXModel: Bool {
+        guard let model = selectedMLXModel else { return false }
+        return model.isInstalled && !appState.isRunningMLXSetupCheck
+    }
+
+    private var primaryMLXActionTitle: String {
+        if selectedMLXModel == nil {
+            return "Use Model"
+        }
+        if appState.isRunningMLXSetupCheck {
+            return "Checking"
+        }
+        return hasStagedMLXModelSelection ? "Use Model" : "Recheck"
+    }
+
+    private var primaryMLXActionHelp: String {
+        guard let model = selectedMLXModel else {
+            return "Select an installed MLX model first."
+        }
+        if !model.isInstalled {
+            return "Download this model or choose a local folder first."
+        }
+        if model.capability == .unsupported {
+            return "This model is visible for clarity, but Pixel Pane cannot use it for local MLX chat or vision."
+        }
+        return "Validate this model and make it the active local MLX model."
+    }
+
+    private func compactCapabilityLabel(_ status: AIBackendCapabilityStatus) -> String {
+        switch status {
+        case .available(.appleFoundationModels):
+            return "Apple ready"
+        case .available(.mlxText):
+            return "MLX ready"
+        case .available(.mlxVision):
+            return "MLX ready"
+        case .available(.pixelPaneCloud):
+            return "Cloud ready"
+        case .installing(_, let detail):
+            return detail
+        case .unavailable(let reason):
+            return reason.label
+        }
+    }
+
+    private func copyFullMLXSetupCommand() {
+        let model = selectedMLXModel ?? appState.mlxVisionSetupSnapshot.recommendedModel
+        copyInstallCommand(
+            [
+                "python3 -m pip install -U mlx-lm mlx-vlm huggingface_hub",
+                model.installCommand
+            ]
+            .joined(separator: "\n")
+        )
+    }
+
+    private func clearSelectedMLXModel() {
+        selectedMLXModelID = noMLXModelSelectionID
+        appState.clearMLXModelSelection()
+    }
+
+    private func copyInstallCommand(_ command: String) {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(model.installCommand, forType: .string)
+        NSPasteboard.general.setString(command, forType: .string)
     }
 
     private var hotkeyStatusImage: String {
@@ -401,6 +468,39 @@ private struct StatusPill: View {
     var body: some View {
         Label(title, systemImage: systemImage)
             .foregroundStyle(tint)
+    }
+}
+
+private struct LocalAIStatusTile: View {
+    let title: String
+    let detail: String
+    let systemImage: String
+    let tint: Color
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: systemImage)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(tint)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+
+                Text(detail)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 

@@ -71,7 +71,7 @@ struct MLXVisionRuntimeDetector: Sendable {
     }
 
     func mlxGenerateExecutableURL() -> URL? {
-        let candidates = pathCandidates(named: "mlx_vlm.generate") + [
+        let candidates = pathCandidates(named: "mlx_vlm.generate") + userPythonBinCandidates(named: "mlx_vlm.generate") + [
             "/opt/homebrew/bin/mlx_vlm.generate",
             "/usr/local/bin/mlx_vlm.generate"
         ]
@@ -82,7 +82,7 @@ struct MLXVisionRuntimeDetector: Sendable {
     }
 
     func mlxTextGenerateExecutableURL() -> URL? {
-        let candidates = pathCandidates(named: "mlx_lm.generate") + [
+        let candidates = pathCandidates(named: "mlx_lm.generate") + userPythonBinCandidates(named: "mlx_lm.generate") + [
             "/opt/homebrew/bin/mlx_lm.generate",
             "/usr/local/bin/mlx_lm.generate"
         ]
@@ -321,5 +321,23 @@ struct MLXVisionRuntimeDetector: Sendable {
             .split(separator: ":")
             .map(String.init)
             .map { URL(fileURLWithPath: $0).appendingPathComponent(executableName).path }
+    }
+
+    private func userPythonBinCandidates(named executableName: String) -> [String] {
+        let pythonDirectory = homeDirectory
+            .appendingPathComponent("Library")
+            .appendingPathComponent("Python")
+
+        guard let versions = try? fileManager.contentsOfDirectory(
+            at: pythonDirectory,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+
+        return versions
+            .filter { isDirectory($0) }
+            .map { $0.appendingPathComponent("bin").appendingPathComponent(executableName).path }
     }
 }

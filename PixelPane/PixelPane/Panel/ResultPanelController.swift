@@ -471,7 +471,7 @@ enum ResultPanelPresentationStyle {
 
     static let notchCompactSize = CGSize(width: 52, height: 32)
     static let notchHoverTargetSize = CGSize(width: 260, height: 32)
-    static let notchEmptyAssistantSize = CGSize(width: 780, height: 190)
+    static let notchEmptyAssistantSize = CGSize(width: 640, height: 140)
     static let notchExpandedSize = CGSize(width: 780, height: 560)
     static let notchCompactOverlap: CGFloat = 18
     static let notchTopOverscan: CGFloat = 3
