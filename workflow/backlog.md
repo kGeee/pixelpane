@@ -1233,6 +1233,7 @@ Notes:
 | `ASSIST-011` | Evaluate persistent MLX text runtime | Done | `ASSIST-005`, `ASSIST-010` |
 | `ASSIST-012` | Add app-managed warm MLX text server | Done | `ASSIST-011` |
 | `ASSIST-013` | QA local model responses and deterministic fallbacks | Done | `ASSIST-012` |
+| `ASSIST-014` | Show local model peak memory in chat | Done | `ASSIST-005` |
 
 ### `ASSIST-001` - Make The Notch A Chat-First Assistant Surface
 
@@ -1467,3 +1468,19 @@ Acceptance:
 Notes:
 
 - Completed 2026-05-22. Warm `mlx_lm.server` responses on the cached `mlx-community/Qwen3-30B-A3B-4bit` test model returned in about 0.24-0.40 seconds after startup. Brief prompts did not leak thinking, including a direct request for step-by-step reasoning. The app now answers "what is your name?" as Pixel Pane and "what is on my screen?" without attached capture as unavailable screen context before calling a model. Warm-server output now passes through `ModelOutputFormatter`.
+
+### `ASSIST-014` - Show Local Model Peak Memory In Chat
+
+Auto-created during local model memory polish on 2026-05-22.
+
+Goal: Make local MLX memory usage visible in the chat surface without adding a larger diagnostics UI.
+
+Acceptance:
+
+- [x] Chat turn metadata shows the parsed local MLX peak memory value when available.
+- [x] The memory value is only shown for local MLX backends.
+- [x] App builds successfully.
+
+Notes:
+
+- Completed 2026-05-22. The existing `Peak memory:` statistic parsed from MLX one-shot output now appears in local MLX chat metadata as `Peak <value>`.

@@ -3428,6 +3428,7 @@ private struct AskTurnView: View {
             result[statistic.label] = statistic
         }
         let model = values["Cloud model"]?.value
+        let peakMemory = values["Peak Memory"]?.value
         let actions = Int(values["Actions left"]?.value ?? values["Cloud actions left"]?.value ?? "")
         let reset = values["Actions left"]?.detail ?? values["Cloud actions left"]?.detail
         let usageText: String? = shouldShowCloudUsage(actions) ? actions.map { count in
@@ -3436,8 +3437,9 @@ private struct AskTurnView: View {
             }
             return "\(count) left"
         } : nil
+        let memoryText = shouldShowPeakMemory ? peakMemory.map { "Peak \($0)" } : nil
 
-        return [compactBackendLabel, model, usageText]
+        return [compactBackendLabel, model, memoryText, usageText]
             .compactMap { value in
                 guard let value, !value.isEmpty else { return nil }
                 return value
@@ -3448,6 +3450,10 @@ private struct AskTurnView: View {
     private func shouldShowCloudUsage(_ remainingActions: Int?) -> Bool {
         guard compactBackendLabel == "Cloud", let remainingActions else { return false }
         return remainingActions <= 10
+    }
+
+    private var shouldShowPeakMemory: Bool {
+        compactBackendLabel == "MLX Text" || compactBackendLabel == "MLX Vision"
     }
 }
 
