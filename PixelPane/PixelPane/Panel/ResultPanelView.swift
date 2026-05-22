@@ -855,6 +855,14 @@ struct ResultPanelView: View {
                     onSelect: loadChatSession
                 )
 
+                FileSourceMenuButton(
+                    grants: localFileAccess.grants,
+                    isDisabled: !loadingActions.isEmpty,
+                    onGrantFolder: localFileAccess.grantFolder,
+                    onGrantFile: localFileAccess.grantFile,
+                    onRemove: localFileAccess.removeGrant
+                )
+
                 OverlayTextField(
                     placeholder: hasCaptureContext ? "Ask about this screen" : "Ask Pixel Pane",
                     text: $askInput,
@@ -2865,6 +2873,85 @@ private struct ChatHistoryMenuButton: View {
         .menuIndicator(.hidden)
         .disabled(isDisabled || sessions.isEmpty)
         .help(sessions.isEmpty ? "No recent chats yet" : "Open a recent chat")
+    }
+}
+
+private struct FileSourceMenuButton: View {
+    let grants: [LocalFileGrant]
+    let isDisabled: Bool
+    let onGrantFolder: () -> Void
+    let onGrantFile: () -> Void
+    let onRemove: (LocalFileGrant) -> Void
+
+    var body: some View {
+        Menu {
+            Button {
+                onGrantFolder()
+            } label: {
+                Label("Choose Folder", systemImage: "folder.badge.plus")
+            }
+
+            Button {
+                onGrantFile()
+            } label: {
+                Label("Choose File", systemImage: "doc.badge.plus")
+            }
+
+            if grants.isEmpty {
+                Divider()
+                Text("No file sources")
+                    .foregroundStyle(.secondary)
+            } else {
+                Divider()
+                ForEach(grants) { grant in
+                    Menu {
+                        Button(role: .destructive) {
+                            onRemove(grant)
+                        } label: {
+                            Label("Remove", systemImage: "minus.circle")
+                        }
+                    } label: {
+                        Label {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(grant.displayName)
+                                Text(grant.path)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } icon: {
+                            Image(systemName: grant.isDirectory ? "folder" : "doc.text")
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "folder")
+                    .font(.system(size: 12, weight: .semibold))
+
+                Text(fileSourceTitle)
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(grants.isEmpty ? .tertiary : .secondary)
+            .frame(height: 40)
+            .padding(.horizontal, 13)
+            .background(.black.opacity(0.24), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .stroke(.white.opacity(0.08), lineWidth: 1)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .disabled(isDisabled)
+        .help(grants.isEmpty ? "Choose files Pixel Pane can read" : "Change file sources")
+    }
+
+    private var fileSourceTitle: String {
+        if grants.isEmpty {
+            return "Files"
+        }
+        return "\(grants.count) file\(grants.count == 1 ? "" : "s")"
     }
 }
 

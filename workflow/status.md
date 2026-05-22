@@ -110,6 +110,7 @@ See `workflow/backlog.md` for all stories.
 
 ## Last Completed Work
 
+- 2026-05-22: Follow-up chat file-source polish. The notch composer now has a compact Files menu that lets users choose a folder, choose a file, see current granted sources, and remove a source without leaving the chat window. It reuses the existing explicit local file access store, so file context remains user-granted and local-first. Local verification wrapper build succeeded.
 - 2026-05-22: Follow-up new chat/history polish. The notch composer now exposes New Chat as a direct small action and History as a labeled recent-chat menu instead of hiding both behind a clock-only button. Recent chat menu items now show context type plus relative recency. Local verification wrapper build succeeded.
 - 2026-05-22: Follow-up response completion policy fix. Response Style now guides verbosity without shrinking completion token budgets; Brief/Balanced/Thorough prompts explicitly tell models to finish the answer instead of cutting off. Raised app/backend completion ceilings to 4096 tokens, updated Cloud API docs, and removed token-count labels from Settings. Local verification wrapper build and backend typecheck both succeeded.
 - 2026-05-22: Follow-up assistant/settings polish. The notch assistant now uses content-aware expanded sizing, removes the large framed empty chat workspace, starts blank chats at a smaller size, and grows as chat turns/answers need room. Settings -> AI now hides local model setup while Cloud Mode is active, reduces Local AI setup to compact status tiles plus one primary model action, adds a real "No MLX model selected" state, and detects user Python `mlx_lm.generate` installs. Local verification wrapper build succeeded.
@@ -272,6 +273,7 @@ See `workflow/backlog.md` for all stories.
 
 ## Last Verification
 
+- 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` succeeded after adding the chat-window Files source menu.
 - 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` succeeded after splitting New Chat and History into clearer minimal composer controls.
 - 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` and `npm run typecheck` in `PixelPane/Backend` succeeded after making Response Style a verbosity hint instead of a truncating token cap.
 - 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` succeeded after content-aware notch chat sizing, simplified Local AI settings, Cloud Mode local-setup hiding, clear-selection behavior, and user Python MLX-LM runtime detection.
