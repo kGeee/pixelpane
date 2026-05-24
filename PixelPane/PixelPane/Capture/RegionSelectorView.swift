@@ -3,6 +3,7 @@ import SwiftUI
 
 struct RegionSelectorView: View {
     let screen: NSScreen
+    let showFirstUseTip: Bool
     let onComplete: (CaptureSelection) -> Void
     let onCancel: () -> Void
 
@@ -60,7 +61,7 @@ struct RegionSelectorView: View {
 
     private var selectionHint: String {
         guard let selectionRect else {
-            return "Drag to capture text"
+            return showFirstUseTip ? "Drag over text to ask Pixel Pane" : "Drag to capture text"
         }
 
         return "\(Int(selectionRect.width)) x \(Int(selectionRect.height))"

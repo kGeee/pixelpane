@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -40,6 +41,8 @@ struct ResultPanelView: View {
     @State private var askInput = ""
     @State private var askTurns: [AskConversationTurn] = []
     @State private var pendingLocalFileWriteProposal: LocalFileWriteProposal?
+    @State private var assistantImageContext: AssistantImageContext?
+    @State private var isPreparingAssistantImage = false
     @State private var chatContextID: String
     @State private var chatContextKind: ChatSessionContextKind
     @State private var didAppear = false
@@ -220,8 +223,11 @@ struct ResultPanelView: View {
     private var notchExpandedStack: some View {
         VStack(alignment: .leading, spacing: 0) {
             Color.clear
-                .frame(height: 40)
+                .frame(height: isBlankAssistantChat ? 30 : 40)
             notchAssistantHeaderSection
+            if isBlankAssistantChat {
+                emptyAssistantWelcomeSection
+            }
             if !isBlankAssistantChat {
                 workspaceSection
             }
@@ -362,7 +368,35 @@ struct ResultPanelView: View {
             }
         }
         .padding(.horizontal, 24)
-        .padding(.bottom, 12)
+        .padding(.bottom, isBlankAssistantChat ? 6 : 12)
+    }
+
+    private var emptyAssistantWelcomeSection: some View {
+        HStack(spacing: 8) {
+            Text("Ready")
+                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .foregroundStyle(.secondary)
+
+            Circle()
+                .fill(.secondary.opacity(0.45))
+                .frame(width: 3, height: 3)
+
+            Text(routingSettings.effectiveMode == .cloud ? "Cloud Mode" : "Local Mode")
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .foregroundStyle(.tertiary)
+
+            Spacer(minLength: 10)
+
+            HStack(spacing: 6) {
+                EmptyAssistantStatusChip(title: responseDetail.title, systemImage: "text.alignleft")
+                EmptyAssistantStatusChip(
+                    title: localFileAccess.grants.isEmpty ? "No Files" : "\(localFileAccess.grants.count) Files",
+                    systemImage: localFileAccess.grants.isEmpty ? "folder" : "folder.fill"
+                )
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.bottom, 8)
     }
 
     private var workspaceSection: some View {
@@ -770,6 +804,26 @@ struct ResultPanelView: View {
             )
         }
 
+        if let assistantImageContext {
+            badges.append(
+                MetadataBadge(
+                    text: assistantImageContext.label,
+                    systemImage: "photo",
+                    help: assistantImageContext.isOCRComplete
+                        ? "A user-provided image is attached to this chat. Text fallback is ready for text-only models."
+                        : "A user-provided image is attached to this chat. Pixel Pane is still preparing text fallback."
+                )
+            )
+        } else if isPreparingAssistantImage {
+            badges.append(
+                MetadataBadge(
+                    text: "Image",
+                    systemImage: "photo",
+                    help: "Pixel Pane is preparing the attached image."
+                )
+            )
+        }
+
         badges.append(
             MetadataBadge(
                 text: routingBadgeText,
@@ -841,6 +895,7 @@ struct ResultPanelView: View {
                     title: "New",
                     systemImage: "square.and.pencil",
                     style: .secondary,
+                    displayStyle: .iconOnly,
                     action: startNewAssistantChat
                 )
                 .disabled(!canStartNewChat)
@@ -860,6 +915,14 @@ struct ResultPanelView: View {
                     onSelect: loadChatSession
                 )
 
+                AssistantImageMenuButton(
+                    context: assistantImageContext,
+                    isPreparing: isPreparingAssistantImage,
+                    isDisabled: !loadingActions.isEmpty,
+                    onChoose: chooseAssistantImage,
+                    onClear: clearAssistantImage
+                )
+
                 OverlayTextField(
                     placeholder: hasCaptureContext ? "Ask about this screen" : "Ask Pixel Pane",
                     text: $askInput,
@@ -871,6 +934,7 @@ struct ResultPanelView: View {
                     title: "Send",
                     systemImage: "paperplane.fill",
                     style: .accent,
+                    displayStyle: .prominentIconAndTitle,
                     action: sendAskQuestion
                 )
                 .disabled(!canSendAskQuestion)
@@ -900,6 +964,59 @@ struct ResultPanelView: View {
         } catch {
             showConfirmation("Export failed")
         }
+    }
+
+    private func chooseAssistantImage() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Image"
+        panel.message = "Pixel Pane will use this image as transient chat context."
+        panel.allowedContentTypes = [.image]
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        do {
+            let image = try Self.loadCGImage(from: url)
+            let context = AssistantImageContext(
+                source: .userAttachment,
+                label: url.lastPathComponent.isEmpty ? "Image" : url.lastPathComponent,
+                image: image
+            )
+            assistantImageContext = context
+            isPreparingAssistantImage = true
+            showConfirmation("Image attached")
+
+            Task {
+                let ocrText = (try? await OCREngine().recognizeText(in: image))?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                await MainActor.run {
+                    guard assistantImageContext?.id == context.id else { return }
+                    assistantImageContext?.ocrText = ocrText
+                    assistantImageContext?.isOCRComplete = true
+                    isPreparingAssistantImage = false
+                    setOutputState(askOutputState(), for: .ask)
+                }
+            }
+        } catch {
+            showConfirmation("Image unavailable")
+        }
+    }
+
+    private func clearAssistantImage() {
+        assistantImageContext = nil
+        isPreparingAssistantImage = false
+        setOutputState(askOutputState(), for: .ask)
+        focusChatInputSoon()
+    }
+
+    private static func loadCGImage(from url: URL) throws -> CGImage {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        return image
     }
 
     private func showConfirmation(_ message: String) {
@@ -1361,6 +1478,7 @@ struct ResultPanelView: View {
     private var canSendAskQuestion: Bool {
         selectedAction == .ask
             && !loadingActions.contains(.ask)
+            && !isPreparingAssistantImage
             && !askInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
@@ -1368,47 +1486,76 @@ struct ResultPanelView: View {
         let question = askInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty, !loadingActions.contains(.ask) else { return }
         let fileGrants = localFileAccess.grants
+        let toolRouter = AssistantToolRouter()
+        let toolEnvironment = AssistantToolEnvironment(
+            hasCaptureContext: hasCaptureContext,
+            routingMode: routingSettings.effectiveMode,
+            selectedLocalModelRepositoryID: mlxModelStore.selectedModel?.repositoryID,
+            localTextBackendLabel: localTextBackendLabel(),
+            previousTurnReferencedModel: askTurns.last.map {
+                Self.normalizedQuestion($0.question).contains("model")
+                    || Self.normalizedQuestion($0.answer).contains("language model")
+            } == true
+        )
 
-        if handleLocalFileWriteRequest(question: question, grants: fileGrants) {
-            return
-        }
-
-        if let directAnswer = directAppStateAnswer(for: question, grants: fileGrants) {
-            appendDirectAskAnswer(question: question, answer: directAnswer.answer, backendLabel: directAnswer.backendLabel)
+        if let preflight = toolRouter.preflight(
+            question: question,
+            grants: fileGrants,
+            environment: toolEnvironment
+        ) {
+            handleAssistantToolPreflight(preflight, question: question)
             return
         }
 
         let cloudModeEnabled = routingSettings.effectiveMode == .cloud
+        let modelCapabilities = cloudModeEnabled
+            ? AssistantModelCapabilities.cloud(from: AIBackendCapabilities(
+                text: .available(.pixelPaneCloud),
+                image: .available(.pixelPaneCloud),
+                contextWindowTokens: nil,
+                maxPromptCharacters: AIModelLimits.maxPromptCharacters,
+                maxOutputTokens: AIModelLimits.defaultMaxOutputTokens
+            ))
+            : AssistantModelCapabilities.local(from: localAICapabilities)
         let hasCaptureContextValue = hasCaptureContext
+        let attachedImageContext = assistantImageContext
+        let hasAssistantImageContext = attachedImageContext != nil
+        let hasAnyVisualContext = hasCaptureContextValue || hasAssistantImageContext
         let capturedOCRText = result.text
-        let hasReadableCaptureText = !capturedOCRText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let attachedImageOCRText = attachedImageContext?.ocrText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let hasReadableVisualText = !capturedOCRText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !attachedImageOCRText.isEmpty
+        let preferredVisualImage = attachedImageContext?.image ?? result.image
         let askUsesMLX = !cloudModeEnabled
-            && hasCaptureContextValue
-            && localAICapabilities.image.isAvailable
-            && result.image != nil
+            && hasAnyVisualContext
+            && modelCapabilities.supportsImageInput
+            && preferredVisualImage != nil
         let cloudImageInput = cloudModeEnabled
-            && hasCaptureContextValue
-            ? result.image
+            && hasAnyVisualContext
+            && modelCapabilities.supportsImageInput
+            ? preferredVisualImage
             : nil
         let imageInput = cloudModeEnabled
             ? cloudImageInput
-            : (askUsesMLX ? result.image : nil)
+            : (askUsesMLX ? preferredVisualImage : nil)
         let preferredProvider: AIBackendProvider? = askUsesMLX ? .mlxVision : nil
         let backendLabel = cloudModeEnabled
             ? Self.cloudBackendLabel
             : (askUsesMLX ? Self.mlxVisionBackendLabel : localTextBackendLabel())
+        let isCaptureImageAttached = hasCaptureContextValue && imageInput != nil && attachedImageContext == nil
+        let isAssistantImageAttached = attachedImageContext != nil && imageInput != nil
         let previousTranscript = formattedAskTranscript()
         let detectedLanguage = cloudDetectedLanguage
         let conversation = cloudConversationTurns(beforeLastTurn: true)
         let isSimpleBriefPlainChat = responseDetail == .brief
-            && !hasCaptureContextValue
+            && !hasAnyVisualContext
             && previousTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !Self.shouldSearchLocalFiles(for: question, grants: fileGrants)
+            && !toolRouter.fileSearchDecision(question: question, grants: fileGrants).shouldSearch
 
-        if hasCaptureContextValue,
+        if hasAnyVisualContext,
            !cloudModeEnabled,
            imageInput == nil,
-           !hasReadableCaptureText,
+           !hasReadableVisualText,
            Self.questionReferencesCapture(question) {
             askInput = ""
             recoveryState = nil
@@ -1418,7 +1565,7 @@ struct ResultPanelView: View {
             askTurns.append(
                 AskConversationTurn(
                     question: question,
-                    answer: "I have the selected screen region, but Local text mode did not get readable OCR from it and cannot inspect the pixels directly. Switch to Cloud mode or set up a local vision model to ask visual questions about this capture.",
+                    answer: "I have visual context, but Local text mode did not get readable OCR from it and cannot inspect the pixels directly. Switch to Cloud Mode or set up a local vision model to ask visual questions about it.",
                     backendLabel: backendLabel
                 )
             )
@@ -1447,17 +1594,19 @@ struct ResultPanelView: View {
         updateExpandedNotchSizeIfNeeded()
 
         Task {
-            let shouldSearchFiles = Self.shouldSearchLocalFiles(for: question, grants: fileGrants)
+            let shouldSearchFiles = toolRouter.fileSearchDecision(question: question, grants: fileGrants).shouldSearch
             let localFileContext = shouldSearchFiles
                 ? await Task.detached {
-                    LocalFileContextProvider().context(for: question, grants: fileGrants)
+                    toolRouter.localFileContext(question: question, grants: fileGrants)
                 }.value
                 : LocalFileContext(grants: [], snippets: [])
             let prompt = Self.askPrompt(
                 question: question,
                 hasCaptureContext: hasCaptureContextValue,
                 capturedOCRText: capturedOCRText,
-                isCaptureImageAttached: imageInput != nil,
+                isCaptureImageAttached: isCaptureImageAttached,
+                assistantImageContext: attachedImageContext,
+                isAssistantImageAttached: isAssistantImageAttached,
                 previousTranscript: previousTranscript,
                 localFileContext: localFileContext,
                 usesCloud: cloudModeEnabled,
@@ -1467,30 +1616,57 @@ struct ResultPanelView: View {
             let cloudContext = Self.cloudAskContext(
                 hasCaptureContext: hasCaptureContextValue,
                 capturedOCRText: capturedOCRText,
-                isCaptureImageAttached: imageInput != nil,
+                isCaptureImageAttached: isCaptureImageAttached,
+                assistantImageContext: attachedImageContext,
+                isAssistantImageAttached: isAssistantImageAttached,
                 localFileContext: localFileContext,
                 usesCloud: cloudModeEnabled
             )
             await runAskTurn(
                 request: AIBackendRequest(
-                    actionKind: hasCaptureContextValue ? .ask : .chat,
+                    actionKind: hasAnyVisualContext ? .ask : .chat,
                     prompt: prompt,
                     capturedImage: imageInput,
                     maxOutputTokens: Self.askMaxOutputTokens(
                         responseDetail: responseDetail,
                         question: question,
-                        hasCaptureContext: hasCaptureContextValue,
+                        hasCaptureContext: hasAnyVisualContext,
                         hasFileContext: localFileContext.hasSnippets,
                         hasPreviousTranscript: !previousTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                         isSimpleBriefPlainChat: isSimpleBriefPlainChat
                     ),
                     preferredProvider: preferredProvider,
-                    cloudOCRText: cloudModeEnabled ? cloudContext : (hasCaptureContextValue ? capturedOCRText : nil),
+                    cloudOCRText: cloudModeEnabled ? cloudContext : (hasAnyVisualContext ? cloudContext : nil),
                     cloudDetectedLanguage: hasCaptureContextValue ? detectedLanguage : nil,
                     cloudQuestion: question,
                     cloudConversation: conversation
                 )
             )
+        }
+    }
+
+    private func handleAssistantToolPreflight(_ preflight: AssistantToolPreflightResult, question: String) {
+        switch preflight {
+        case .directAnswer(let answer, let backendLabel):
+            appendDirectAskAnswer(question: question, answer: answer, backendLabel: backendLabel)
+        case .localFileWriteMessage(let message):
+            appendDirectAskAnswer(question: question, answer: message, backendLabel: "Local Files")
+        case .localFileWriteProposal(let proposal):
+            askInput = ""
+            recoveryState = nil
+            hiddenReasoning = nil
+            outputStatistics = []
+            pendingLocalFileWriteProposal = proposal
+            askTurns.append(
+                AskConversationTurn(
+                    question: question,
+                    answer: "I can propose this local file change. Confirm below before I write anything:\n\n\(proposal.detailText)",
+                    backendLabel: "Local Files"
+                )
+            )
+            persistAskSession()
+            setOutputState(askOutputState(), for: .ask)
+            focusChatInputSoon()
         }
     }
 
@@ -1510,154 +1686,6 @@ struct ResultPanelView: View {
         persistAskSession()
         setOutputState(askOutputState(), for: .ask)
         focusChatInputSoon()
-    }
-
-    private func directAppStateAnswer(for question: String, grants: [LocalFileGrant]) -> (answer: String, backendLabel: String)? {
-        if let identityAnswer = assistantIdentityAnswer(for: question) {
-            return (identityAnswer, "Pixel Pane")
-        }
-
-        if let screenAnswer = unavailableScreenContextAnswer(for: question) {
-            return (screenAnswer, "Pixel Pane")
-        }
-
-        if let modelAnswer = selectedModelAnswer(for: question) {
-            return (modelAnswer, "Pixel Pane")
-        }
-
-        if let routingAnswer = routingAnswer(for: question) {
-            return (routingAnswer, "Pixel Pane")
-        }
-
-        if let fileAnswer = LocalFileContextProvider().directAnswer(for: question, grants: grants) {
-            return (fileAnswer, "Local Files")
-        }
-
-        return nil
-    }
-
-    private func assistantIdentityAnswer(for question: String) -> String? {
-        let normalized = Self.normalizedQuestion(question)
-        let asksForAssistantName = [
-            "what is your name",
-            "whats your name",
-            "who are you",
-            "what are you called",
-            "your name"
-        ].contains { normalized.contains($0) }
-        guard asksForAssistantName else { return nil }
-        return "I am Pixel Pane."
-    }
-
-    private func unavailableScreenContextAnswer(for question: String) -> String? {
-        guard !hasCaptureContext else { return nil }
-        let normalized = Self.normalizedQuestion(question)
-        let asksAboutCurrentScreen = [
-            "what is on my screen",
-            "what's on my screen",
-            "what is onscreen",
-            "what's onscreen",
-            "what am i looking at",
-            "what do you see",
-            "what can you see",
-            "read my screen",
-            "look at my screen"
-        ].contains { normalized.contains($0) }
-        guard asksAboutCurrentScreen else { return nil }
-        return "I do not have a screen region attached to this chat yet."
-    }
-
-    private func selectedModelAnswer(for question: String) -> String? {
-        let normalized = Self.normalizedQuestion(question)
-        let asksForModel = [
-            "what model",
-            "what is this model",
-            "which model",
-            "what are you running",
-            "what llm",
-            "which llm",
-            "model name"
-        ].contains { normalized.contains($0) }
-            || (
-                normalized == "which one"
-                    && askTurns.last.map {
-                        Self.normalizedQuestion($0.question).contains("model")
-                            || Self.normalizedQuestion($0.answer).contains("language model")
-                    } == true
-            )
-        guard asksForModel else { return nil }
-
-        if routingSettings.effectiveMode == .cloud {
-            return "Pixel Pane is using Cloud Mode."
-        }
-
-        if let selection = mlxModelStore.selectedModel {
-            return "Pixel Pane is using \(selection.repositoryID)."
-        }
-
-        return localTextBackendLabel() == Self.appleTextBackendLabel
-            ? "Pixel Pane is using Apple Foundation Models."
-            : "No local MLX model is selected."
-    }
-
-    private func routingAnswer(for question: String) -> String? {
-        let normalized = Self.normalizedQuestion(question)
-        let asksForRouting = [
-            "local or cloud",
-            "using cloud",
-            "using local",
-            "cloud mode",
-            "local mode",
-            "where is this running"
-        ].contains { normalized.contains($0) }
-        guard asksForRouting else { return nil }
-
-        switch routingSettings.effectiveMode {
-        case .local:
-            return "Pixel Pane is in Local Mode."
-        case .cloud:
-            return "Pixel Pane is in Cloud Mode."
-        }
-    }
-
-    private func handleLocalFileWriteRequest(question: String, grants: [LocalFileGrant]) -> Bool {
-        switch LocalFileWriteProposalParser().proposal(for: question, grants: grants) {
-        case .none:
-            return false
-        case .message(let message):
-            askInput = ""
-            recoveryState = nil
-            hiddenReasoning = nil
-            outputStatistics = []
-            askTurns.append(
-                AskConversationTurn(
-                    question: question,
-                    answer: message,
-                    backendLabel: "Local Files"
-                )
-            )
-            persistAskSession()
-            setOutputState(askOutputState(), for: .ask)
-            focusChatInputSoon()
-            return true
-        case .proposal(let proposal):
-            askInput = ""
-            recoveryState = nil
-            hiddenReasoning = nil
-            outputStatistics = []
-            pendingLocalFileWriteProposal = proposal
-            askTurns.append(
-                AskConversationTurn(
-                    question: question,
-                    answer: "I can propose this local file change. Confirm below before I write anything:\n\n\(proposal.detailText)",
-                    backendLabel: "Local Files"
-                )
-            )
-            persistAskSession()
-            setOutputState(askOutputState(), for: .ask)
-            focusChatInputSoon()
-            return true
-        }
     }
 
     private func confirmLocalFileWrite() {
@@ -1710,6 +1738,8 @@ struct ResultPanelView: View {
         hasCaptureContext: Bool,
         capturedOCRText: String,
         isCaptureImageAttached: Bool,
+        assistantImageContext: AssistantImageContext?,
+        isAssistantImageAttached: Bool,
         previousTranscript: String,
         localFileContext: LocalFileContext,
         usesCloud: Bool,
@@ -1742,6 +1772,24 @@ struct ResultPanelView: View {
                 sections.append("Use this screen OCR as context:\n\(ocr)")
             } else {
                 sections.append("A screen region was selected, but no readable OCR or image input is available.")
+            }
+        }
+
+        if let assistantImageContext {
+            let imageOCR = truncate(
+                assistantImageContext.ocrText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                limit: 1_400
+            )
+            if isAssistantImageAttached {
+                sections.append(
+                    imageOCR.isEmpty
+                        ? "Use the attached user image \"\(assistantImageContext.label)\" as context."
+                        : "Use the attached user image \"\(assistantImageContext.label)\" as context. Image OCR:\n\(imageOCR)"
+                )
+            } else if !imageOCR.isEmpty {
+                sections.append("Use this OCR from attached user image \"\(assistantImageContext.label)\" as context:\n\(imageOCR)")
+            } else {
+                sections.append("A user image \"\(assistantImageContext.label)\" is attached, but no readable OCR or image input is available.")
             }
         }
 
@@ -1791,6 +1839,8 @@ struct ResultPanelView: View {
         hasCaptureContext: Bool,
         capturedOCRText: String,
         isCaptureImageAttached: Bool,
+        assistantImageContext: AssistantImageContext?,
+        isAssistantImageAttached: Bool,
         localFileContext: LocalFileContext,
         usesCloud: Bool
     ) -> String {
@@ -1809,6 +1859,20 @@ struct ResultPanelView: View {
             }
         }
 
+        if let assistantImageContext {
+            let imageOCR = truncate(
+                assistantImageContext.ocrText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                limit: 1_400
+            )
+            if !imageOCR.isEmpty {
+                sections.append("Attached image OCR (\(assistantImageContext.label)):\n\(imageOCR)")
+            } else if isAssistantImageAttached {
+                sections.append("Attached image is included: \(assistantImageContext.label).")
+            } else {
+                sections.append("Attached image has no readable OCR: \(assistantImageContext.label).")
+            }
+        }
+
         let fileContext = compactFileContext(localFileContext, usesCloud: usesCloud)
         if fileContext != "none granted", fileContext != "none relevant" {
             sections.append("Files:\n\(fileContext)")
@@ -1820,24 +1884,6 @@ struct ResultPanelView: View {
         guard value.count > limit else { return value }
         let end = value.index(value.startIndex, offsetBy: limit)
         return String(value[..<end]).trimmingCharacters(in: .whitespacesAndNewlines) + "..."
-    }
-
-    private static func shouldSearchLocalFiles(for question: String, grants: [LocalFileGrant]) -> Bool {
-        guard !grants.isEmpty else { return false }
-        let normalized = normalizedQuestion(question)
-        let fileSignals = [
-            "file", "files", "folder", "folders", "project", "repo", "repository",
-            "code", "source", "readme", "document", "docs", "path", "search",
-            "find", "where is", "show me", "open", "swift", "python", "json",
-            "markdown", "md", "this project", "this repo"
-        ]
-        if fileSignals.contains(where: { normalized.contains($0) }) {
-            return true
-        }
-        return grants.contains { grant in
-            let name = URL(fileURLWithPath: grant.path).lastPathComponent.lowercased()
-            return !name.isEmpty && normalized.contains(name)
-        }
     }
 
     private static func asksForLongAnswer(_ question: String) -> Bool {
@@ -1999,6 +2045,8 @@ struct ResultPanelView: View {
 
     private func loadChatSession(_ session: StoredChatSession) {
         guard loadingActions.isEmpty else { return }
+        assistantImageContext = nil
+        isPreparingAssistantImage = false
         chatContextID = session.contextID
         chatContextKind = session.contextKind
         askTurns = session.turns.map { AskConversationTurn(storedTurn: $0) }
@@ -2011,6 +2059,8 @@ struct ResultPanelView: View {
     private func startNewAssistantChat() {
         guard loadingActions.isEmpty else { return }
         suppressNextNotchHoverCollapseBriefly()
+        assistantImageContext = nil
+        isPreparingAssistantImage = false
         chatContextID = Self.defaultChatContextID(
             for: CaptureResult(
                 image: nil,
@@ -2639,6 +2689,8 @@ struct NotchResultContainer<Content: View>: View {
             content()
         }
         .clipShape(shape)
+        .padding(.horizontal, isExpanded ? 1 : 0)
+        .padding(.bottom, isExpanded ? 1 : 0)
     }
 
     private var shape: UnevenRoundedRectangle {
@@ -2925,35 +2977,63 @@ private struct ActionTab: View {
 
 // MARK: - Buttons
 
+private struct EmptyAssistantStatusChip: View {
+    let title: String
+    let systemImage: String
+
+    var body: some View {
+        Label(title, systemImage: systemImage)
+            .font(.system(size: 11, weight: .semibold, design: .rounded))
+            .labelStyle(.titleAndIcon)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .padding(.horizontal, 9)
+            .frame(height: 26)
+            .background(.white.opacity(0.055), in: Capsule())
+            .overlay {
+                Capsule().stroke(.white.opacity(0.08), lineWidth: 1)
+            }
+    }
+}
+
 private struct OverlayPillButton: View {
     enum Style {
         case primary, secondary, accent
     }
 
+    enum DisplayStyle {
+        case iconAndTitle, prominentIconAndTitle, iconOnly
+    }
+
     let title: String
     let systemImage: String
     let style: Style
+    var displayStyle: DisplayStyle = .iconAndTitle
     let action: () -> Void
     @State private var hovered = false
     @Environment(\.isEnabled) private var isEnabled
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 6) {
+            HStack(spacing: displayStyle == .iconOnly ? 0 : 6) {
                 Image(systemName: systemImage)
-                    .font(.system(size: 12, weight: .semibold))
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .font(.system(size: displayStyle == .prominentIconAndTitle ? 13 : 12, weight: .semibold))
+
+                if displayStyle != .iconOnly {
+                    Text(title)
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                }
             }
             .foregroundStyle(foreground)
-            .padding(.horizontal, 14)
-            .frame(minHeight: 30)
+            .frame(width: displayStyle == .iconOnly ? 40 : nil)
+            .padding(.horizontal, displayStyle == .iconOnly ? 0 : 14)
+            .frame(minHeight: displayStyle == .prominentIconAndTitle ? 40 : 40)
             .background {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
                     .fill(fill)
             }
             .overlay {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
                     .stroke(stroke, lineWidth: 1)
             }
             .shadow(color: shadow, radius: 4, y: 1)
@@ -2961,7 +3041,8 @@ private struct OverlayPillButton: View {
         }
         .buttonStyle(.plain)
         .onHover { hovered = $0 && isEnabled }
-        .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .help(title)
     }
 
     private var foreground: Color {
@@ -2979,8 +3060,8 @@ private struct OverlayPillButton: View {
             return AnyShapeStyle(
                 LinearGradient(
                     colors: [
-                        Color.accentColor.opacity(hovered ? 1.0 : 0.92),
-                        Color.accentColor.opacity(hovered ? 0.78 : 0.7)
+                        Color(red: 0.96, green: 0.36, blue: 0.38).opacity(hovered ? 1.0 : 0.92),
+                        Color(red: 0.55, green: 0.13, blue: 0.16).opacity(hovered ? 0.90 : 0.78)
                     ],
                     startPoint: .top,
                     endPoint: .bottom
@@ -3045,16 +3126,13 @@ private struct ChatHistoryMenuButton: View {
                 }
             }
         } label: {
-            HStack(spacing: 7) {
+            HStack(spacing: 0) {
                 Image(systemName: "clock")
                     .font(.system(size: 12, weight: .semibold))
-
-                Text("History")
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
             }
             .foregroundStyle(sessions.isEmpty ? .tertiary : .secondary)
+            .frame(width: 40)
             .frame(height: 40)
-            .padding(.horizontal, 13)
             .background(.black.opacity(0.24), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 13, style: .continuous)
@@ -3124,17 +3202,13 @@ private struct FileSourceMenuButton: View {
                 }
             }
         } label: {
-            HStack(spacing: 7) {
-                Image(systemName: "folder")
+            HStack(spacing: 0) {
+                Image(systemName: grants.isEmpty ? "folder" : "folder.fill")
                     .font(.system(size: 12, weight: .semibold))
-
-                Text(fileSourceTitle)
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
-                    .lineLimit(1)
             }
             .foregroundStyle(.secondary)
+            .frame(width: 40)
             .frame(height: 40)
-            .padding(.horizontal, 13)
             .background(.black.opacity(0.24), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 13, style: .continuous)
@@ -3147,11 +3221,60 @@ private struct FileSourceMenuButton: View {
         .help(grants.isEmpty ? "Choose files Pixel Pane can read" : "Change file sources")
     }
 
-    private var fileSourceTitle: String {
-        if grants.isEmpty {
-            return "Files"
+}
+
+private struct AssistantImageMenuButton: View {
+    let context: AssistantImageContext?
+    let isPreparing: Bool
+    let isDisabled: Bool
+    let onChoose: () -> Void
+    let onClear: () -> Void
+
+    var body: some View {
+        Menu {
+            Button {
+                onChoose()
+            } label: {
+                Label(context == nil ? "Choose Image" : "Replace Image", systemImage: "photo.badge.plus")
+            }
+
+            if let context {
+                Divider()
+                Label {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(context.label)
+                        Text(context.isOCRComplete ? "Text fallback ready" : "Preparing text fallback")
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: "photo")
+                }
+
+                Divider()
+                Button(role: .destructive) {
+                    onClear()
+                } label: {
+                    Label("Clear Image", systemImage: "xmark.circle")
+                }
+            }
+        } label: {
+            HStack(spacing: 0) {
+                Image(systemName: context == nil ? "photo" : "photo.fill")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .foregroundStyle(context == nil ? .secondary : .primary)
+            .frame(width: 40)
+            .frame(height: 40)
+            .background(.black.opacity(0.24), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .stroke(.white.opacity(context == nil ? 0.08 : 0.16), lineWidth: 1)
+            }
         }
-        return "Files \(grants.count)"
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .disabled(isDisabled || isPreparing)
+        .help(context == nil ? "Attach an image" : "Change attached image")
     }
 }
 
@@ -3165,7 +3288,7 @@ private struct OverlayTextField: View {
         HStack(spacing: 8) {
             Image(systemName: "questionmark.bubble")
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color(red: 0.62, green: 0.80, blue: 1.0).opacity(0.72))
 
             TextField(placeholder, text: $text)
                 .textFieldStyle(.plain)
@@ -3178,11 +3301,20 @@ private struct OverlayTextField: View {
         .frame(minHeight: 40)
         .background {
             RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .fill(.black.opacity(0.24))
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(0.075),
+                            Color.white.opacity(0.035)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
         }
         .overlay {
             RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .stroke(.white.opacity(0.08), lineWidth: 1)
+                .stroke(.white.opacity(0.12), lineWidth: 1)
         }
     }
 }

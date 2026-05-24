@@ -17,6 +17,7 @@ final class OverlayCoordinator {
     private var windows: [NSWindow] = []
 
     func beginSelection(
+        showFirstUseTip: Bool = false,
         onComplete: @escaping (CaptureSelection) -> Void,
         onCancel: @escaping () -> Void
     ) {
@@ -41,6 +42,7 @@ final class OverlayCoordinator {
 
             let view = RegionSelectorView(
                 screen: screen,
+                showFirstUseTip: showFirstUseTip,
                 onComplete: { [weak self] selection in
                     self?.endOverlay { onComplete(selection) }
                 },

@@ -139,15 +139,15 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Onboarding QA") {
-                Text("Temporarily reset the first-run privacy explanation during local testing.")
+            Section("Privacy Introduction") {
+                Text("Show the first-run privacy introduction again without changing captures, chats, or model settings.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
 
                 Button {
                     appState.resetPrivacyOnboardingForQA()
                 } label: {
-                    Label("Show First-Run Onboarding Again", systemImage: "arrow.counterclockwise")
+                    Label("View Privacy Introduction Again", systemImage: "arrow.counterclockwise")
                 }
             }
         }

@@ -1,16 +1,16 @@
 # Pixel Pane Status
 
-Last updated: 2026-05-22
+Last updated: 2026-05-24
 
 ## Current Focus
 
-Epic 1, Epic 2, and the current Epic 7 notch-assistant alpha slice are closed. Pixel Pane now has a hover-open notch chat surface, capture-context chats, user-granted local file read/search, confirmed local file create/edit, local chat persistence, text-only MLX local chat setup, repeatable local build verification, first-run privacy onboarding, and Screen Recording recovery guidance. The local Qwen prompt/speed slice is complete.
+Epic 1, Epic 2, and the first Epic 7 notch-assistant alpha slice are closed. Pixel Pane now has a hover-open notch chat surface, capture-context chats, user-granted local file read/search, confirmed local file create/edit, local chat persistence, text-only MLX local chat setup, repeatable local build verification, privacy-first onboarding with permission readiness, Screen Recording recovery guidance, a model-agnostic assistant tool router, transient user image attachments with OCR fallback, and an explicit local file tool execution layer.
 
 Current phase: Notch assistant alpha.
 
-Current epic: Epic 3 - Privacy And Onboarding.
+Current epic: Epic 7 - Notch Assistant.
 
-Current recommended story: `PRIV-009` Remove or formalize onboarding QA reset.
+Current recommended story: `ASSIST-019` Add source-aware context packing and budget manager.
 
 ## Current State
 
@@ -52,6 +52,8 @@ xcodebuild -project PixelPane/PixelPane.xcodeproj -scheme PixelPane -configurati
 - **Local Chat History Without Screenshot Retention (2026-05-21):** Chat transcripts are stored locally so the notch assistant can resume conversations. Capture chats persist only message text and a lightweight Screen region label; screenshots are not retained unless a future explicit retention feature is added.
 - **Local Text Runtime Via MLX (2026-05-21):** Local Mode can use a selected text-only MLX model for text chat/actions through `mlx_lm.generate` when setup passes. MLX Vision remains separately gated on a vision-capable model and `mlx_vlm.generate`.
 - **Confirmed Local File Writes (2026-05-21):** The assistant may stage local file creation or text edits only inside user-granted file/folder locations. Writes require a visible confirmation naming the target path before any file is changed; model output never directly mutates files.
+- **App-Owned Model-Agnostic Assistant Harness (2026-05-24):** The assistant now has an app-owned capability contract and Ask preflight router for deterministic answers, local file grant answers, local write proposals, and file-search gating. Native model tool calling remains optional; file grants and side-effect policy are enforced by Pixel Pane.
+- **Transient User Image Context (2026-05-24):** Users can attach an image to the active assistant chat. The image stays in memory, is OCR'd locally for text-only fallback, may route to MLX Vision or Cloud Mode when allowed, and is not persisted into chat history.
 
 ## Open Decisions
 
@@ -94,6 +96,10 @@ Epic 3 — Privacy And Onboarding
 - `PRIV-002` Screen Recording permission guidance: Done
 - `PRIV-004` Ephemeral capture audit: Done
 - `PRIV-005` Local/cloud mode setting and enforcement: Done
+- `PRIV-006` Result source transparency: Not Started
+- `PRIV-007` Settings structure: Not Started
+- `PRIV-008` First-capture tutorial: Done
+- `PRIV-009` Remove or formalize onboarding QA reset: Done
 
 Epic 6 — Cross-Cutting Quality
 - `QUAL-011` Normalize model-output math and special characters: Done
@@ -117,11 +123,28 @@ Epic 7 — Notch Assistant
 - `ASSIST-013` QA local model responses and deterministic fallbacks: Done
 - `ASSIST-014` Show local model peak memory in chat: Done
 - `ASSIST-015` Keep notch stable after New Chat: Done
+- `ASSIST-016` Add model-agnostic assistant capability contract and tool router: Done
+- `ASSIST-017` Normalize user-provided image context and attachments: Done
+- `ASSIST-018` Add model-agnostic local file tool execution layer: Done
+- `ASSIST-019` Add source-aware context packing and budget manager: Not Started
+- `ASSIST-020` Add tool-use transcript and source transparency UI: Not Started
+- `ASSIST-021` Add prompt-injection and tool-safety hardening for files/images: Not Started
+- `ASSIST-022` Add cross-model assistant harness QA matrix: Not Started
 
 See `workflow/backlog.md` for all stories.
 
 ## Last Completed Work
 
+- 2026-05-24: Follow-up fix for local file capability questions. Phrases such as "can you view my folders?" now count as file-grant capability questions, so Pixel Pane answers from app-owned grant state before any local model can hallucinate a denial. Local verification wrapper build succeeded.
+- 2026-05-24: Follow-up fix for `ASSIST-018`. Broad folder questions such as "what do you see in this folder?" now route to the local file tool layer before the no-screen fallback, and the executor can answer with a deterministic top-level overview of a single granted folder. Local verification wrapper build succeeded.
+- 2026-05-24: Completed `ASSIST-018`. Added `AssistantLocalFileToolExecutor` with explicit list-grants, search, read, unavailable-access, and stage-write proposal tools. File grant enforcement now lives in the executor, Ask file context goes through the model-agnostic tool router, and local write proposals remain confirmation-gated before any file mutation. Local verification wrapper build succeeded.
+- 2026-05-24: Completed `ASSIST-017`. Added transient `AssistantImageContext` support, a compact image menu in the notch composer, local OCR fallback for attached images, context badges for active image attachments, and Ask routing that prefers user-attached images for MLX Vision/Cloud image-capable routes while sending OCR fallback to text-only routes. Attached images are cleared on New Chat/history load and are not written to chat history. Local verification wrapper build succeeded.
+- 2026-05-24: Completed `ASSIST-016`. Added `AssistantHarness.swift` with `AssistantModelCapabilities`, route/image/tool metadata, `AssistantToolEnvironment`, `AssistantToolPreflightResult`, and `AssistantToolRouter`. The Ask path now runs app-owned preflight before any model call for Pixel Pane identity/routing/model answers, no-capture screen answers, user-granted file access answers, confirmed local file write proposals, and file-aware local search gating. Removed the duplicated direct-answer/write/search helpers from `ResultPanelView`. Local verification wrapper build succeeded.
+- 2026-05-24: Prepared the model-agnostic assistant harness sprint. Researched primary sources for tool-calling loops, MCP tool schemas/security, MLX-LM/MLX-VLM local model paths, Hugging Face local chat/tool/image formats, Apple file/image/OCR APIs, and prompt-injection defenses. Added `ASSIST-016` through `ASSIST-022` to the backlog, recorded a proposed app-owned harness decision, and updated implementation references. No Swift code changed and no build was run because this was planning/workflow documentation only.
+- 2026-05-23: Fixed local file access capability answers. File/folder access questions such as "can you view my files?" now resolve through a deterministic grant-aware answer before any model call, listing the actual active user-granted locations or explaining that none are granted. This avoids hard-coded/stale model claims and works across local/cloud models. Local verification wrapper build succeeded.
+- 2026-05-23: Follow-up notch corner polish. Inset the expanded notch surface by one point on the sides and bottom so the continuous rounded lower corners have antialiasing room and are not clipped by the panel bounds. Local verification wrapper build succeeded.
+- 2026-05-23: Follow-up blank notch assistant polish. Reduced the empty assistant notch size, removed the large welcome/search icon, and changed the oversized "Ready" headline into a small inline status label next to Local/Cloud Mode while preserving the compact Brief/Files chips and composer. Local verification wrapper build succeeded.
+- 2026-05-23: Completed onboarding polish plus `PRIV-008` and `PRIV-009`. The first-run window now emphasizes selected-region control, no background recording, screenshot non-retention, Local Mode by default, and Cloud Mode as opt-in. It shows Screen Recording readiness with Request Access/Open Settings actions, uses Start First Capture as the primary action, and renames Continue to Open Assistant. The first-capture overlay tip is tracked separately from onboarding with `FirstCaptureTutorial.Completed` and stops showing after a successful capture. The Settings reset remains available for testing as a production-facing "View Privacy Introduction Again" control instead of a QA-only reset. Local verification wrapper build succeeded.
 - 2026-05-22: Completed `QUAL-014`. Moved Vision OCR request execution off the main actor, stopped streamed Ask turns from persisting chat history and resizing the notch on every token/snapshot, limited Ask transcript autoscroll to new turns, capped local file context full-content reads while prioritizing path matches, and routed panel local AI decisions through cached capability state instead of repeated MLX detector scans. Local verification wrapper build succeeded.
 - 2026-05-22: Completed `PRIV-004`. Audited the capture image lifecycle across capture, OCR, panel presentation, chat history, cloud image conversion, and MLX Vision. Fixed `AppState.lastResult` so "Show Last Result" retains OCR text/metadata only and not the captured `CGImage`; the active panel still holds image context only while open. Hardened MLX Vision temporary PNG cleanup on success, cancellation, timeout, launch failure, and image-write failure. Added file-system spot-check QA steps and recorded the last-result privacy decision. Local verification wrapper build succeeded.
 - 2026-05-22: Revised `ASSIST-015`. New Chat now returns immediately to the compact empty-chat expanded layout, cancels pending collapse work, briefly suppresses only resize-caused hover collapse, and refocuses the chat input so the window stays usable without leaving a large blank panel. Local verification wrapper build succeeded.
@@ -292,14 +315,25 @@ See `workflow/backlog.md` for all stories.
 
 ## Files Changed In Last Session
 
-- `PixelPane/PixelPane/Actions/ModelOutputFormatter.swift`
-- `PixelPane/PixelPane/Actions/MLXTextBackend.swift`
-- `PixelPane/PixelPane/App/ResponseDetailLevel.swift`
+- `PixelPane/PixelPane/Actions/AssistantHarness.swift`
+- `PixelPane/PixelPane/App/AIRoutingSettings.swift`
 - `PixelPane/PixelPane/Panel/ResultPanelView.swift`
+- `workflow/backlog.md`
+- `workflow/decisions.md`
 - `workflow/status.md`
 
 ## Last Verification
 
+- 2026-05-24: `PixelPane/Scripts/verify-debug-build.sh` succeeded after widening file/folder capability questions to route through deterministic local grant answers.
+- 2026-05-24: `PixelPane/Scripts/verify-debug-build.sh` succeeded after fixing broad folder questions to prefer local file tools over the no-screen fallback.
+- 2026-05-24: `PixelPane/Scripts/verify-debug-build.sh` succeeded after completing `ASSIST-018` and routing local file grants/search/read/write proposals through the explicit assistant file tool executor.
+- 2026-05-24: `PixelPane/Scripts/verify-debug-build.sh` succeeded after completing `ASSIST-017` and adding transient user image attachments with OCR fallback.
+- 2026-05-24: `PixelPane/Scripts/verify-debug-build.sh` succeeded after completing `ASSIST-016` and routing Ask preflight through the new assistant harness.
+- 2026-05-24: No build run; planning-only workflow/reference/decision docs changed with no Swift app code edits.
+- 2026-05-23: `PixelPane/Scripts/verify-debug-build.sh` succeeded after broadening deterministic local-file access answers to use the actual grant list.
+- 2026-05-23: `PixelPane/Scripts/verify-debug-build.sh` succeeded after adding a small inset to prevent the expanded notch rounded corners from clipping at the panel bounds.
+- 2026-05-23: `PixelPane/Scripts/verify-debug-build.sh` succeeded after shrinking the blank assistant notch and removing the large Ready/icon treatment.
+- 2026-05-23: `PixelPane/Scripts/verify-debug-build.sh` succeeded after onboarding copy/action polish, Screen Recording readiness in onboarding, the retained privacy-introduction reset control, and the separate first-capture overlay tip.
 - 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` succeeded after disabling Qwen thinking in MLX Text, suppressing streamed/untagged reasoning output, hiding Brief reasoning disclosure, and shortening Brief plain-chat prompts.
 - 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` succeeded after completing `PRIV-002` Screen Recording permission guidance.
 - 2026-05-22: `PixelPane/Scripts/verify-debug-build.sh` succeeded after reorganizing chat controls and adding Clear File Sources.
@@ -443,12 +477,12 @@ See `workflow/backlog.md` for all stories.
 
 ## Next Best Story
 
-`PRIV-004` - Ephemeral capture audit.
+`ASSIST-019` - Add source-aware context packing and budget manager.
 
 Suggested prompt:
 
 ```text
-Complete PRIV-004.
+Complete ASSIST-019.
 ```
 
 ## Notes For Next Agent
@@ -458,6 +492,7 @@ Complete PRIV-004.
 - `ACT-011` introduced the shared local backend protocol (`AIBackend`) so Apple text, MLX vision, and later cloud clients can conform without action-side rewrites.
 - Apple Foundation Models requires Apple Intelligence enabled by the user. MLX requires a local runtime plus a compatible model. Surface both through the existing `RecoveryPanelView` pattern from `CORE-006` rather than inventing a new recovery UI.
 - Do not imply image-aware Local Mode is universally available; it is available only when Settings reports a ready MLX model selection.
+- For the assistant harness sprint, keep tools app-owned: the model can request or imply file/image actions, but Pixel Pane validates grants, packs context, executes tools, and records sources.
 - Cloud routing UI is enabled. Use Settings → Cloud to turn on "Use Cloud Mode"; the single toggle covers cloud-capable text and image context, while Local Mode remains the default.
 - Backend code lives in `PixelPane/Backend`. Local checks are `npm run typecheck` and `npx wrangler deploy --dry-run`.
 - `CloudAuthTokenProvider` is invoked by `CloudAIBackend` when Cloud Mode actions run and stores only the anonymous device ID plus short-lived Pixel Pane bearer token in Keychain.

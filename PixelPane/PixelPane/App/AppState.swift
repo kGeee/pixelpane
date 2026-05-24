@@ -12,6 +12,7 @@ final class AppState: ObservableObject {
     @Published private(set) var mlxVisionSetupSnapshot = MLXVisionSetupRunner().snapshot()
     @Published private(set) var isRunningMLXSetupCheck = false
     @Published private(set) var hasCompletedOnboarding: Bool
+    @Published private(set) var hasCompletedFirstCaptureTutorial: Bool
     @Published private(set) var aiRoutingSettings: AIRoutingSettings
     @Published private(set) var responseDetailLevel: ResponseDetailLevel
     let localFileAccess: LocalFileAccessStore
@@ -30,12 +31,14 @@ final class AppState: ObservableObject {
     private let localAIBackend: any AIBackend = HybridLocalAIBackend()
     private let userDefaults: UserDefaults
     private let onboardingCompletedKey = "PrivacyOnboarding.Completed"
+    private let firstCaptureTutorialCompletedKey = "FirstCaptureTutorial.Completed"
 
     init(userDefaults: UserDefaults = .standard) {
         self.userDefaults = userDefaults
         localFileAccess = LocalFileAccessStore(userDefaults: userDefaults)
         chatHistory = ChatHistoryStore(userDefaults: userDefaults)
         hasCompletedOnboarding = userDefaults.bool(forKey: onboardingCompletedKey)
+        hasCompletedFirstCaptureTutorial = userDefaults.bool(forKey: firstCaptureTutorialCompletedKey)
         let storedUseCloudModels = userDefaults.bool(forKey: AIRoutingDefaults.useCloudModelsKey)
         let storedAllowCloudImageContext = userDefaults.bool(forKey: AIRoutingDefaults.allowCloudImageContextKey)
         aiRoutingSettings = AIRoutingSettings(
@@ -73,13 +76,22 @@ final class AppState: ObservableObject {
 
     func showOnboarding() {
         onboardingController.show(
+            screenRecordingStatus: screenRecordingStatus,
             onStartCapture: { [weak self] in
                 self?.completeOnboarding()
                 self?.startCapture()
             },
-            onContinue: { [weak self] in
+            onOpenAssistant: { [weak self] in
                 self?.completeOnboarding()
                 self?.showAssistant()
+            },
+            onRequestScreenRecordingAccess: { [weak self] in
+                self?.requestScreenRecordingAccess()
+                return self?.screenRecordingStatus ?? .notGranted
+            },
+            onOpenScreenRecordingSettings: { [weak self] in
+                self?.openScreenRecordingSettings()
+                return self?.screenRecordingStatus ?? .notGranted
             }
         )
     }
@@ -114,6 +126,7 @@ final class AppState: ObservableObject {
         isCapturing = true
 
         overlayCoordinator.beginSelection(
+            showFirstUseTip: !hasCompletedFirstCaptureTutorial,
             onComplete: { [weak self] selection in
                 Task { @MainActor in
                     await self?.process(selection: selection)
@@ -348,6 +361,7 @@ final class AppState: ObservableObject {
                 technicalClassification: technicalClassification
             )
             lastResult = result.withoutCapturedImage
+            completeFirstCaptureTutorialIfNeeded()
             panelController.show(
                 result: result,
                 routingSettings: aiRoutingSettings,
@@ -386,6 +400,12 @@ final class AppState: ObservableObject {
                 }
             )
         }
+    }
+
+    private func completeFirstCaptureTutorialIfNeeded() {
+        guard !hasCompletedFirstCaptureTutorial else { return }
+        hasCompletedFirstCaptureTutorial = true
+        userDefaults.set(true, forKey: firstCaptureTutorialCompletedKey)
     }
 
     private func presentScreenRecordingRecovery(near selectionFrame: CGRect? = nil) {

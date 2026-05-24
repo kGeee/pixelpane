@@ -548,26 +548,55 @@ struct LocalFileContextProvider: Sendable {
     }
 
     nonisolated func directAnswer(for question: String, grants: [LocalFileGrant]) -> String? {
-        let normalized = question.lowercased()
-        let asksForGrants = [
-            "what files can you access",
-            "what folders can you access",
-            "list granted",
-            "granted folders",
-            "granted files",
-            "local files can you see",
-            "which files can you see"
-        ].contains { normalized.contains($0) }
+        let normalized = Self.normalized(question)
+        let fileSignals = [
+            "file", "files", "folder", "folders", "directory", "directories",
+            "local file", "local files", "source", "sources", "repo", "repository",
+            "project", "workspace"
+        ]
+        let accessSignals = [
+            "access", "see", "view", "read", "search", "look at", "look in",
+            "have", "know about", "use"
+        ]
+        let capabilitySignals = [
+            "can you", "are you able", "do you have access", "do you see",
+            "can pixel pane", "can the app"
+        ]
+        let inventorySignals = [
+            "what", "which", "list", "show", "where", "any", "granted",
+            "connected", "available"
+        ]
+        let asksForGrants =
+            normalized.contains("granted files")
+            || normalized.contains("granted folders")
+            || normalized.contains("file sources")
+            || normalized.contains("local sources")
+            || (
+                fileSignals.contains { normalized.contains($0) }
+                && accessSignals.contains { normalized.contains($0) }
+                && (
+                    inventorySignals.contains { normalized.contains($0) }
+                    || capabilitySignals.contains { normalized.contains($0) }
+                )
+            )
 
         guard asksForGrants else { return nil }
 
         let activeGrants = grants.filter { FileManager.default.fileExists(atPath: $0.path) }
         guard !activeGrants.isEmpty else {
-            return "I do not have access to any local files yet. Add a file or folder with the file access buttons, then I can read and search it."
+            return "I can read and search only files or folders you grant. Right now, no local file sources are granted."
         }
 
         let lines = activeGrants.map { "- \($0.kindLabel): \($0.path)" }
-        return "I can read and search these user-granted locations:\n\n\(lines.joined(separator: "\n"))"
+        return "I can read and search only these user-granted locations:\n\n\(lines.joined(separator: "\n"))"
+    }
+
+    private nonisolated static func normalized(_ value: String) -> String {
+        value
+            .lowercased()
+            .replacingOccurrences(of: #"[^a-z0-9/._ -]+"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private nonisolated func fileURLs(in grant: LocalFileGrant) -> [URL] {

@@ -1,6 +1,6 @@
 import Foundation
 
-struct AIRoutingSettings: Equatable {
+struct AIRoutingSettings: Equatable, Sendable {
     static let cloudBackendBaseURL = URL(string: "https://pixel-pane-api.snehithn5.workers.dev/v1")!
     static let cloudBackendAvailable = true
 
@@ -31,7 +31,7 @@ struct AIRoutingSettings: Equatable {
     }
 }
 
-enum AIRoutingMode: Equatable {
+enum AIRoutingMode: Equatable, Sendable {
     case local
     case cloud
 

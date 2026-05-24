@@ -446,3 +446,28 @@ Consequences:
 
 Follow-up:
 Manual QA should validate a create, append, replacement edit, and cancel path against a temporary granted folder.
+
+## 2026-05-24 - App-Owned Model-Agnostic Assistant Harness
+
+Status: Accepted
+
+Decision:
+Pixel Pane should add an app-owned assistant harness that mediates tools, permissions, context packing, image inputs, file access, deterministic app-state answers, and confirmed writes before any model route receives context. Model adapters declare capabilities; they do not own permission decisions.
+
+Context:
+The notch assistant now supports local MLX text, MLX vision, Cloud Mode, deterministic app-state answers, user-granted file read/search, and confirmed local file writes. As users choose different local models, the app cannot rely on each model to know whether it can access files, decide when to search, or safely handle images and writes. Provider and local-model research shows tool use is a request/execution loop: models propose tool calls or structured intents, while application code runs tools and returns results.
+
+Options Considered:
+- Keep adding model-specific prompt heuristics in the Ask flow. Rejected because it creates stale/hard-coded behavior and weakens consistency across user-set models.
+- Require native tool-calling support from every model. Rejected because many useful local models and command-line adapters do not reliably support native tool calls.
+- Add one app-owned router and capability contract, with native tool calling as an optional adapter optimization. Proposed.
+
+Consequences:
+- The next assistant sprint starts with `ASSIST-016`, a capability contract and central tool router.
+- File access, image context, app-state answers, and write proposals are app tools with deterministic permission checks.
+- Native tool-calling models may receive schemas, but no model is trusted to enforce file grants or side-effect policy.
+- Retrieved file/OCR/image content is untrusted data and must be isolated from instructions.
+- Chat UI should expose concise source/tool metadata so users can see what Pixel Pane used.
+
+Follow-up:
+Implement `ASSIST-016` through `ASSIST-022` before broadening assistant automation beyond user-granted files/images and confirmed local writes.

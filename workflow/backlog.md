@@ -1,6 +1,6 @@
 # Pixel Pane Story Backlog
 
-Last updated: 2026-05-22 (QUAL-014 performance pass completed)
+Last updated: 2026-05-24 (ASSIST-017 completed)
 
 This is the story-level source of truth. Claude/Codex should use this file when you say:
 
@@ -23,9 +23,9 @@ When asked to complete an epic, do not attempt the whole epic in one pass. Compl
 
 ## Current Recommended Story
 
-`PRIV-009` - Remove or formalize onboarding QA reset is the current recommended story.
+`ASSIST-019` - Add source-aware context packing and budget manager is the current recommended story.
 
-Reason: The local Qwen prompt/speed slice and ephemeral capture audit are complete. The remaining privacy cleanup is deciding whether the onboarding QA reset is a temporary debug-only control or a supported reset path.
+Reason: The app now has a model-agnostic harness and transient user image attachments with OCR fallback. The next slice should formalize granted file access as explicit assistant tools.
 
 ---
 
@@ -672,8 +672,8 @@ Notes:
 | `PRIV-005` | Local/cloud mode setting and enforcement | Done | `ACT-001` |
 | `PRIV-006` | Result source transparency | Not Started | `CORE-008` |
 | `PRIV-007` | Settings structure | Not Started | `CORE-001` |
-| `PRIV-008` | First-capture tutorial | Not Started | `CORE-002` |
-| `PRIV-009` | Remove or formalize onboarding QA reset | Not Started | Beta readiness |
+| `PRIV-008` | First-capture tutorial | Done | `CORE-002` |
+| `PRIV-009` | Remove or formalize onboarding QA reset | Done | Beta readiness |
 
 ### `PRIV-001` - First-Run Onboarding
 
@@ -691,6 +691,7 @@ Notes:
 - Completed 2026-05-21. Added a first-run onboarding window shown before the default assistant surface when `PrivacyOnboarding.Completed` is unset. It explains selected-region capture, no continuous recording, and ephemeral in-memory screenshot handling. Continue marks onboarding complete and opens the assistant; Start First Capture marks onboarding complete and starts the capture flow. Local verification wrapper build succeeded.
 - Follow-up 2026-05-22. Increased the onboarding window/content minimum height so the bottom action buttons do not clip or overflow. Local verification wrapper build succeeded.
 - Follow-up 2026-05-22. Added a temporary Settings -> Permissions -> Onboarding QA control to show the first-run onboarding again during local testing. Tracked removal/formalization in `PRIV-009`.
+- Follow-up 2026-05-23. Revised the onboarding into a sharper privacy-first introduction: selected-region control, no background recording, screenshot non-retention, Local Mode by default, and Cloud Mode as opt-in. Added a Screen Recording readiness row with Request Access/Open Settings actions, renamed Continue to Open Assistant, and kept Start First Capture as the primary action. Local verification wrapper build succeeded.
 
 ### `PRIV-002` - Screen Recording Permission Guidance
 
@@ -778,9 +779,13 @@ Goal: Get new users to a successful first capture.
 
 Acceptance:
 
-- [ ] Overlay has first-use tip.
-- [ ] Tutorial state is separate from onboarding state.
-- [ ] Tutorial does not repeat after success.
+- [x] Overlay has first-use tip.
+- [x] Tutorial state is separate from onboarding state.
+- [x] Tutorial does not repeat after success.
+
+Notes:
+
+- Completed 2026-05-23. Added a separate `FirstCaptureTutorial.Completed` flag. Until the first successful capture, the region overlay says "Drag over text to ask Pixel Pane"; after success, the flag is persisted so the default overlay hint returns. Local verification wrapper build succeeded.
 
 ### `PRIV-009` - Remove Or Formalize Onboarding QA Reset
 
@@ -790,10 +795,14 @@ Goal: Do not ship a rough QA-only onboarding reset control by accident.
 
 Acceptance:
 
-- [ ] Decide whether the onboarding reset belongs in production Settings or should be debug-only.
-- [ ] If production-facing, move it into the final Privacy/About settings structure with user-facing copy.
-- [ ] If debug-only, hide it from release builds or remove it before beta.
-- [ ] Update `workflow/status.md` with the final decision.
+- [x] Decide whether the onboarding reset belongs in production Settings or should be debug-only.
+- [x] If production-facing, move it into the final Privacy/About settings structure with user-facing copy.
+- [x] Debug-only path not chosen; reset remains production-facing.
+- [x] Update `workflow/status.md` with the final decision.
+
+Notes:
+
+- Completed 2026-05-23. Decision: keep the reset as a production-facing Settings -> Permissions control for now so users and QA can revisit the privacy introduction. Renamed the section to "Privacy Introduction" and the action to "View Privacy Introduction Again"; it no longer presents as a QA-only reset. Local verification wrapper build succeeded.
 
 ---
 
@@ -1263,6 +1272,13 @@ Notes:
 | `ASSIST-013` | QA local model responses and deterministic fallbacks | Done | `ASSIST-012` |
 | `ASSIST-014` | Show local model peak memory in chat | Done | `ASSIST-005` |
 | `ASSIST-015` | Keep notch stable after New Chat | Done | `ASSIST-001` |
+| `ASSIST-016` | Add model-agnostic assistant capability contract and tool router | Done | `ASSIST-007`, `ASSIST-008`, `ASSIST-012`, `ASSIST-013` |
+| `ASSIST-017` | Normalize user-provided image context and attachments | Done | `ASSIST-016`, `ACT-013`, `PRIV-004` |
+| `ASSIST-018` | Add model-agnostic local file tool execution layer | Done | `ASSIST-016`, `ASSIST-002`, `ASSIST-003` |
+| `ASSIST-019` | Add source-aware context packing and budget manager | Not Started | `ASSIST-016`, `ASSIST-017`, `ASSIST-018` |
+| `ASSIST-020` | Add tool-use transcript and source transparency UI | Not Started | `ASSIST-017`, `ASSIST-018`, `PRIV-006` |
+| `ASSIST-021` | Add prompt-injection and tool-safety hardening for files/images | Not Started | `ASSIST-018`, `ASSIST-019` |
+| `ASSIST-022` | Add cross-model assistant harness QA matrix | Not Started | `ASSIST-016`, `ASSIST-017`, `ASSIST-018`, `ASSIST-019`, `ASSIST-020`, `ASSIST-021` |
 
 ### `ASSIST-001` - Make The Notch A Chat-First Assistant Surface
 
@@ -1531,3 +1547,150 @@ Notes:
 
 - Completed 2026-05-22. New Chat originally held the active expanded size for one second, but that left a large blank panel.
 - Revised 2026-05-22. New Chat now resizes immediately to the compact empty-chat layout, cancels pending collapse work, briefly suppresses only hover-collapse caused by the resize, and refocuses the chat input.
+
+### Assistant Harness Sprint - Model-Agnostic Tools, Images, And Files
+
+Prepared during research on 2026-05-24.
+
+Sprint goal: Any user-set model should get the same high-quality assistant experience: it can use user-provided images, inspect only user-granted files/folders, answer app-state questions accurately, and request confirmed local writes through an app-owned permission layer. Native tool-calling models can use provider tools, but Pixel Pane must not depend on native tool calling for correctness.
+
+Implementation order:
+
+1. `ASSIST-016` defines the adapter capability contract and central router.
+2. `ASSIST-017` and `ASSIST-018` convert images and files into first-class app tools.
+3. `ASSIST-019` packs context safely across small and large context windows.
+4. `ASSIST-020` exposes what was used so users can trust the answer.
+5. `ASSIST-021` hardens untrusted file/image content and side-effect boundaries.
+6. `ASSIST-022` proves the same flow works across local text, local vision, cloud, and weak/no-tool models.
+
+Non-goals for this sprint: autonomous computer control, background screen monitoring, broad shell access, unconfirmed file writes, remote write tools, persistent screenshot memory, or model-specific hard-coded answers.
+
+### `ASSIST-016` - Add Model-Agnostic Assistant Capability Contract And Tool Router
+
+Goal: Create a single assistant harness layer that decides what app capabilities are available, which model route can consume them, and how model/tool results flow back into the chat.
+
+Acceptance:
+
+- [x] Add an `AssistantModelCapabilities` contract for each backend/adapter covering text chat, image input, native tool calling, structured-output reliability, streaming, context budget, and local/cloud routing.
+- [x] Centralize app-owned assistant tools behind one router before model invocation: app-state answers, file grants/list/search/read, image/OCR context, and local write proposal/confirmation.
+- [x] Support native provider tool calls when available, but keep an app-side fallback path for models that only emit plain text.
+- [x] Remove scattered Ask-flow decisions that duplicate tool routing, while preserving existing deterministic answers and file-search gating.
+- [x] App builds successfully.
+
+Notes:
+
+- Research basis: OpenAI, Anthropic, MCP, and Hugging Face all treat tool use as a structured request that application code executes; the model does not directly access the system. Local models vary widely in native tool support, so the router must be model-agnostic.
+- Relevant seams today: `ResultPanelView.sendAskQuestion()`, `directAppStateAnswer`, `LocalFileContextProvider`, `LocalFileWriteProposalParser`, `AIBackendRequest`, `HybridLocalAIBackend`, `MLXTextBackend`, `MLXVisionBackend`, and `CloudAIBackend`.
+- Risk: Medium-high. This touches the main Ask path. Keep the first pass as a refactor/contract with behavior parity and tight regression QA.
+- Completed 2026-05-24. Added `AssistantHarness.swift` with `AssistantModelCapabilities`, route/image/tool capability metadata, `AssistantToolEnvironment`, and `AssistantToolRouter`. The Ask path now uses the router for deterministic Pixel Pane answers, local file grant answers, local write proposal preflight, and file-search gating before model invocation. The old duplicated direct-answer/write/search helpers were removed from `ResultPanelView`. Local verification wrapper build succeeded.
+
+### `ASSIST-017` - Normalize User-Provided Image Context And Attachments
+
+Goal: Let users provide image context intentionally and make screenshot/user-image inputs available to capable models through one normalized image pipeline.
+
+Acceptance:
+
+- [x] Define an `AssistantImageContext` value that can represent active capture screenshots, user-selected image files, clipboard/paste images if available, OCR text extracted from images, and transient metadata.
+- [x] Add a minimal assistant UI path for attaching an image from user selection without saving persistent screenshots by default.
+- [x] Route images to MLX-VLM or Cloud Mode only when the selected backend supports image input and the current routing/privacy state allows it.
+- [x] Provide an OCR/text fallback for text-only models so attached images can still help when they contain readable text.
+- [x] Ensure temporary image exports for MLX helpers are cleaned up on success, cancellation, timeout, and error.
+- [x] App builds successfully.
+
+Notes:
+
+- Research basis: multimodal model APIs commonly represent message content as typed text/image parts, while MLX-VLM currently works well with image paths/server input. Apple Vision can extract OCR as a local fallback.
+- Privacy constraint: user-selected images should be treated like capture screenshots: transient by default, not added to chat history as pixels unless a future explicit retention story says otherwise.
+- Risk: Medium. The hard part is preserving ephemeral capture semantics while adding user-supplied images.
+- Completed 2026-05-24. Added `AssistantImageContext` and a composer image menu for choosing, replacing, and clearing a transient user image. Attached images are kept in memory, OCR'd locally for text-only fallback, surfaced as assistant context badges, and cleared when opening history or starting a new chat. Ask routing now prefers the user-attached image for MLX Vision/Cloud image-capable routes and falls back to attached-image OCR for text-only routes. The existing MLX temporary-image cleanup path remains unchanged. Local verification wrapper build succeeded.
+
+### `ASSIST-018` - Add Model-Agnostic Local File Tool Execution Layer
+
+Goal: Replace heuristics and direct prompt stuffing with explicit file tools that work consistently across all model adapters.
+
+Acceptance:
+
+- [x] Define file tools for listing grants, searching grants, reading bounded text, explaining unavailable access, and staging local write proposals.
+- [x] Enforce user-granted roots in the tool executor, not in model prompts.
+- [x] Keep writes local-only and confirmation-gated with the existing proposal UI before any file mutation.
+- [x] For models without native tool calling, preserve a deterministic app-side planner for obvious file intents and a structured prompt fallback for ambiguous cases.
+- [x] Return structured file tool results with source IDs, paths, byte/line ranges when available, and truncation flags.
+- [x] App builds successfully.
+
+Notes:
+
+- Research basis: tool definitions should have schemas, precise descriptions, and high-signal outputs; execution stays in app code. Permission checks must be deterministic and independent of model compliance.
+- Risk: Medium. Existing file search works, but this story changes ownership from prompt builder heuristics to a reusable tool executor.
+- Completed 2026-05-24. Added `AssistantLocalFileToolExecutor` with explicit list-grants, search, read, unavailable-access, and stage-write proposal tools. Grant enforcement now lives in the executor, Ask file search goes through the tool router, and write proposals remain confirmation-gated before any file mutation. Local verification wrapper build succeeded.
+- Follow-up 2026-05-24. Broad folder questions now route to local file tools before the no-screen fallback, and a single granted folder can be answered with a deterministic top-level contents overview. Local verification wrapper build succeeded.
+- Follow-up 2026-05-24. File/folder capability questions such as "can you view my folders?" now route through deterministic local grant answers before model invocation. Local verification wrapper build succeeded.
+
+### `ASSIST-019` - Add Source-Aware Context Packing And Budget Manager
+
+Goal: Give models enough relevant context from chat, files, OCR, and images without overflowing small local context windows or hiding source boundaries.
+
+Acceptance:
+
+- [ ] Add a context packer that budgets user question, system/tool instructions, prior turns, OCR, file snippets, image OCR, and tool results separately.
+- [ ] Prefer source titles, paths, snippets, and summaries over full file content unless the user explicitly asks to read a file.
+- [ ] Degrade gracefully for small local models by shrinking or omitting lower-priority context instead of sending misleading "none" sections.
+- [ ] Mark untrusted retrieved content as data, not instructions, before it reaches any model.
+- [ ] Preserve Brief/Balanced/Thorough response style without using truncating token caps as a substitute for context packing.
+- [ ] App builds successfully.
+
+Notes:
+
+- Research basis: MLX-LM supports prompt caching and long-context options, but user-selected models can vary heavily. The app needs an adapter-level budget rather than one global prompt shape.
+- Risk: Medium-high. Poor packing can silently degrade answers. Add visible source/debug metadata in `ASSIST-020`.
+
+### `ASSIST-020` - Add Tool-Use Transcript And Source Transparency UI
+
+Goal: Make it clear when Pixel Pane used files, OCR, images, or deterministic app state so users can trust and debug the assistant.
+
+Acceptance:
+
+- [ ] Chat turn metadata shows whether the answer used app state, OCR, image context, local files, confirmed write proposals, Local Mode, or Cloud Mode.
+- [ ] File-backed answers expose concise source chips with path/display name and snippet count without crowding the notch surface.
+- [ ] Image-backed answers distinguish active capture, user-attached image, and OCR-only fallback.
+- [ ] Cloud Mode clearly indicates when file snippets or image context were sent to the cloud route.
+- [ ] Source transparency supports `PRIV-006` rather than creating a second, inconsistent source UI.
+- [ ] App builds successfully.
+
+Notes:
+
+- This should stay minimal in the notch. Prefer a compact source row/details popover over large cards.
+- Risk: Low-medium. Mostly UI clarity, but it depends on structured outputs from the preceding stories.
+
+### `ASSIST-021` - Add Prompt-Injection And Tool-Safety Hardening For Files/Images
+
+Goal: Treat file contents, OCR, image text, and tool outputs as untrusted data so malicious instructions in local files/images cannot broaden access or trigger side effects.
+
+Acceptance:
+
+- [ ] Retrieved file/image/OCR content is wrapped with explicit untrusted-data boundaries in prompts and tool results.
+- [ ] Tool executor validates arguments against user grants, current session intent, path normalization, file size/type limits, and side-effect policy.
+- [ ] Any write/create/edit remains human-confirmed and cannot be requested solely by retrieved content.
+- [ ] Add tests or manual QA prompts with injected instructions inside granted files and images.
+- [ ] Log/metadata records blocked or downgraded tool attempts locally without storing sensitive content.
+- [ ] App builds successfully.
+
+Notes:
+
+- Research basis: OWASP and provider guidance recommend least privilege, structured separation, action validation, and human confirmation for consequential actions. This is especially important for RAG/file contents and multimodal injection.
+- Risk: High. This is a trust-boundary story; complete it before making file/image tools feel automatic.
+
+### `ASSIST-022` - Add Cross-Model Assistant Harness QA Matrix
+
+Goal: Prove the harness works across representative user-set models and routing modes, including models that do not reliably emit tool calls.
+
+Acceptance:
+
+- [ ] Add a QA matrix for local MLX text, local MLX vision, Cloud Mode, text-only fallback, no selected local model, and a weak/no-native-tool local model.
+- [ ] Cover app-state answers, file grant questions, file search/read, image attachment, screenshot context, OCR fallback, confirmed write proposal/cancel/confirm, and prompt-injection attempts.
+- [ ] Record expected behavior for each route in `workflow/qa-checklist.md` or an equivalent workflow doc.
+- [ ] Run the matrix on the current development machine where feasible and record gaps in `workflow/status.md`.
+- [ ] App builds successfully after any fixes required by QA.
+
+Notes:
+
+- This is the exit story for the sprint. Do not mark the harness sprint complete until this matrix has run or each unrun case has an explicit blocker.

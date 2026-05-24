@@ -1,6 +1,6 @@
 # Implementation References
 
-Last updated: 2026-04-29
+Last updated: 2026-05-24
 
 Use this file when stories need platform/service-specific details. Prefer primary sources over blog posts.
 
@@ -65,6 +65,69 @@ Primary references:
 - MLX-VLM GitHub: https://github.com/Blaizzy/mlx-vlm
 - Hugging Face MLX docs: https://huggingface.co/docs/hub/en/mlx
 - Recommended model card: https://huggingface.co/mlx-community/Qwen3.6-35B-A3B-6bit
+
+## Model-Agnostic Assistant Harness
+
+Research date: 2026-05-24. Use for `ASSIST-016` through `ASSIST-022`.
+
+Product target:
+
+- Pixel Pane should own the assistant tool layer. Models may request or imply tool use, but app code executes tools, validates permissions, packs context, and records sources.
+- The harness must work for native tool-calling APIs, OpenAI-compatible local servers, MLX command/server paths, and weak user-selected local models that only return plain text.
+- Model adapters should declare capabilities instead of branching feature behavior throughout the UI. Minimum capability fields: text chat, image input, native tool calling, structured-output reliability, streaming, context budget, local/cloud route, and image input format.
+- Treat files, OCR text, images, and tool outputs as untrusted data. Retrieved content can inform answers but must not expand permissions, trigger writes, or override user/app instructions.
+
+Tool-use conclusions:
+
+- OpenAI, Anthropic, MCP, Hugging Face, and llama.cpp all describe tool/function calling as a loop where the model requests a tool and the application or server-side executor runs it. Pixel Pane should keep the executor deterministic and app-owned.
+- Use JSON-schema-like tool definitions internally even when a model route cannot receive native tool schemas. This keeps tool names, inputs, outputs, source IDs, and validation consistent across adapters.
+- Native tool calling is an optimization, not a requirement. For non-native local models, Pixel Pane should use deterministic intent routing for obvious app-state/file/write/image cases and a structured prompt fallback only where safe.
+- Tool outputs should be high-signal and source-aware: stable source IDs, display path, snippet/range/truncation metadata, and a short result body. Avoid dumping whole files unless the user explicitly asks and the context budget allows it.
+
+File access conclusions:
+
+- User-granted file/folder access remains the trust boundary. Permission checks must happen in the file tool executor, not in prompts.
+- File tools should cover listing grants, searching grants, reading bounded text, explaining unavailable access, and staging write proposals.
+- Confirmed writes stay local-only and confirmation-gated. Retrieved file content must never be able to cause a write without a visible user confirmation naming the exact target path.
+- Because the app is currently Direct-distributed and not sandboxed, the app still needs to behave as if user grants are the product permission boundary.
+
+Image context conclusions:
+
+- Normalize active screenshots, user-selected images, and pasted/clipboard images into one `AssistantImageContext` path with typed parts: original image when available, OCR text when extracted, source label, privacy/routing flags, and transient storage metadata.
+- Vision-capable routes can receive image input. Text-only routes should receive OCR/text fallback and clear labeling that image pixels were not analyzed.
+- MLX-VLM command-line usage accepts image paths; any temporary image export must be cleaned up on success, cancellation, timeout, and error. Cloud image input remains gated by Cloud Mode and explicit route labeling.
+- Chat history should continue to avoid persisting screenshot or attached-image pixels by default.
+
+Context packing conclusions:
+
+- Context packing should budget source groups separately: user question, system/tool instructions, prior chat turns, OCR, image OCR, file snippets, and tool results.
+- Small local context windows should degrade by trimming or summarizing lower-priority sources, not by adding placeholder sections like "Files: none".
+- Source boundaries should be visible in both prompts and UI metadata so retrieved content is clearly data, not instructions.
+
+Safety conclusions:
+
+- Prompt injection is a core risk whenever the assistant reads files, OCR, webpages, or images. Use defense in depth: least privilege, structured data/instruction separation, deterministic argument validation, human confirmation for side effects, and local audit metadata for blocked/downgraded actions.
+- Do not rely on a model to decide whether it has file access or whether a file write is safe. The model can propose; the app checks.
+
+Primary references:
+
+- OpenAI function calling: https://developers.openai.com/api/docs/guides/function-calling
+- OpenAI prompt injection overview: https://openai.com/safety/prompt-injections/
+- Anthropic tool use, defining tools: https://platform.claude.com/docs/en/agents-and-tools/tool-use/define-tools
+- Anthropic computer-use security considerations: https://platform.claude.com/docs/en/agents-and-tools/tool-use/computer-use-tool
+- Model Context Protocol tools spec: https://modelcontextprotocol.io/specification/draft/server/tools
+- Model Context Protocol security best practices: https://modelcontextprotocol.io/docs/tutorials/security/security_best_practices
+- OWASP LLM Prompt Injection Prevention Cheat Sheet: https://cheatsheetseries.owasp.org/cheatsheets/LLM_Prompt_Injection_Prevention_Cheat_Sheet.html
+- MLX-LM GitHub: https://github.com/ml-explore/mlx-lm
+- MLX-VLM GitHub: https://github.com/Blaizzy/mlx-vlm
+- Hugging Face chat templates and tool use: https://huggingface.co/docs/transformers/chat_extras
+- Hugging Face multimodal chat templates: https://huggingface.co/docs/transformers/chat_templating_multimodal
+- llama.cpp function calling: https://github.com/ggml-org/llama.cpp/blob/master/docs/function-calling.md
+- Apple macOS App Sandbox file access: https://developer.apple.com/documentation/security/accessing-files-from-the-macos-app-sandbox
+- Apple security-scoped bookmark access: https://developer.apple.com/documentation/professional-video-applications/enabling-security-scoped-bookmark-and-url-access
+- Apple `NSOpenPanel.canChooseDirectories`: https://developer.apple.com/documentation/appkit/nsopenpanel/canchoosedirectories
+- Apple Vision `VNRecognizeTextRequest`: https://developer.apple.com/documentation/vision/vnrecognizetextrequest
+- Apple Photos picker and `Transferable`: https://developer.apple.com/documentation/PhotoKit/bringing-photos-picker-to-your-swiftui-app
 
 ## Global Hotkey
 

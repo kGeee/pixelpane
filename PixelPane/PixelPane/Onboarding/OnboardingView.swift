@@ -5,7 +5,13 @@ import SwiftUI
 final class OnboardingWindowController {
     private var window: NSWindow?
 
-    func show(onStartCapture: @escaping () -> Void, onContinue: @escaping () -> Void) {
+    func show(
+        screenRecordingStatus: ScreenRecordingPermissionStatus,
+        onStartCapture: @escaping () -> Void,
+        onOpenAssistant: @escaping () -> Void,
+        onRequestScreenRecordingAccess: @escaping () -> ScreenRecordingPermissionStatus,
+        onOpenScreenRecordingSettings: @escaping () -> ScreenRecordingPermissionStatus
+    ) {
         if let window {
             NSApp.activate()
             window.makeKeyAndOrderFront(nil)
@@ -14,19 +20,22 @@ final class OnboardingWindowController {
         }
 
         let view = OnboardingView(
+            initialScreenRecordingStatus: screenRecordingStatus,
             onStartCapture: onStartCapture,
-            onContinue: onContinue
+            onOpenAssistant: onOpenAssistant,
+            onRequestScreenRecordingAccess: onRequestScreenRecordingAccess,
+            onOpenScreenRecordingSettings: onOpenScreenRecordingSettings
         )
         let hostingView = NSHostingView(rootView: view)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 460),
+            contentRect: NSRect(x: 0, y: 0, width: 540, height: 560),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
         window.title = "Welcome to Pixel Pane"
         window.contentView = hostingView
-        window.minSize = NSSize(width: 520, height: 460)
+        window.minSize = NSSize(width: 540, height: 560)
         window.center()
         window.isReleasedWhenClosed = false
         window.level = .floating
@@ -45,7 +54,25 @@ final class OnboardingWindowController {
 
 private struct OnboardingView: View {
     let onStartCapture: () -> Void
-    let onContinue: () -> Void
+    let onOpenAssistant: () -> Void
+    let onRequestScreenRecordingAccess: () -> ScreenRecordingPermissionStatus
+    let onOpenScreenRecordingSettings: () -> ScreenRecordingPermissionStatus
+
+    @State private var screenRecordingStatus: ScreenRecordingPermissionStatus
+
+    init(
+        initialScreenRecordingStatus: ScreenRecordingPermissionStatus,
+        onStartCapture: @escaping () -> Void,
+        onOpenAssistant: @escaping () -> Void,
+        onRequestScreenRecordingAccess: @escaping () -> ScreenRecordingPermissionStatus,
+        onOpenScreenRecordingSettings: @escaping () -> ScreenRecordingPermissionStatus
+    ) {
+        self.onStartCapture = onStartCapture
+        self.onOpenAssistant = onOpenAssistant
+        self.onRequestScreenRecordingAccess = onRequestScreenRecordingAccess
+        self.onOpenScreenRecordingSettings = onOpenScreenRecordingSettings
+        _screenRecordingStatus = State(initialValue: initialScreenRecordingStatus)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -59,7 +86,7 @@ private struct OnboardingView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Pixel Pane")
                         .font(.system(size: 24, weight: .bold, design: .rounded))
-                    Text("Private screen capture, only when you ask.")
+                    Text("Private screen help, only when you ask.")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(.secondary)
                 }
@@ -68,33 +95,43 @@ private struct OnboardingView: View {
             VStack(alignment: .leading, spacing: 10) {
                 OnboardingPrivacyRow(
                     systemImage: "selection.pin.in.out",
-                    title: "Selected regions only",
-                    detail: "Capture starts from the hotkey or menu. You drag over the exact screen region Pixel Pane should read."
+                    title: "You choose the region",
+                    detail: "Capture starts only from the hotkey, menu, or this window. You drag over the exact area Pixel Pane should read."
                 )
                 OnboardingPrivacyRow(
                     systemImage: "record.circle",
-                    title: "No continuous recording",
-                    detail: "Pixel Pane does not watch your screen in the background or keep a screen timeline."
+                    title: "No background recording",
+                    detail: "Pixel Pane does not watch your screen in the background and never keeps a screen timeline."
                 )
                 OnboardingPrivacyRow(
                     systemImage: "memorychip",
-                    title: "Captures stay ephemeral",
-                    detail: "OCR starts from an in-memory image. Screenshots are not saved to chat history by default."
+                    title: "Screenshots are not saved",
+                    detail: "OCR starts from an in-memory image. Chat text can be saved locally, but screenshots are not retained by default."
+                )
+                OnboardingPrivacyRow(
+                    systemImage: "network.slash",
+                    title: "Local Mode is the default",
+                    detail: "Pixel Pane starts with local processing. Cloud Mode is an explicit opt-in from Settings."
                 )
             }
 
-            Text("macOS will ask for Screen Recording permission before the first capture can read pixels. Granting it lets Pixel Pane process only the regions you explicitly select.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            PermissionReadinessRow(
+                status: screenRecordingStatus,
+                onRequestAccess: {
+                    screenRecordingStatus = onRequestScreenRecordingAccess()
+                },
+                onOpenSettings: {
+                    screenRecordingStatus = onOpenScreenRecordingSettings()
+                }
+            )
 
             Spacer()
 
             HStack(spacing: 10) {
                 Button {
-                    onContinue()
+                    onOpenAssistant()
                 } label: {
-                    Text("Continue")
+                    Text("Open Assistant")
                         .frame(minWidth: 120)
                 }
                 .buttonStyle(OnboardingSecondaryButtonStyle())
@@ -111,8 +148,8 @@ private struct OnboardingView: View {
             }
         }
         .padding(24)
-        .frame(width: 520)
-        .frame(minHeight: 460)
+        .frame(width: 540)
+        .frame(minHeight: 560)
     }
 }
 
@@ -157,5 +194,58 @@ private struct OnboardingPrivacyRow: View {
         }
         .padding(10)
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct PermissionReadinessRow: View {
+    let status: ScreenRecordingPermissionStatus
+    let onRequestAccess: () -> Void
+    let onOpenSettings: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 11) {
+                Image(systemName: status.isGranted ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(status.isGranted ? .green : .yellow)
+                    .frame(width: 24, height: 24)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Screen Recording: \(status.label)")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text(status.isGranted
+                        ? "Pixel Pane is ready to capture selected regions."
+                        : "macOS requires this permission before Pixel Pane can read pixels from a selected region."
+                    )
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            if !status.isGranted {
+                HStack(spacing: 8) {
+                    Button {
+                        onRequestAccess()
+                    } label: {
+                        Label("Request Access", systemImage: "lock.open")
+                    }
+
+                    Button {
+                        onOpenSettings()
+                    } label: {
+                        Label("Open Settings", systemImage: "gearshape")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+        .padding(12)
+        .background(.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(.blue.opacity(0.18), lineWidth: 1)
+        )
     }
 }
