@@ -478,14 +478,37 @@ struct LocalFileContextProvider: Sendable {
         }
 
         var snippets: [LocalFileSnippet] = []
+        var seenSnippetPaths: Set<String> = []
         var visitedFiles = 0
         var filesRead = 0
         var contentCandidates: [URL] = []
+
+        if shouldPrioritizeProjectFiles(question) {
+            for grant in activeGrants {
+                for fileURL in likelyProjectFileURLs(in: grant) {
+                    guard filesRead < maxFilesToRead,
+                          !seenSnippetPaths.contains(fileURL.path),
+                          let content = readTextFile(fileURL) else { continue }
+                    filesRead += 1
+                    seenSnippetPaths.insert(fileURL.path)
+                    let contentScore = score(text: content, terms: terms)
+                    snippets.append(
+                        LocalFileSnippet(
+                            id: fileURL.path,
+                            path: fileURL.path,
+                            preview: snippet(from: content, terms: terms),
+                            score: 500 + contentScore
+                        )
+                    )
+                }
+            }
+        }
 
         for grant in activeGrants {
             guard visitedFiles < maxCandidateFiles else { break }
             for fileURL in fileURLs(in: grant) {
                 guard visitedFiles < maxCandidateFiles, !Task.isCancelled else { break }
+                guard !seenSnippetPaths.contains(fileURL.path) else { continue }
                 visitedFiles += 1
 
                 let searchablePath = [
@@ -513,11 +536,13 @@ struct LocalFileContextProvider: Sendable {
                         score: totalScore
                     )
                 )
+                seenSnippetPaths.insert(fileURL.path)
             }
         }
 
         for fileURL in contentCandidates {
             guard filesRead < maxFilesToRead, !Task.isCancelled else { break }
+            guard !seenSnippetPaths.contains(fileURL.path) else { continue }
             guard let content = readTextFile(fileURL) else { continue }
             filesRead += 1
             let contentScore = score(text: content, terms: terms)
@@ -531,6 +556,7 @@ struct LocalFileContextProvider: Sendable {
                     score: contentScore
                 )
             )
+            seenSnippetPaths.insert(fileURL.path)
         }
 
         return LocalFileContext(
@@ -625,12 +651,74 @@ struct LocalFileContextProvider: Sendable {
         return urls
     }
 
+    private nonisolated func shouldPrioritizeProjectFiles(_ question: String) -> Bool {
+        let normalized = Self.normalized(question)
+        let projectSignals = [
+            "what is this project",
+            "what's this project",
+            "what is this repo",
+            "what's this repo",
+            "summarize this project",
+            "summarize this repo",
+            "about this project",
+            "about this repo",
+            "portfolio",
+            "experience",
+            "background"
+        ]
+        return projectSignals.contains { normalized.contains($0) }
+    }
+
+    private nonisolated func likelyProjectFileURLs(in grant: LocalFileGrant) -> [URL] {
+        guard grant.isDirectory else {
+            return isLikelyProjectFile(grant.url) ? [grant.url] : []
+        }
+
+        let root = grant.url.standardizedFileURL
+        var candidates: [URL] = []
+        let names = [
+            "README.md", "README.markdown", "README.txt", "AGENTS.md",
+            "package.json", "Package.swift", "pyproject.toml", "Cargo.toml",
+            "Gemfile", "go.mod", "pom.xml", "build.gradle",
+            "index.html", "whoami.html", "about.html", "resume.md",
+            "resume.txt", "resume.json", "cv.md", "cv.txt", "data.json",
+            "script.js", "main.js", "app.js", "src/App.jsx", "src/App.tsx",
+            "src/main.jsx", "src/main.tsx", "src/data.js", "src/data.ts",
+            "docs/README.md", "docs/architecture.md", "docs/project-brief.md",
+            "docs/prd.md", "resume-latex/resume.tex"
+        ]
+        for name in names {
+            let url = root.appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: url.path), isTextLikeFile(url) {
+                candidates.append(url)
+            }
+        }
+        return candidates
+    }
+
+    private nonisolated func isLikelyProjectFile(_ url: URL) -> Bool {
+        let name = url.lastPathComponent.lowercased()
+        return name.hasPrefix("readme")
+            || name == "agents.md"
+            || name == "package.json"
+            || name == "package.swift"
+            || name == "pyproject.toml"
+            || name == "cargo.toml"
+            || name == "go.mod"
+            || name == "index.html"
+            || name == "whoami.html"
+            || name == "about.html"
+            || name.contains("resume")
+            || name.contains("cv")
+    }
+
     private nonisolated func isTextLikeFile(_ url: URL) -> Bool {
         let allowedExtensions: Set<String> = [
             "txt", "md", "markdown", "rst", "json", "yaml", "yml", "toml", "xml",
             "csv", "tsv", "log", "swift", "py", "js", "ts", "tsx", "jsx", "html",
             "css", "scss", "c", "h", "m", "mm", "cpp", "hpp", "java", "kt", "go",
-            "rs", "rb", "php", "sh", "zsh", "bash", "sql", "ini", "conf", "env"
+            "rs", "rb", "php", "sh", "zsh", "bash", "sql", "ini", "conf", "env",
+            "tex"
         ]
         let ext = url.pathExtension.lowercased()
         return ext.isEmpty || allowedExtensions.contains(ext)
@@ -663,28 +751,62 @@ struct LocalFileContextProvider: Sendable {
     private nonisolated func searchTerms(from question: String) -> [String] {
         let stopwords: Set<String> = [
             "about", "after", "again", "also", "could", "file", "files", "find",
-            "from", "have", "into", "local", "read", "search", "show", "tell",
-            "that", "the", "their", "there", "this", "what", "when", "where",
-            "which", "with", "would", "you", "your"
+            "from", "have", "her", "him", "his", "into", "local", "read",
+            "search", "show", "tell", "that", "the", "their", "there", "this",
+            "what", "when", "where", "which", "whose", "with", "would", "you",
+            "your"
         ]
 
-        let normalized = question
-            .lowercased()
+        let normalized = Self.normalized(question)
+        let baseTerms = Set(
+            normalized
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
-        return Array(
-            Set(
-                normalized
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { $0.count >= 3 && !stopwords.contains($0) }
-            )
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.count >= 3 && !stopwords.contains($0) }
         )
+        return Array(expandedSearchTerms(for: normalized, baseTerms: baseTerms))
         .sorted()
+    }
+
+    private nonisolated func expandedSearchTerms(
+        for normalizedQuestion: String,
+        baseTerms: Set<String>
+    ) -> Set<String> {
+        var terms = baseTerms
+
+        if normalizedQuestion.contains("experience")
+            || normalizedQuestion.contains("background")
+            || normalizedQuestion.contains("work history")
+            || normalizedQuestion.contains("professional")
+            || normalizedQuestion.contains("career") {
+            terms.formUnion([
+                "experience", "background", "work", "career", "role", "roles",
+                "job", "jobs", "position", "positions", "company", "companies",
+                "professional", "employment", "intern", "internship", "engineer",
+                "developer", "software", "machine", "learning", "data", "science",
+                "education", "degree", "university", "skills", "resume", "cv",
+                "about", "whoami", "projects"
+            ])
+        }
+
+        if normalizedQuestion.contains("portfolio") {
+            terms.formUnion(["portfolio", "about", "whoami", "intro", "profile", "resume", "cv"])
+        }
+
+        return terms
     }
 
     private nonisolated func score(text: String, terms: [String]) -> Int {
         let lowercased = text.lowercased()
         return terms.reduce(0) { partial, term in
-            partial + (lowercased.contains(term) ? 1 : 0)
+            var count = 0
+            var searchRange = lowercased.startIndex..<lowercased.endIndex
+            while let range = lowercased.range(of: term, options: [], range: searchRange) {
+                count += 1
+                guard count < 4 else { break }
+                searchRange = range.upperBound..<lowercased.endIndex
+            }
+            return partial + count
         }
     }
 
@@ -694,7 +816,12 @@ struct LocalFileContextProvider: Sendable {
         let locations = terms
             .map { lowercased.range(of: $0).location }
             .filter { $0 != NSNotFound }
-        let matchLocation = locations.min() ?? 0
+        let matchLocation = bestSnippetLocation(
+            in: lowercased,
+            contentLength: content.length,
+            terms: terms,
+            fallbackLocations: locations
+        )
         let start = max(0, matchLocation - snippetRadius)
         let end = min(content.length, matchLocation + snippetRadius)
         let range = NSRange(location: start, length: max(0, end - start))
@@ -707,5 +834,46 @@ struct LocalFileContextProvider: Sendable {
         if start > 0 { value = "... \(value)" }
         if end < content.length { value += " ..." }
         return value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private nonisolated func bestSnippetLocation(
+        in lowercased: NSString,
+        contentLength: Int,
+        terms: [String],
+        fallbackLocations: [Int]
+    ) -> Int {
+        guard !fallbackLocations.isEmpty else { return 0 }
+
+        let candidates = Array(Set(fallbackLocations)).sorted()
+        let best = candidates.max { lhs, rhs in
+            snippetWindowScore(
+                in: lowercased,
+                contentLength: contentLength,
+                center: lhs,
+                terms: terms
+            ) < snippetWindowScore(
+                in: lowercased,
+                contentLength: contentLength,
+                center: rhs,
+                terms: terms
+            )
+        }
+        return best ?? fallbackLocations.min() ?? 0
+    }
+
+    private nonisolated func snippetWindowScore(
+        in lowercased: NSString,
+        contentLength: Int,
+        center: Int,
+        terms: [String]
+    ) -> Int {
+        let start = max(0, center - snippetRadius)
+        let end = min(contentLength, center + snippetRadius)
+        let range = NSRange(location: start, length: max(0, end - start))
+        guard range.length > 0 else { return 0 }
+        let window = lowercased.substring(with: range)
+        return terms.reduce(0) { partial, term in
+            partial + (window.contains(term) ? 1 : 0)
+        }
     }
 }

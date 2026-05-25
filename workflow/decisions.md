@@ -339,7 +339,7 @@ Add local chat persistence next so file-aware conversations can feel continuous,
 Status: Accepted
 
 Decision:
-Pixel Pane stores chat transcripts locally so the notch assistant can resume recent conversations. Capture chats store only message text, backend labels, and a lightweight "Screen region" context label. Captured screenshots are not persisted in chat history.
+Pixel Pane stores chat transcripts locally so the notch assistant can resume recent conversations. Capture chats initially stored only message text, backend labels, and a lightweight "Screen region" context label. Captured screenshots are not persisted in chat history. This decision is extended by the 2026-05-24 assistant tool-state decision, which allows bounded source/snippet/OCR metadata but still forbids screenshot or attached-image pixel retention by default.
 
 Context:
 The assistant should feel continuous, but the product is local-first and screen captures can contain sensitive information. Persisting screenshots by default would change the privacy model and should require a separate explicit retention feature later.
@@ -471,3 +471,22 @@ Consequences:
 
 Follow-up:
 Implement `ASSIST-016` through `ASSIST-022` before broadening assistant automation beyond user-granted files/images and confirmed local writes.
+
+## 2026-05-24 - Persistent Assistant Tool State And Source-Aware Packing
+
+Status: Accepted
+
+Decision:
+Pixel Pane may persist bounded per-chat assistant tool state alongside chat transcripts: source metadata, last listed folder, recent file snippet previews, recent tool summaries, and active visual/OCR context metadata. Image pixels are still transient and are not stored in chat history. Context sent to models must be packed by source group and retrieved file/OCR/image/tool text must be labeled as untrusted data.
+
+Context:
+The assistant needs reliable follow-ups across weak/no-tool local models. After a user lists or grants a folder, a follow-up such as "what is Snehith's experience?" should search/read likely granted files from the previous folder context instead of relying on model memory or native tool calls. At the same time, file and OCR content can contain hostile instructions, so source boundaries must be explicit before any model sees the data.
+
+Consequences:
+- Follow-up planning can use app-owned state instead of asking the model whether it has access.
+- Chat history may contain bounded source/snippet/OCR excerpts needed for continuity, but not screenshot or attached-image pixels.
+- Native model tool calling remains an optional adapter optimization only after route capability metadata proves support.
+- `ASSIST-020` should expose concise source/tool state in the UI so users can see what Pixel Pane used.
+
+Follow-up:
+Run the `ASSIST-022` cross-model matrix after source transparency and prompt-injection hardening land.

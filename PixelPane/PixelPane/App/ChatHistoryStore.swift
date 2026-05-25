@@ -31,6 +31,7 @@ struct StoredChatSession: Codable, Equatable, Identifiable, Sendable {
     var createdAt: Date
     var updatedAt: Date
     var turns: [StoredChatTurn]
+    var toolState: AssistantToolState?
 
     var displayTitle: String {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -76,7 +77,8 @@ final class ChatHistoryStore: ObservableObject {
         contextID: String,
         kind: ChatSessionContextKind,
         title: String,
-        turns: [StoredChatTurn]
+        turns: [StoredChatTurn],
+        toolState: AssistantToolState? = nil
     ) -> StoredChatSession {
         let now = Date()
         let limitedTurns = Array(turns.suffix(maxTurnsPerSession))
@@ -85,6 +87,7 @@ final class ChatHistoryStore: ObservableObject {
         if let index = sessions.firstIndex(where: { $0.contextID == contextID && $0.contextKind == kind }) {
             sessions[index].title = resolvedTitle
             sessions[index].turns = limitedTurns
+            sessions[index].toolState = toolState
             sessions[index].updatedAt = now
             let session = sessions.remove(at: index)
             sessions.insert(session, at: 0)
@@ -97,7 +100,8 @@ final class ChatHistoryStore: ObservableObject {
                     title: resolvedTitle,
                     createdAt: now,
                     updatedAt: now,
-                    turns: limitedTurns
+                    turns: limitedTurns,
+                    toolState: toolState
                 ),
                 at: 0
             )

@@ -42,6 +42,7 @@ struct ResultPanelView: View {
     @State private var askTurns: [AskConversationTurn] = []
     @State private var pendingLocalFileWriteProposal: LocalFileWriteProposal?
     @State private var assistantImageContext: AssistantImageContext?
+    @State private var assistantToolState: AssistantToolState
     @State private var isPreparingAssistantImage = false
     @State private var chatContextID: String
     @State private var chatContextKind: ChatSessionContextKind
@@ -121,7 +122,12 @@ struct ResultPanelView: View {
         _selectedAction = State(initialValue: smartDefaultSelection.action)
         let restoredSession = Self.restoredChatSession(for: result, in: chatHistory)
         let restoredTurns = restoredSession?.turns.map { AskConversationTurn(storedTurn: $0) } ?? []
+        var initialToolState = restoredSession?.toolState ?? Self.initialAssistantToolState(for: result)
+        if result.sourceType == .ocr {
+            initialToolState.updateVisualContext(Self.captureVisualState(for: result, imageWillBeSent: false))
+        }
         _askTurns = State(initialValue: restoredTurns)
+        _assistantToolState = State(initialValue: initialToolState)
         _chatContextID = State(initialValue: restoredSession?.contextID ?? Self.defaultChatContextID(for: result))
         _chatContextKind = State(initialValue: restoredSession?.contextKind ?? Self.defaultChatContextKind(for: result))
         _activeText = State(initialValue: initialState.text)
@@ -147,8 +153,10 @@ struct ResultPanelView: View {
                 if presentationStyle == .notchAttached,
                    showsInitialNotchNotification,
                    compactNotchNotification == nil {
-                    compactNotchNotification = loadingActions.isEmpty ? .completed : .processing
-                    onPresentationSizeChange?(ResultPanelPresentationStyle.notchCompactSize)
+                    if !loadingActions.isEmpty {
+                        compactNotchNotification = .processing
+                        onPresentationSizeChange?(ResultPanelPresentationStyle.notchCompactSize)
+                    }
                 }
                 startSmartDefaultActionIfNeeded()
                 focusChatInputSoon()
@@ -186,6 +194,27 @@ struct ResultPanelView: View {
         result.sourceType == .assistant ? .assistant : .capture
     }
 
+    private static func initialAssistantToolState(for result: CaptureResult) -> AssistantToolState {
+        var state = AssistantToolState()
+        if result.sourceType == .ocr {
+            state.updateVisualContext(captureVisualState(for: result, imageWillBeSent: false))
+        }
+        return state
+    }
+
+    private static func captureVisualState(
+        for result: CaptureResult,
+        imageWillBeSent: Bool
+    ) -> AssistantVisualContextState? {
+        guard result.sourceType == .ocr else { return nil }
+        return AssistantVisualContextState(
+            source: .capture,
+            label: "Screen region",
+            hasImageInput: imageWillBeSent && result.image != nil,
+            ocrText: result.text
+        )
+    }
+
     @ViewBuilder
     private var overlayShell: some View {
         switch presentationStyle {
@@ -194,7 +223,10 @@ struct ResultPanelView: View {
                 innerStack
             }
         case .notchAttached:
-            NotchResultContainer(isExpanded: isNotchExpanded) {
+            NotchResultContainer(
+                isExpanded: isNotchExpanded,
+                roundsTopCorners: result.sourceType == .assistant
+            ) {
                 if isNotchExpanded {
                     notchExpandedStack
                         .opacity(isNotchContentVisible ? 1 : 0)
@@ -330,9 +362,13 @@ struct ResultPanelView: View {
 
     private func updateNotchNotificationState(isProcessing: Bool) {
         guard presentationStyle == .notchAttached else { return }
-        compactNotchNotification = isProcessing ? .processing : .completed
+        compactNotchNotification = isProcessing ? .processing : nil
         guard !isNotchExpanded else { return }
-        onPresentationSizeChange?(ResultPanelPresentationStyle.notchCompactSize)
+        onPresentationSizeChange?(
+            isProcessing
+                ? ResultPanelPresentationStyle.notchCompactSize
+                : ResultPanelPresentationStyle.notchHoverTargetSize
+        )
     }
 
     private func focusChatInputSoon() {
@@ -985,6 +1021,7 @@ struct ResultPanelView: View {
                 image: image
             )
             assistantImageContext = context
+            assistantToolState.updateVisualContext(AssistantVisualContextState(imageContext: context, imageWillBeSent: false))
             isPreparingAssistantImage = true
             showConfirmation("Image attached")
 
@@ -995,6 +1032,11 @@ struct ResultPanelView: View {
                     guard assistantImageContext?.id == context.id else { return }
                     assistantImageContext?.ocrText = ocrText
                     assistantImageContext?.isOCRComplete = true
+                    if let assistantImageContext {
+                        assistantToolState.updateVisualContext(
+                            AssistantVisualContextState(imageContext: assistantImageContext, imageWillBeSent: false)
+                        )
+                    }
                     isPreparingAssistantImage = false
                     setOutputState(askOutputState(), for: .ask)
                 }
@@ -1007,6 +1049,7 @@ struct ResultPanelView: View {
     private func clearAssistantImage() {
         assistantImageContext = nil
         isPreparingAssistantImage = false
+        assistantToolState.updateVisualContext(Self.captureVisualState(for: result, imageWillBeSent: false))
         setOutputState(askOutputState(), for: .ask)
         focusChatInputSoon()
     }
@@ -1501,7 +1544,8 @@ struct ResultPanelView: View {
         if let preflight = toolRouter.preflight(
             question: question,
             grants: fileGrants,
-            environment: toolEnvironment
+            environment: toolEnvironment,
+            toolState: assistantToolState
         ) {
             handleAssistantToolPreflight(preflight, question: question)
             return
@@ -1544,13 +1588,18 @@ struct ResultPanelView: View {
             : (askUsesMLX ? Self.mlxVisionBackendLabel : localTextBackendLabel())
         let isCaptureImageAttached = hasCaptureContextValue && imageInput != nil && attachedImageContext == nil
         let isAssistantImageAttached = attachedImageContext != nil && imageInput != nil
+        let previousTurns = assistantContextPriorTurns()
         let previousTranscript = formattedAskTranscript()
         let detectedLanguage = cloudDetectedLanguage
-        let conversation = cloudConversationTurns(beforeLastTurn: true)
+        let conversation = cloudConversationTurns(beforeLastTurn: false)
         let isSimpleBriefPlainChat = responseDetail == .brief
             && !hasAnyVisualContext
             && previousTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !toolRouter.fileSearchDecision(question: question, grants: fileGrants).shouldSearch
+            && !toolRouter.fileSearchDecision(
+                question: question,
+                grants: fileGrants,
+                toolState: assistantToolState
+            ).shouldSearch
 
         if hasAnyVisualContext,
            !cloudModeEnabled,
@@ -1593,39 +1642,66 @@ struct ResultPanelView: View {
         setOutputState(askOutputState(), for: .ask)
         updateExpandedNotchSizeIfNeeded()
 
+        let toolStateBeforeRun = assistantToolState
         Task {
-            let shouldSearchFiles = toolRouter.fileSearchDecision(question: question, grants: fileGrants).shouldSearch
-            let localFileContext = shouldSearchFiles
-                ? await Task.detached {
-                    toolRouter.localFileContext(question: question, grants: fileGrants)
-                }.value
-                : LocalFileContext(grants: [], snippets: [])
-            let prompt = Self.askPrompt(
+            let toolStateSnapshot = toolStateBeforeRun
+            let shouldSearchFiles = toolRouter.fileSearchDecision(
                 question: question,
-                hasCaptureContext: hasCaptureContextValue,
-                capturedOCRText: capturedOCRText,
-                isCaptureImageAttached: isCaptureImageAttached,
-                assistantImageContext: attachedImageContext,
-                isAssistantImageAttached: isAssistantImageAttached,
-                previousTranscript: previousTranscript,
-                localFileContext: localFileContext,
-                usesCloud: cloudModeEnabled,
-                responseDetail: responseDetail,
-                responseGuidance: responseDetail.outputGuidance
+                grants: fileGrants,
+                toolState: toolStateSnapshot
+            ).shouldSearch
+            let fileSearchQuestion = Self.enrichedFileSearchQuestion(
+                question: question,
+                previousTurns: previousTurns,
+                toolState: toolStateSnapshot
             )
-            let cloudContext = Self.cloudAskContext(
-                hasCaptureContext: hasCaptureContextValue,
-                capturedOCRText: capturedOCRText,
-                isCaptureImageAttached: isCaptureImageAttached,
-                assistantImageContext: attachedImageContext,
-                isAssistantImageAttached: isAssistantImageAttached,
-                localFileContext: localFileContext,
-                usesCloud: cloudModeEnabled
+            let searchResult = shouldSearchFiles
+                ? await Task.detached {
+                    toolRouter.localFileSearchResult(question: fileSearchQuestion, grants: fileGrants)
+                }.value
+                : nil
+            let localFileContext = searchResult?.context ?? LocalFileContext(grants: [], snippets: [])
+            var updatedToolState = toolStateSnapshot
+            if let searchResult {
+                updatedToolState.record(searchResult)
+            }
+            if let attachedImageContext {
+                updatedToolState.updateVisualContext(
+                    AssistantVisualContextState(
+                        imageContext: attachedImageContext,
+                        imageWillBeSent: isAssistantImageAttached
+                    )
+                )
+            } else {
+                updatedToolState.updateVisualContext(
+                    Self.captureVisualState(for: result, imageWillBeSent: isCaptureImageAttached)
+                )
+            }
+            let packedContext = AssistantContextPacker().pack(
+                AssistantContextPackingInput(
+                    question: question,
+                    responseDetail: responseDetail,
+                    responseGuidance: responseDetail.outputGuidance,
+                    modelCapabilities: modelCapabilities,
+                    hasCaptureContext: hasCaptureContextValue,
+                    capturedOCRText: capturedOCRText,
+                    isCaptureImageAttached: isCaptureImageAttached,
+                    assistantImageContext: attachedImageContext,
+                    isAssistantImageAttached: isAssistantImageAttached,
+                    previousTurns: previousTurns,
+                    localFileContext: localFileContext,
+                    toolState: updatedToolState,
+                    usesCloud: cloudModeEnabled
+                )
             )
+            await MainActor.run {
+                assistantToolState = updatedToolState
+                persistAskSession()
+            }
             await runAskTurn(
                 request: AIBackendRequest(
                     actionKind: hasAnyVisualContext ? .ask : .chat,
-                    prompt: prompt,
+                    prompt: packedContext.prompt,
                     capturedImage: imageInput,
                     maxOutputTokens: Self.askMaxOutputTokens(
                         responseDetail: responseDetail,
@@ -1636,7 +1712,9 @@ struct ResultPanelView: View {
                         isSimpleBriefPlainChat: isSimpleBriefPlainChat
                     ),
                     preferredProvider: preferredProvider,
-                    cloudOCRText: cloudModeEnabled ? cloudContext : (hasAnyVisualContext ? cloudContext : nil),
+                    cloudOCRText: cloudModeEnabled
+                        ? (packedContext.cloudContext.isEmpty ? nil : packedContext.cloudContext)
+                        : (hasAnyVisualContext && !packedContext.cloudContext.isEmpty ? packedContext.cloudContext : nil),
                     cloudDetectedLanguage: hasCaptureContextValue ? detectedLanguage : nil,
                     cloudQuestion: question,
                     cloudConversation: conversation
@@ -1647,11 +1725,20 @@ struct ResultPanelView: View {
 
     private func handleAssistantToolPreflight(_ preflight: AssistantToolPreflightResult, question: String) {
         switch preflight {
-        case .directAnswer(let answer, let backendLabel):
+        case .directAnswer(let answer, let backendLabel, let toolResult):
+            if let toolResult {
+                assistantToolState.record(toolResult)
+            }
             appendDirectAskAnswer(question: question, answer: answer, backendLabel: backendLabel)
-        case .localFileWriteMessage(let message):
+        case .localFileWriteMessage(let message, let toolResult):
+            if let toolResult {
+                assistantToolState.record(toolResult)
+            }
             appendDirectAskAnswer(question: question, answer: message, backendLabel: "Local Files")
-        case .localFileWriteProposal(let proposal):
+        case .localFileWriteProposal(let proposal, let toolResult):
+            if let toolResult {
+                assistantToolState.record(toolResult)
+            }
             askInput = ""
             recoveryState = nil
             hiddenReasoning = nil
@@ -2039,7 +2126,8 @@ struct ResultPanelView: View {
             contextID: chatContextID,
             kind: chatContextKind,
             title: chatContextKind.displayName,
-            turns: askTurns.map { $0.storedTurn() }
+            turns: askTurns.map { $0.storedTurn() },
+            toolState: assistantToolState
         )
     }
 
@@ -2047,6 +2135,7 @@ struct ResultPanelView: View {
         guard loadingActions.isEmpty else { return }
         assistantImageContext = nil
         isPreparingAssistantImage = false
+        assistantToolState = session.toolState ?? AssistantToolState()
         chatContextID = session.contextID
         chatContextKind = session.contextKind
         askTurns = session.turns.map { AskConversationTurn(storedTurn: $0) }
@@ -2061,6 +2150,7 @@ struct ResultPanelView: View {
         suppressNextNotchHoverCollapseBriefly()
         assistantImageContext = nil
         isPreparingAssistantImage = false
+        assistantToolState = AssistantToolState()
         chatContextID = Self.defaultChatContextID(
             for: CaptureResult(
                 image: nil,
@@ -2263,6 +2353,44 @@ struct ResultPanelView: View {
                 """
             }
             .joined(separator: "\n\n")
+    }
+
+    private func assistantContextPriorTurns() -> [AssistantContextPriorTurn] {
+        askTurns.map { turn in
+            AssistantContextPriorTurn(
+                question: turn.question,
+                answer: turn.answer.isEmpty ? "" : turn.answer
+            )
+        }
+    }
+
+    private static func enrichedFileSearchQuestion(
+        question: String,
+        previousTurns: [AssistantContextPriorTurn],
+        toolState: AssistantToolState
+    ) -> String {
+        let normalized = normalizedQuestion(question)
+        let contextDependentSignals = [
+            "his", "her", "their", "they", "them", "he ", "she ",
+            "that", "this", "it", "experience", "background", "work"
+        ]
+        let shouldCarryContext = contextDependentSignals.contains { normalized.contains($0) }
+            || toolState.lastListedFolder != nil
+            || !toolState.lastFileSources.isEmpty
+        guard shouldCarryContext else { return question }
+
+        let recentContext = previousTurns
+            .suffix(2)
+            .flatMap { [$0.question, $0.answer] }
+            .joined(separator: " ")
+        let sourceContext = (toolState.lastFileSources + toolState.grantedSourcesUsed)
+            .map { "\($0.displayName) \($0.path)" }
+            .joined(separator: " ")
+
+        return [question, recentContext, sourceContext]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
     }
 
     private func cloudConversationTurns(beforeLastTurn: Bool) -> [AIBackendConversationTurn] {
@@ -2663,6 +2791,7 @@ struct GlassOverlayContainer<Content: View>: View {
 
 struct NotchResultContainer<Content: View>: View {
     let isExpanded: Bool
+    let roundsTopCorners: Bool
     @ViewBuilder var content: () -> Content
 
     var body: some View {
@@ -2688,17 +2817,18 @@ struct NotchResultContainer<Content: View>: View {
 
             content()
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .clipShape(shape)
-        .padding(.horizontal, isExpanded ? 1 : 0)
-        .padding(.bottom, isExpanded ? 1 : 0)
+        .padding(.horizontal, isExpanded ? 2 : 0)
+        .padding(.bottom, isExpanded ? 2 : 0)
     }
 
     private var shape: UnevenRoundedRectangle {
         UnevenRoundedRectangle(
-            topLeadingRadius: 0,
+            topLeadingRadius: isExpanded && roundsTopCorners ? 30 : 0,
             bottomLeadingRadius: isExpanded ? 30 : 0,
             bottomTrailingRadius: isExpanded ? 30 : 8,
-            topTrailingRadius: 0,
+            topTrailingRadius: isExpanded && roundsTopCorners ? 30 : 0,
             style: .continuous
         )
     }
@@ -2706,15 +2836,9 @@ struct NotchResultContainer<Content: View>: View {
 
 private enum CompactNotchNotificationState {
     case processing
-    case completed
 
     var color: Color {
-        switch self {
-        case .processing:
-            Color(red: 1.0, green: 0.78, blue: 0.18)
-        case .completed:
-            Color(red: 0.22, green: 0.86, blue: 0.38)
-        }
+        Color(red: 1.0, green: 0.78, blue: 0.18)
     }
 }
 
@@ -2740,26 +2864,17 @@ private struct CompactNotchNotificationView: View {
                     )
 
                 Circle()
-                    .fill(state.color.opacity(state == .processing ? 0.22 : 0.18))
-                    .frame(width: state == .processing ? 14 : 10, height: state == .processing ? 8 : 10)
-                    .blur(radius: state == .processing ? 6 : 5)
-                    .scaleEffect(isPulsing && state == .processing ? 1.18 : 0.88)
-                    .opacity(state == .processing ? (isPulsing ? 0.64 : 0.26) : 0.72)
+                    .fill(state.color.opacity(0.22))
+                    .frame(width: 14, height: 8)
+                    .blur(radius: 6)
+                    .scaleEffect(isPulsing ? 1.18 : 0.88)
+                    .opacity(isPulsing ? 0.64 : 0.26)
 
-                if state == .processing {
-                    CompactThinkingDots(color: state.color)
-                } else {
-                    Circle()
-                        .fill(state.color)
-                        .frame(width: 3.5, height: 3.5)
-                        .shadow(color: state.color.opacity(0.58), radius: 3)
-                        .opacity(0.96)
-                }
+                CompactThinkingDots(color: state.color)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
         .onAppear {
-            guard state == .processing else { return }
             withAnimation(.easeInOut(duration: 1.35).repeatForever(autoreverses: true)) {
                 isPulsing = true
             }

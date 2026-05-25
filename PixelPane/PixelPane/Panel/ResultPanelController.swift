@@ -168,10 +168,12 @@ final class ResultPanelController {
         guard let panel else { return }
         let host = NSHostingView(rootView: root)
         host.wantsLayer = true
-        host.layer?.cornerRadius = resultPresentationStyle.cornerRadius
+        host.layer?.backgroundColor = NSColor.clear.cgColor
+        host.layer?.isOpaque = false
         host.layer?.masksToBounds = true
         host.layer?.cornerCurve = .continuous
         panel.contentView = host
+        updateContentCornerMask(for: panel.frame.size)
         panel.invalidateShadow()
     }
 
@@ -231,9 +233,12 @@ final class ResultPanelController {
     private func positionPanelAtNotch(on screen: NSScreen?, size requestedSize: CGSize? = nil) {
         guard let panel else { return }
 
-        let size = requestedSize ?? panel.frame.size
-        let origin = notchOrigin(for: size, on: screen)
+        let rawSize = requestedSize ?? panel.frame.size
+        let isHoverTarget = isHoverTargetSize(rawSize)
+        let size = resolvedNotchSize(rawSize, on: screen)
+        let origin = notchOrigin(for: size, on: screen, isHoverTarget: isHoverTarget)
         panel.setFrame(CGRect(origin: origin, size: size), display: true)
+        updateContentCornerMask(for: size)
     }
 
     private func initialNotchSize(startsExpanded: Bool, showsInitialNotchNotification: Bool) -> CGSize {
@@ -249,7 +254,9 @@ final class ResultPanelController {
         guard resultPresentationStyle == .notchAttached, let panel else { return }
 
         let screen = screen(for: selectionFrame)
-        let origin = notchOrigin(for: size, on: screen)
+        let isHoverTarget = isHoverTargetSize(size)
+        let size = resolvedNotchSize(size, on: screen)
+        let origin = notchOrigin(for: size, on: screen, isHoverTarget: isHoverTarget)
         let targetFrame = CGRect(
             x: origin.x,
             y: origin.y,
@@ -262,10 +269,23 @@ final class ResultPanelController {
             context.timingFunction = CAMediaTimingFunction(controlPoints: 0.18, 0.86, 0.24, 1.0)
             panel.animator().setFrame(targetFrame, display: true)
         }
+        updateContentCornerMask(for: size)
         panel.invalidateShadow()
     }
 
-    private func notchOrigin(for size: CGSize, on screen: NSScreen?) -> CGPoint {
+    private func updateContentCornerMask(for size: CGSize) {
+        guard let layer = panel?.contentView?.layer else { return }
+        let roundsAssistantPanel = resultPresentationStyle == .notchAttached
+            && currentResult?.sourceType == .assistant
+            && isExpandedNotchSize(size)
+        layer.cornerRadius = roundsAssistantPanel
+            ? ResultPanelPresentationStyle.notchAssistantCornerRadius
+            : resultPresentationStyle.cornerRadius
+        layer.masksToBounds = true
+        layer.cornerCurve = .continuous
+    }
+
+    private func notchOrigin(for size: CGSize, on screen: NSScreen?, isHoverTarget: Bool = false) -> CGPoint {
         let resolvedScreen = screen ?? NSScreen.main
         let screenFrame = resolvedScreen?.frame ?? .zero
         guard resultPresentationStyle == .notchAttached else { return .zero }
@@ -275,20 +295,36 @@ final class ResultPanelController {
             return origin
         }
 
-        if isHoverTargetSize(size),
+        if isHoverTarget,
            let notchBounds = notchBounds(on: resolvedScreen) {
             let x = notchBounds.midX - size.width / 2
-            let y = notchBounds.maxY - size.height + ResultPanelPresentationStyle.notchTopOverscan
+            let y = notchBounds.maxY - size.height + notchTopOverscan
             return clampNotch(origin: CGPoint(x: x, y: y), size: size, into: screenFrame)
         }
 
         return clampNotch(
             origin: CGPoint(
                 x: screenFrame.midX - size.width / 2,
-                y: screenFrame.maxY - size.height + ResultPanelPresentationStyle.notchTopOverscan
+                y: screenFrame.maxY - size.height + notchTopOverscan
             ),
             size: size,
             into: screenFrame
+        )
+    }
+
+    private var notchTopOverscan: CGFloat {
+        currentResult?.sourceType == .assistant ? 0 : ResultPanelPresentationStyle.notchTopOverscan
+    }
+
+    private func resolvedNotchSize(_ requestedSize: CGSize, on screen: NSScreen?) -> CGSize {
+        guard isHoverTargetSize(requestedSize),
+              let notchBounds = notchBounds(on: screen) else {
+            return requestedSize
+        }
+
+        return CGSize(
+            width: max(96, notchBounds.width),
+            height: max(requestedSize.height, min(notchBounds.height, 44))
         )
     }
 
@@ -336,7 +372,7 @@ final class ResultPanelController {
     }
 
     private func isExpandedNotchSize(_ size: CGSize) -> Bool {
-        size.width > ResultPanelPresentationStyle.notchHoverTargetSize.width + 40
+        size.width >= ResultPanelPresentationStyle.notchEmptyAssistantSize.width - 1
             || size.height > ResultPanelPresentationStyle.notchHoverTargetSize.height + 80
     }
 
@@ -476,9 +512,10 @@ enum ResultPanelPresentationStyle {
     }
 
     static let notchCompactSize = CGSize(width: 52, height: 32)
-    static let notchHoverTargetSize = CGSize(width: 260, height: 32)
+    static let notchHoverTargetSize = CGSize(width: 180, height: 32)
     static let notchEmptyAssistantSize = CGSize(width: 640, height: 148)
     static let notchExpandedSize = CGSize(width: 780, height: 560)
+    static let notchAssistantCornerRadius: CGFloat = 30
     static let notchCompactOverlap: CGFloat = 18
     static let notchTopOverscan: CGFloat = 3
 

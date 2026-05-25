@@ -1,6 +1,6 @@
 # Pixel Pane Story Backlog
 
-Last updated: 2026-05-24 (ASSIST-017 completed)
+Last updated: 2026-05-24 (ASSIST-019 follow-up fixed)
 
 This is the story-level source of truth. Claude/Codex should use this file when you say:
 
@@ -23,9 +23,9 @@ When asked to complete an epic, do not attempt the whole epic in one pass. Compl
 
 ## Current Recommended Story
 
-`ASSIST-019` - Add source-aware context packing and budget manager is the current recommended story.
+`ASSIST-020` - Add tool-use transcript and source transparency UI is the current recommended story.
 
-Reason: The app now has a model-agnostic harness and transient user image attachments with OCR fallback. The next slice should formalize granted file access as explicit assistant tools.
+Reason: The app now has a model-agnostic harness, explicit assistant tool schemas, persistent per-chat tool state, transient image/OCR context, local file tools, and source-aware context packing. The next slice should expose the used sources/tools in the UI.
 
 ---
 
@@ -1231,6 +1231,10 @@ Notes:
 - The notch container now uses square top corners and rounded lower corners so it reads as an extension of the physical/menu-bar notch rather than a detached rounded pill.
 - Follow-up manual QA polish keeps expanded controls below the hardware notch, hardens notch-safe-area placement across notched Macs, and disables background dragging for notch-attached result panels.
 - Follow-up manual QA polish also hides the top panel seam with slight screen-edge overscan, makes collapse shrink back into the notch, and pins compact notifications to the physical notch's right edge.
+- Follow-up 2026-05-24. Plain/new assistant chats now use continuous rounded top and bottom corners and skip screen-edge overscan so the rounded edges are not clipped; capture-attached notch panels keep the square top edge.
+- Follow-up 2026-05-24. Removed the completed-state green compact notification; only the three orange loading dots show while processing, then the notch returns to the invisible hover target.
+- Follow-up 2026-05-24. Collapsed hover target now resolves to the actual notch bounds when available and uses a smaller fallback, preventing the overlay from opening from the wider invisible panel area.
+- Follow-up 2026-05-24. Expanded assistant windows now use a dynamic hosting-layer rounded mask plus a frame-filling SwiftUI notch shell, keeping the blank/new-chat bottom corners rounded while leaving compact notification and capture-notch behavior unchanged.
 
 ### `QUAL-014` - Performance Pass For Capture, Chat, And Local Context
 
@@ -1275,7 +1279,7 @@ Notes:
 | `ASSIST-016` | Add model-agnostic assistant capability contract and tool router | Done | `ASSIST-007`, `ASSIST-008`, `ASSIST-012`, `ASSIST-013` |
 | `ASSIST-017` | Normalize user-provided image context and attachments | Done | `ASSIST-016`, `ACT-013`, `PRIV-004` |
 | `ASSIST-018` | Add model-agnostic local file tool execution layer | Done | `ASSIST-016`, `ASSIST-002`, `ASSIST-003` |
-| `ASSIST-019` | Add source-aware context packing and budget manager | Not Started | `ASSIST-016`, `ASSIST-017`, `ASSIST-018` |
+| `ASSIST-019` | Add source-aware context packing and budget manager | Done | `ASSIST-016`, `ASSIST-017`, `ASSIST-018` |
 | `ASSIST-020` | Add tool-use transcript and source transparency UI | Not Started | `ASSIST-017`, `ASSIST-018`, `PRIV-006` |
 | `ASSIST-021` | Add prompt-injection and tool-safety hardening for files/images | Not Started | `ASSIST-018`, `ASSIST-019` |
 | `ASSIST-022` | Add cross-model assistant harness QA matrix | Not Started | `ASSIST-016`, `ASSIST-017`, `ASSIST-018`, `ASSIST-019`, `ASSIST-020`, `ASSIST-021` |
@@ -1642,6 +1646,8 @@ Notes:
 
 - Research basis: MLX-LM supports prompt caching and long-context options, but user-selected models can vary heavily. The app needs an adapter-level budget rather than one global prompt shape.
 - Risk: Medium-high. Poor packing can silently degrade answers. Add visible source/debug metadata in `ASSIST-020`.
+- Completed 2026-05-24. Added explicit assistant tool registry definitions with stable schemas, risk levels, and permission requirements for `list_grants`, `list_folder`, `search_files`, `read_file`, `stage_write_proposal`, and `describe_screen_or_image_context`. Added persistent per-chat `AssistantToolState` for sources, listed folders, snippets, visual context, and recent tool results. Ask now uses conversation-aware file follow-up planning, validates deterministic tool calls against schemas and grants before execution, records tool state into chat history, and packs prompt/cloud context through a source-aware budget manager that separates instructions, question, prior turns, OCR/image OCR, file snippets, and tool results without fake "none" sections. Retrieved file/OCR/image/tool content is marked as untrusted data. Project-summary searches now prioritize likely project files such as README and manifest/docs files.
+- Follow-up 2026-05-24: Context-dependent file search now enriches pronoun follow-ups with recent turns and source names. Portfolio/resume-style searches expand generic experience/background/skills terms, prioritize common web/resume files such as `index.html`, `whoami.html`, and `resume-latex/resume.tex`, and choose the densest snippet window instead of the first match. This targets the observed `What is his experience?` miss after identifying a portfolio owner. Local verification wrapper build succeeded; no XCTest harness exists, so manual QA prompts are recorded in `workflow/status.md`.
 
 ### `ASSIST-020` - Add Tool-Use Transcript And Source Transparency UI
 

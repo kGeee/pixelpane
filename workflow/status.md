@@ -4,13 +4,13 @@ Last updated: 2026-05-24
 
 ## Current Focus
 
-Epic 1, Epic 2, and the first Epic 7 notch-assistant alpha slice are closed. Pixel Pane now has a hover-open notch chat surface, capture-context chats, user-granted local file read/search, confirmed local file create/edit, local chat persistence, text-only MLX local chat setup, repeatable local build verification, privacy-first onboarding with permission readiness, Screen Recording recovery guidance, a model-agnostic assistant tool router, transient user image attachments with OCR fallback, and an explicit local file tool execution layer.
+Epic 1, Epic 2, and the first Epic 7 notch-assistant alpha slice are closed. Pixel Pane now has a hover-open notch chat surface, capture-context chats, user-granted local file read/search, confirmed local file create/edit, local chat persistence, text-only MLX local chat setup, repeatable local build verification, privacy-first onboarding with permission readiness, Screen Recording recovery guidance, a model-agnostic assistant tool router, transient user image attachments with OCR fallback, an explicit local file tool execution layer, persistent per-chat assistant tool state, and source-aware context packing.
 
 Current phase: Notch assistant alpha.
 
 Current epic: Epic 7 - Notch Assistant.
 
-Current recommended story: `ASSIST-019` Add source-aware context packing and budget manager.
+Current recommended story: `ASSIST-020` Add tool-use transcript and source transparency UI.
 
 ## Current State
 
@@ -49,11 +49,12 @@ xcodebuild -project PixelPane/PixelPane.xcodeproj -scheme PixelPane -configurati
 - **Notch-Native Local Assistant (2026-05-21):** Pixel Pane's core surface is now a hover-open notch assistant. Plain chat can open without capture context; captures create a fresh contextual Ask session; local remains default and Cloud Mode is a single explicit routing choice.
 - **Chat-Only Notch Surface (2026-05-21):** The visible notch UI is now a single chat assistant. Extract, Translate, Explain, and Simplify are natural-language capabilities through chat/context, not top-level tabs.
 - **User-Granted Read-Only Local Files (2026-05-21):** The notch assistant may read/search only files or folders explicitly granted by the user. File snippets stay local in Local Mode and may be sent only when the user routes the chat through Cloud Mode. Create/edit/delete/move tools are deferred to a separate confirmed-write story.
-- **Local Chat History Without Screenshot Retention (2026-05-21):** Chat transcripts are stored locally so the notch assistant can resume conversations. Capture chats persist only message text and a lightweight Screen region label; screenshots are not retained unless a future explicit retention feature is added.
+- **Local Chat History Without Screenshot Retention (2026-05-21):** Chat transcripts are stored locally so the notch assistant can resume conversations. Screenshots and attached-image pixels are not retained in chat history; as of 2026-05-24, bounded source/snippet/OCR metadata may be stored in assistant tool state for follow-up continuity.
 - **Local Text Runtime Via MLX (2026-05-21):** Local Mode can use a selected text-only MLX model for text chat/actions through `mlx_lm.generate` when setup passes. MLX Vision remains separately gated on a vision-capable model and `mlx_vlm.generate`.
 - **Confirmed Local File Writes (2026-05-21):** The assistant may stage local file creation or text edits only inside user-granted file/folder locations. Writes require a visible confirmation naming the target path before any file is changed; model output never directly mutates files.
 - **App-Owned Model-Agnostic Assistant Harness (2026-05-24):** The assistant now has an app-owned capability contract and Ask preflight router for deterministic answers, local file grant answers, local write proposals, and file-search gating. Native model tool calling remains optional; file grants and side-effect policy are enforced by Pixel Pane.
 - **Transient User Image Context (2026-05-24):** Users can attach an image to the active assistant chat. The image stays in memory, is OCR'd locally for text-only fallback, may route to MLX Vision or Cloud Mode when allowed, and is not persisted into chat history.
+- **Persistent Assistant Tool State And Context Packing (2026-05-24):** Each chat can persist bounded assistant tool state: source metadata, last listed folder, recent file snippets, visual/OCR context metadata, and recent tool summaries. Context sent to models is packed by source group, marks retrieved file/OCR/image/tool text as untrusted data, and adapts to route capability budgets instead of depending on native model tool calling.
 
 ## Open Decisions
 
@@ -126,7 +127,7 @@ Epic 7 — Notch Assistant
 - `ASSIST-016` Add model-agnostic assistant capability contract and tool router: Done
 - `ASSIST-017` Normalize user-provided image context and attachments: Done
 - `ASSIST-018` Add model-agnostic local file tool execution layer: Done
-- `ASSIST-019` Add source-aware context packing and budget manager: Not Started
+- `ASSIST-019` Add source-aware context packing and budget manager: Done
 - `ASSIST-020` Add tool-use transcript and source transparency UI: Not Started
 - `ASSIST-021` Add prompt-injection and tool-safety hardening for files/images: Not Started
 - `ASSIST-022` Add cross-model assistant harness QA matrix: Not Started
@@ -135,6 +136,12 @@ See `workflow/backlog.md` for all stories.
 
 ## Last Completed Work
 
+- 2026-05-24: Follow-up blank assistant corner polish. Expanded assistant notch windows now apply a dynamic AppKit layer corner mask only while in expanded assistant sizes, and the SwiftUI notch shell fills the panel frame before clipping. This keeps the new-chat bottom corners rounded without changing compact notification/hardware-notch behavior. Local verification wrapper build succeeded.
+- 2026-05-24: Follow-up notch hover target polish. The collapsed assistant hover target now resolves to the actual macOS notch bounds when available and uses a smaller fallback, so the overlay opens only when the cursor is at the notch instead of anywhere in the old wide invisible strip. Local verification wrapper build succeeded.
+- 2026-05-24: Follow-up compact notch notification polish. Removed the completed-state green dot next to the notch; compact notifications now appear only while processing, using the existing three orange loading dots, and completion returns to the invisible hover target. Local verification wrapper build succeeded.
+- 2026-05-24: Follow-up plain assistant notch corner polish. Plain/new assistant chats now use continuous rounded top and bottom corners instead of the notch-extension square top treatment, and assistant panels no longer overscan above the screen edge so the rounded corners are not clipped. Capture-attached notch panels keep the square top edge for hardware-notch blending. Local verification wrapper build succeeded.
+- 2026-05-24: Follow-up fix for `ASSIST-019` file follow-ups. Pronoun/context-dependent search questions now enrich the file-search query with recent turns and source names, and portfolio/resume-style questions expand to generic experience/background/skills terms while selecting the densest matching snippet window. This fixes the observed "What is his experience?" follow-up after identifying Snehith's portfolio. Local verification wrapper build succeeded.
+- 2026-05-24: Completed `ASSIST-019`. Added explicit assistant tool registry schemas/risk/permission metadata, schema/grant validation for deterministic tool calls, persistent per-chat `AssistantToolState`, conversation-aware file follow-up planning, bounded read/list/search behavior, source-aware prompt/cloud context packing, untrusted-data boundaries for file/OCR/image/tool context, and project-summary prioritization for likely project files. Local verification wrapper build succeeded.
 - 2026-05-24: Follow-up fix for local file capability questions. Phrases such as "can you view my folders?" now count as file-grant capability questions, so Pixel Pane answers from app-owned grant state before any local model can hallucinate a denial. Local verification wrapper build succeeded.
 - 2026-05-24: Follow-up fix for `ASSIST-018`. Broad folder questions such as "what do you see in this folder?" now route to the local file tool layer before the no-screen fallback, and the executor can answer with a deterministic top-level overview of a single granted folder. Local verification wrapper build succeeded.
 - 2026-05-24: Completed `ASSIST-018`. Added `AssistantLocalFileToolExecutor` with explicit list-grants, search, read, unavailable-access, and stage-write proposal tools. File grant enforcement now lives in the executor, Ask file context goes through the model-agnostic tool router, and local write proposals remain confirmation-gated before any file mutation. Local verification wrapper build succeeded.
@@ -316,7 +323,9 @@ See `workflow/backlog.md` for all stories.
 ## Files Changed In Last Session
 
 - `PixelPane/PixelPane/Actions/AssistantHarness.swift`
-- `PixelPane/PixelPane/App/AIRoutingSettings.swift`
+- `PixelPane/PixelPane/App/ChatHistoryStore.swift`
+- `PixelPane/PixelPane/App/LocalFileAccess.swift`
+- `PixelPane/PixelPane/Panel/ResultPanelController.swift`
 - `PixelPane/PixelPane/Panel/ResultPanelView.swift`
 - `workflow/backlog.md`
 - `workflow/decisions.md`
@@ -324,6 +333,15 @@ See `workflow/backlog.md` for all stories.
 
 ## Last Verification
 
+- 2026-05-24: `git diff --check` passed after blank assistant corner polish.
+- 2026-05-24: `PixelPane/Scripts/verify-debug-build.sh` succeeded after applying dynamic rounded masking to expanded assistant notch windows.
+- 2026-05-24: `git diff --check` passed after tightening the collapsed notch hover target.
+- 2026-05-24: `PixelPane/Scripts/verify-debug-build.sh` succeeded after tightening the collapsed notch hover target to the hardware notch bounds.
+- 2026-05-24: `PixelPane/Scripts/verify-debug-build.sh` succeeded after removing the completed-state green notch notification.
+- 2026-05-24: `PixelPane/Scripts/verify-debug-build.sh` succeeded after plain assistant notch corner polish.
+- 2026-05-24: `PixelPane/Scripts/verify-debug-build.sh` succeeded after tightening context-dependent portfolio/experience file follow-ups.
+- 2026-05-24: `PixelPane/Scripts/verify-debug-build.sh` succeeded after completing `ASSIST-019` assistant tool registry/state/planner/context packing work.
+- 2026-05-24: `git diff --check` passed after completing `ASSIST-019`.
 - 2026-05-24: `PixelPane/Scripts/verify-debug-build.sh` succeeded after widening file/folder capability questions to route through deterministic local grant answers.
 - 2026-05-24: `PixelPane/Scripts/verify-debug-build.sh` succeeded after fixing broad folder questions to prefer local file tools over the no-screen fallback.
 - 2026-05-24: `PixelPane/Scripts/verify-debug-build.sh` succeeded after completing `ASSIST-018` and routing local file grants/search/read/write proposals through the explicit assistant file tool executor.
@@ -475,14 +493,28 @@ See `workflow/backlog.md` for all stories.
 - Apple Foundation Models remains text-only for Pixel Pane until Apple exposes image prompt input. Image-aware Local Mode now has an MLX adapter path, but actual use still depends on the user having MLX-VLM and a compatible model installed and selected in Settings.
 - Full release packaging still needs user-owned Apple Developer ID/notarization credentials before a signed, notarized DMG can be produced and verified.
 
+## Manual QA For Assistant Harness
+
+No XCTest target exists yet for this app. Use these exact prompts in a debug build after granting a temporary project folder in Settings -> Files:
+
+1. `can you view my folders?` Expected: deterministic Local Files answer listing actual granted locations, or says none are granted.
+2. `what do you see in this folder?` Expected: deterministic top-level folder listing from the granted folder.
+3. `what is this project?` Expected: model answer based on likely project files such as README/manifest/docs snippets.
+4. `Whose portfolio?`, then `What is his experience?` after `what is this project?`. Expected: searches/reads likely granted files using the previous folder/person context and summarizes experience from portfolio/resume sections instead of denying file access.
+5. `read README.md` Expected: bounded read preview only if the file is inside a grant.
+6. `create file qa-note.txt with content: hello from Pixel Pane` Expected: confirmation-gated proposal; no file is written until Confirm.
+7. Ask `what is on my screen?` in a no-capture plain chat. Expected: deterministic answer that no screen region is attached.
+8. Capture a screen region with readable text, then ask `what does this say?` and a follow-up `summarize it`. Expected: OCR/screen context is reused.
+9. Attach an image with text, ask `what text is in this image?`, then ask `what context do you have?` Expected: OCR fallback is used for text-only routes and context answer names the active image.
+
 ## Next Best Story
 
-`ASSIST-019` - Add source-aware context packing and budget manager.
+`ASSIST-020` - Add tool-use transcript and source transparency UI.
 
 Suggested prompt:
 
 ```text
-Complete ASSIST-019.
+Complete ASSIST-020.
 ```
 
 ## Notes For Next Agent
