@@ -108,6 +108,11 @@ enum AssistantToolPreflightResult: Sendable {
     case localFileWriteProposal(LocalFileWriteProposal, toolResult: AssistantLocalFileToolResult?)
 }
 
+enum AssistantToolPreflightScope: Sendable {
+    case appOwnedOnly
+    case full
+}
+
 enum AssistantToolName: String, Codable, CaseIterable, Sendable {
     case listGrants = "list_grants"
     case listFolder = "list_folder"
@@ -3013,6 +3018,22 @@ struct AssistantTerminalCommandPlanner: Sendable {
         )
     }
 
+    nonisolated func request(
+        command: String,
+        workingDirectory: String,
+        reason: String,
+        timeoutSeconds: TimeInterval,
+        intent: AssistantTerminalCommandIntent
+    ) -> AssistantTerminalCommandRequest {
+        classifiedProposal(
+            command: command,
+            workingDirectory: workingDirectory,
+            reason: reason,
+            timeoutSeconds: timeoutSeconds,
+            intent: intent
+        )
+    }
+
     private nonisolated func classifiedProposal(
         command: String,
         workingDirectory: String,
@@ -3974,7 +3995,8 @@ struct AssistantToolRouter: Sendable {
         question: String,
         grants: [LocalFileGrant],
         environment: AssistantToolEnvironment,
-        toolState: AssistantToolState
+        toolState: AssistantToolState,
+        scope: AssistantToolPreflightScope = .full
     ) -> AssistantToolPreflightResult? {
         let writeCheck = fileToolExecutor.stageWriteProposal(
             question: question,
@@ -4013,6 +4035,37 @@ struct AssistantToolRouter: Sendable {
                 backendLabel: "Pixel Pane",
                 toolResult: visualContextResult
             )
+        }
+
+        switch scope {
+        case .appOwnedOnly:
+            if let modelAnswer = selectedModelAnswer(for: question, environment: environment) {
+                return .directAnswer(answer: modelAnswer, backendLabel: "Pixel Pane", toolResult: nil)
+            }
+
+            if let routingAnswer = routingAnswer(for: question, routingMode: environment.routingMode) {
+                return .directAnswer(answer: routingAnswer, backendLabel: "Pixel Pane", toolResult: nil)
+            }
+
+            if let grantListResult = fileToolExecutor.grantListAnswerResult(for: question, grants: grants) {
+                return .directAnswer(
+                    answer: grantListResult.summary,
+                    backendLabel: "Local Files",
+                    toolResult: grantListResult
+                )
+            }
+
+            if !fileSearchDecision(question: question, grants: grants, toolState: toolState).shouldSearch,
+               let screenAnswer = unavailableScreenContextAnswer(
+                for: question,
+                hasCaptureContext: environment.hasCaptureContext
+               ) {
+                return .directAnswer(answer: screenAnswer, backendLabel: "Pixel Pane", toolResult: nil)
+            }
+
+            return nil
+        case .full:
+            break
         }
 
         if let folderOverviewResult = fileToolExecutor.folderOverviewResult(
@@ -4098,6 +4151,34 @@ struct AssistantToolRouter: Sendable {
         fileToolExecutor.search(
             question: question,
             grants: scopedSearchGrants(for: question, grants: grants, toolState: toolState)
+        )
+    }
+
+    nonisolated func localGrantListResult(grants: [LocalFileGrant]) -> AssistantLocalFileToolResult {
+        fileToolExecutor.listGrants(grants.filter { FileManager.default.fileExists(atPath: $0.path) })
+    }
+
+    nonisolated func localFolderListResult(path: String?, grants: [LocalFileGrant]) -> AssistantLocalFileToolResult {
+        fileToolExecutor.listFolder(path: path, grants: grants)
+    }
+
+    nonisolated func localFileReadResult(
+        path: String,
+        grants: [LocalFileGrant],
+        focusQuestion: String?
+    ) -> AssistantLocalFileToolResult {
+        fileToolExecutor.read(path: path, grants: grants, focusQuestion: focusQuestion)
+    }
+
+    nonisolated func localFileWriteProposalResult(
+        question: String,
+        grants: [LocalFileGrant],
+        toolState: AssistantToolState
+    ) -> AssistantLocalFileToolResult {
+        fileToolExecutor.stageWriteProposal(
+            question: question,
+            grants: grants,
+            toolState: toolState
         )
     }
 
@@ -4192,6 +4273,22 @@ struct AssistantToolRouter: Sendable {
         toolState: AssistantToolState
     ) -> AssistantTerminalCommandRequest? {
         terminalCommandPlanner.request(for: question, grants: grants, toolState: toolState)
+    }
+
+    nonisolated func terminalCommandRequest(
+        command: String,
+        workingDirectory: String,
+        reason: String,
+        timeoutSeconds: TimeInterval,
+        intent: AssistantTerminalCommandIntent
+    ) -> AssistantTerminalCommandRequest {
+        terminalCommandPlanner.request(
+            command: command,
+            workingDirectory: workingDirectory,
+            reason: reason,
+            timeoutSeconds: timeoutSeconds,
+            intent: intent
+        )
     }
 
     nonisolated func shouldPlanWriteWithModel(

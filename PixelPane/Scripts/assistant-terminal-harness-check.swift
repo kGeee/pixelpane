@@ -622,6 +622,76 @@ enum AssistantTerminalHarnessCheck {
             grantedSourcesUsed: [AssistantToolSourceState(source: staticSiteSource)],
             lastListedFolder: AssistantToolSourceState(source: staticSiteSource)
         )
+        let priorServerResult = AssistantLocalFileToolResult(
+            toolName: .runTerminalCommand,
+            summary: "Terminal command completed successfully.",
+            sources: [
+                AssistantLocalFileToolSource(
+                    id: staticSiteGrant.path,
+                    path: staticSiteGrant.path,
+                    displayName: staticSiteURL.lastPathComponent,
+                    kindLabel: "Terminal",
+                    snippetCount: 0,
+                    isTruncated: false
+                )
+            ],
+            context: nil,
+            writeProposalResult: nil,
+            metadata: AssistantToolResultMetadata(
+                for: .runTerminalCommand,
+                itemCount: 1,
+                sourceCount: 1
+            ),
+            terminalResult: AssistantTerminalCommandResult(
+                intent: .systemInspection,
+                command: "python3 -m http.server 0 --bind 127.0.0.1",
+                workingDirectory: staticSiteGrant.path,
+                exitCode: 0,
+                stdout: "PID: 2132\nVerified URL: http://localhost:59784/",
+                stderr: "",
+                durationSeconds: 2,
+                didTimeOut: false,
+                wasOutputTruncated: false
+            )
+        )
+        var priorServerState = staticSiteToolState
+        priorServerState.record(priorServerResult)
+        let actionPlanningPrompt = AssistantActionPlanningPromptBuilder().prompt(
+            question: "end that process.",
+            grants: [staticSiteGrant],
+            toolState: priorServerState
+        )
+        expect(
+            actionPlanningPrompt.contains("PID: 2132")
+                && actionPlanningPrompt.contains("kill <pid>"),
+            "selected-model action planning should expose recent terminal PIDs and process-stop guidance"
+        )
+        let parsedActionPlan = AssistantActionPlanParser().parse(
+            """
+            {"action":"run_terminal_command","arguments":{"command":"kill 2132","working_directory":"\(staticSiteGrant.path)","reason":"Stop the previously started local server.","intent":"generic","timeout_seconds":"15"}}
+            """
+        )
+        expect(
+            parsedActionPlan?.action.kind == .runTerminalCommand
+                && parsedActionPlan?.action.arguments["command"] == "kill 2132",
+            "action plan parser should parse model-planned terminal JSON"
+        )
+        switch router.terminalCommandRequest(
+            command: "kill 2132",
+            workingDirectory: staticSiteGrant.path,
+            reason: "Stop the previously started local server.",
+            timeoutSeconds: 15,
+            intent: .generic
+        ) {
+        case .proposal(let killProposal):
+            expect(killProposal.requiresConfirmation, "model-planned process control should require confirmation")
+            expect(killProposal.riskLevel == .high, "model-planned kill should be high risk")
+        case .message(let message):
+            failures.append("model-planned kill should produce a confirmation proposal, got message: \(message)")
+        case .proposals:
+            failures.append("model-planned kill should produce one terminal proposal")
+        }
+
         if let contextualSite = proposal(
             "build this site and tell me what port its running on locally.",
             grants: [repoGrant, staticSiteGrant],

@@ -766,3 +766,23 @@ Consequences:
 
 Follow-up:
 `ASSIST-040` should use the same principle in the planner loop: resolve current observed scope first, then ask the selected model what action to take inside that scope.
+
+## 2026-05-26 - Selected Model Plans Assistant Tool Actions
+
+Status: Accepted
+
+Decision:
+Pixel Pane should ask the selected local or cloud model to plan bounded assistant actions before using broad deterministic terminal/file phrase shortcuts. The model may request actions such as direct answer, list grants, list folder, search files, read file, stage a confirmed write proposal, or run a terminal command. Pixel Pane remains the executor and policy boundary: it validates paths, enforces grants, classifies terminal risk, asks for confirmation before side effects, records sources, and treats observations as untrusted data.
+
+Context:
+Copied QA transcripts showed that first-match deterministic routing made the assistant feel hard-coded. The most visible failure was a local server stop flow: Pixel Pane asked for permission to end a process, but typed follow-ups like "sure" and "end it" fell back to model chat and never executed the pending process-control action. More generally, better selected models should be able to plan more capable workflows without requiring app code to encode every phrase ordering.
+
+Consequences:
+- Local Mode planning stays on the Mac because the selected local backend receives the action-planning prompt and local observations.
+- Cloud Mode uses the same app-owned tool contract, but only after the user has explicitly selected Cloud Mode.
+- Deterministic code is narrowed toward app facts, pending confirmations, validation, risk classification, execution, and fallback behavior.
+- Terminal commands proposed by a model are never trusted directly; process control, server starts, scripts, installs, privileged commands, destructive commands, and writes still require confirmation or are blocked.
+- Weak or non-JSON local models may still need fallback behavior and should be measured explicitly.
+
+Follow-up:
+`ASSIST-022` should run the same model-planned task matrix across weak local models, stronger local models, and Cloud Mode, including list-read, build/serve, process-stop, write-proposal, prompt-injection, and fallback cases.

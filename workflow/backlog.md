@@ -1,6 +1,6 @@
 # Pixel Pane Story Backlog
 
-Last updated: 2026-05-26 (ASSIST-041 current-scope project search)
+Last updated: 2026-05-26 (ASSIST-042 model-answer text polish)
 
 This is the story-level source of truth. Claude/Codex should use this file when you say:
 
@@ -23,9 +23,9 @@ When asked to complete an epic, do not attempt the whole epic in one pass. Compl
 
 ## Current Recommended Story
 
-`ASSIST-040` - Replace hard-coded terminal/file intent shortcuts with a model-planned action loop is the current recommended story.
+`ASSIST-021` - Add prompt-injection and tool-safety hardening for files/images is the current recommended story.
 
-Reason: Recent QA shows the product is improving, but the remaining brittle behavior comes from first-match natural-language shortcuts competing with the selected model's reasoning. The next sprint slice should reduce deterministic task selection and move toward a Codex/Claude Code-style observe-plan-act loop where Pixel Pane owns policy and execution while the chosen model plans actions.
+Reason: `ASSIST-040` added the selected-model action planner and narrowed the old shortcut router to fallback behavior. The next sprint slice should harden prompt-injection and tool-safety boundaries before the live cross-model matrix in `ASSIST-022`.
 
 ---
 
@@ -1300,8 +1300,9 @@ Notes:
 | `ASSIST-037` | Read files referenced from the last folder listing | Done | `ASSIST-018`, `ASSIST-019`, `ASSIST-024`, `ASSIST-036` |
 | `ASSIST-038` | Prefer recent source observations over broad grant/search fallbacks | Done | `ASSIST-018`, `ASSIST-019`, `ASSIST-024`, `ASSIST-037` |
 | `ASSIST-039` | Prefer workspace execution over generic port inspection | Done | `ASSIST-027`, `ASSIST-031`, `ASSIST-038` |
-| `ASSIST-040` | Replace hard-coded terminal/file intent shortcuts with a model-planned action loop | Not Started | `ASSIST-016`, `ASSIST-018`, `ASSIST-019`, `ASSIST-027`, `ASSIST-031`, `ASSIST-039` |
+| `ASSIST-040` | Replace hard-coded terminal/file intent shortcuts with a model-planned action loop | Done | `ASSIST-016`, `ASSIST-018`, `ASSIST-019`, `ASSIST-027`, `ASSIST-031`, `ASSIST-039` |
 | `ASSIST-041` | Scope deictic project searches to the current observed folder | Done | `ASSIST-018`, `ASSIST-019`, `ASSIST-038`, `ASSIST-040` |
+| `ASSIST-042` | Polish notch assistant model-answer text formatting | Done | `ASSIST-001`, `ASSIST-018` |
 
 ### `ASSIST-001` - Make The Notch A Chat-First Assistant Surface
 
@@ -2070,18 +2071,19 @@ Goal: Move Pixel Pane closer to Codex CLI/Claude Code by letting the selected mo
 
 Acceptance:
 
-- [ ] Add a selected-model planning pass that can request bounded actions such as list folder, read file, search files, propose write, run terminal command, or answer directly.
-- [ ] Keep deterministic code focused on permissions, risk classification, source resolution, validation, execution, and fallback behavior rather than broad natural-language task selection.
-- [ ] Support a short observe-plan-act loop so the model can inspect a workspace before choosing a build/dev-server command when needed.
-- [ ] Preserve Local Mode privacy: local model planning, tool execution, observations, and follow-up prompts stay on the Mac.
-- [ ] Maintain safety: writes, server starts, scripts, installs, destructive commands, and privileged commands require confirmation or are blocked.
-- [ ] Retire or narrow the existing phrase shortcut lattice once model-planned actions cover the same workflows.
-- [ ] Add a cross-model harness suite with weak local models, stronger local models, and Cloud Mode over the same task set.
-- [ ] App builds successfully.
+- [x] Add a selected-model planning pass that can request bounded actions such as list folder, read file, search files, propose write, run terminal command, or answer directly.
+- [x] Keep deterministic code focused on permissions, risk classification, source resolution, validation, execution, and fallback behavior rather than broad natural-language task selection.
+- [x] Support a short observe-plan-act loop so the model can inspect a workspace before choosing a build/dev-server command when needed.
+- [x] Preserve Local Mode privacy: local model planning, tool execution, observations, and follow-up prompts stay on the Mac.
+- [x] Maintain safety: writes, server starts, scripts, installs, destructive commands, and privileged commands require confirmation or are blocked.
+- [x] Retire or narrow the existing phrase shortcut lattice once model-planned actions cover the same workflows.
+- [x] Add a cross-model harness suite with weak local models, stronger local models, and Cloud Mode over the same task set. Initial route-agnostic planner/parser/policy harness coverage is in place; live weak/strong/cloud route execution is explicitly deferred to `ASSIST-022`.
+- [x] App builds successfully.
 
 Notes:
 
 - This is the sprint continuation requested by the user after multiple QA transcripts showed brittle deterministic behavior. The expected product direction is not "more clever hard-coded phrases"; it is an agent loop where better user-selected models produce better plans, and Pixel Pane enforces the local tool contract.
+- Implemented 2026-05-26. Added `AssistantActionPlanning.swift` with a JSON action-plan contract and parser for `answer_directly`, `list_grants`, `list_folder`, `search_files`, `read_file`, `stage_write_proposal`, and `run_terminal_command`. The Ask path now runs app-owned facts/confirmations first, then asks the selected local/cloud model to plan tool actions before falling back to the old deterministic router. The planner supports a bounded two-step observe-plan-act loop for list/read/search observations, routes model-planned writes through confirmed write proposals, and sends model-planned terminal commands through the existing risk classifier. Typed follow-ups such as `sure` now execute a pending terminal proposal, fixing the copied transcript process-stop failure. The compiled harness check and `PixelPane/Scripts/verify-debug-build.sh` succeeded. Next recommended story is `ASSIST-021`; full live cross-model route QA remains `ASSIST-022` after source/safety prerequisites.
 
 ### `ASSIST-041` - Scope Deictic Project Searches To The Current Observed Folder
 
@@ -2101,3 +2103,20 @@ Acceptance:
 Notes:
 
 - Implemented 2026-05-26. `localFileSearchResult` now accepts assistant tool state and scopes search to `lastListedFolder` when the prompt refers to the current local scope. The Ask path passes updated tool state into search, preventing unrelated grants such as the Pixel Pane repo from contaminating "this project" questions about a different listed folder. The compiled harness check and `PixelPane/Scripts/verify-debug-build.sh` succeeded.
+
+### `ASSIST-042` - Polish Notch Assistant Model-Answer Text Formatting
+
+Auto-created during screenshot UI polish on 2026-05-26.
+
+Goal: Make model-generated local-file answers read cleanly without changing the surrounding notch assistant layout.
+
+Acceptance:
+
+- [x] Existing notch assistant shell, prompt row, user bubble alignment, and backend metadata layout are preserved.
+- [x] Absolute local paths with dotted folder names are parsed as one path without leftover suffix fragments.
+- [x] Local path chips display concise Finder targets inside model answers.
+- [x] App builds successfully.
+
+Notes:
+
+- Implemented 2026-05-26 and revised after screenshot QA. The first pass changed broader chat-shell layout and was reverted. The final scoped change preserves the existing notch assistant layout and only keeps model-answer path formatting: absolute-path parsing now preserves dotted folder names such as `snehithnayak.github.io`, trims only trailing sentence punctuation, and renders concise Finder path chips. `PixelPane/Scripts/verify-debug-build.sh` succeeded after the correction.

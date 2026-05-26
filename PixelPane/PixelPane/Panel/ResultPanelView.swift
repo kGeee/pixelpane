@@ -1898,11 +1898,20 @@ struct ResultPanelView: View {
             } == true
         )
 
+        if handlePendingTerminalCommandTextConfirmation(
+            question: question,
+            grants: fileGrants,
+            toolRouter: toolRouter
+        ) {
+            return
+        }
+
         if let preflight = toolRouter.preflight(
             question: question,
             grants: fileGrants,
             environment: toolEnvironment,
-            toolState: assistantToolState
+            toolState: assistantToolState,
+            scope: .appOwnedOnly
         ) {
             handleAssistantToolPreflight(preflight, question: question)
             return
@@ -1918,6 +1927,31 @@ struct ResultPanelView: View {
                 grants: fileGrants,
                 toolRouter: toolRouter
             )
+            return
+        }
+
+        if shouldUseModelPlannedActionLoop(
+            question: question,
+            grants: fileGrants,
+            toolState: assistantToolState
+        ) {
+            planAssistantActionLoopWithModel(
+                question: question,
+                grants: fileGrants,
+                environment: toolEnvironment,
+                toolRouter: toolRouter
+            )
+            return
+        }
+
+        if let fallbackPreflight = toolRouter.preflight(
+            question: question,
+            grants: fileGrants,
+            environment: toolEnvironment,
+            toolState: assistantToolState,
+            scope: .full
+        ) {
+            handleAssistantToolPreflight(fallbackPreflight, question: question)
             return
         }
 
@@ -2152,6 +2186,650 @@ struct ResultPanelView: View {
                 )
             )
         }
+    }
+
+    private func handlePendingTerminalCommandTextConfirmation(
+        question: String,
+        grants: [LocalFileGrant],
+        toolRouter: AssistantToolRouter
+    ) -> Bool {
+        guard let proposal = pendingTerminalCommandProposal else { return false }
+        let normalized = Self.normalizedQuestion(question)
+        if Self.isTerminalConfirmation(normalized) {
+            pendingTerminalCommandProposal = nil
+            runTerminalCommand(
+                proposal,
+                question: "Allow terminal in \(URL(fileURLWithPath: proposal.workingDirectory).lastPathComponent): \(proposal.reason)",
+                grants: grants,
+                toolRouter: toolRouter
+            )
+            return true
+        }
+        if Self.isTerminalRejection(normalized) {
+            cancelTerminalCommand()
+            return true
+        }
+        return false
+    }
+
+    private static func isTerminalConfirmation(_ normalized: String) -> Bool {
+        let words = normalized.split(separator: " ").map(String.init)
+        guard (1...6).contains(words.count) else { return false }
+        let confirmations: Set<String> = ["yes", "yeah", "yep", "sure", "ok", "okay", "confirm", "allow", "run", "do", "proceed"]
+        return words.contains { confirmations.contains($0) }
+    }
+
+    private static func isTerminalRejection(_ normalized: String) -> Bool {
+        let words = normalized.split(separator: " ").map(String.init)
+        guard (1...6).contains(words.count) else { return false }
+        let rejections: Set<String> = ["no", "nope", "cancel", "stop", "dont", "don't"]
+        return words.contains { rejections.contains($0) }
+    }
+
+    private func shouldUseModelPlannedActionLoop(
+        question: String,
+        grants: [LocalFileGrant],
+        toolState: AssistantToolState
+    ) -> Bool {
+        let normalized = Self.normalizedQuestion(question)
+        guard !normalized.isEmpty else { return false }
+        let lowValue = Set(["hi", "hello", "thanks", "thank you", "ok", "okay"])
+        if lowValue.contains(normalized) { return false }
+
+        let actionSignals = [
+            "terminal", "shell", "command", "run", "execute", "build", "compile",
+            "test", "lint", "typecheck", "type check", "start", "serve", "server",
+            "localhost", "port", "locally", "stop", "end", "kill", "process", "pid",
+            "file", "files", "folder", "folders", "directory", "project", "repo",
+            "repository", "workspace", "site", "website", "read", "open", "search",
+            "find", "locate", "where is", "look for", "look through", "what is in",
+            "what's in", "whats in", "what do you see", "what can you see", "list"
+        ]
+        if actionSignals.contains(where: { normalized.contains($0) }) {
+            return true
+        }
+
+        let hasRecentToolContext = !toolState.recentToolResults.isEmpty
+            || toolState.lastListedFolder != nil
+            || !toolState.lastFileSources.isEmpty
+        let deicticSignals = ["this", "that", "it", "them", "those", "these", "last one", "previous"]
+        return hasRecentToolContext && deicticSignals.contains { normalized.contains($0) }
+    }
+
+    private func planAssistantActionLoopWithModel(
+        question: String,
+        grants: [LocalFileGrant],
+        environment: AssistantToolEnvironment,
+        toolRouter: AssistantToolRouter
+    ) {
+        let cloudModeEnabled = routingSettings.effectiveMode == .cloud
+        let backendLabel = cloudModeEnabled ? Self.cloudBackendLabel : localTextBackendLabel()
+        let priorTurns = assistantContextPriorTurns()
+
+        askInput = ""
+        isChatInputFocused = true
+        pendingLocalFileWriteProposal = nil
+        pendingTerminalCommandProposal = nil
+        recoveryState = nil
+        hiddenReasoning = nil
+        outputStatistics = []
+        actionBackendLabel = backendLabel
+        loadingActions.insert(.ask)
+        askTurns.append(
+            AskConversationTurn(
+                question: question,
+                answer: "",
+                backendLabel: backendLabel
+            )
+        )
+        persistAskSession()
+        setOutputState(askOutputState(), for: .ask)
+        updateExpandedNotchSizeIfNeeded()
+
+        let initialToolState = assistantToolState
+        Task {
+            var loopToolState = initialToolState
+            var observations: [AssistantLocalFileToolResult] = []
+            let builder = AssistantActionPlanningPromptBuilder()
+            let parser = AssistantActionPlanParser()
+
+            for step in 0..<2 {
+                let prompt = builder.prompt(
+                    question: question,
+                    grants: grants,
+                    toolState: loopToolState,
+                    observations: observations,
+                    priorTurns: priorTurns
+                )
+
+                let rawPlan: String
+                do {
+                    rawPlan = try await generatedActionPlanText(prompt: prompt)
+                } catch {
+                    await runDeterministicFallbackAfterActionPlanningFailure(
+                        question: question,
+                        grants: grants,
+                        environment: environment,
+                        toolRouter: toolRouter,
+                        backendLabel: backendLabel,
+                        fallbackMessage: "I could not ask the selected model to plan that action: \(error.localizedDescription)"
+                    )
+                    return
+                }
+
+                guard let plan = parser.parse(rawPlan) else {
+                    let fallbackAnswer = rawPlan.trimmingCharacters(in: .whitespacesAndNewlines)
+                    await runDeterministicFallbackAfterActionPlanningFailure(
+                        question: question,
+                        grants: grants,
+                        environment: environment,
+                        toolRouter: toolRouter,
+                        backendLabel: backendLabel,
+                        fallbackMessage: fallbackAnswer.isEmpty
+                            ? "The selected model did not return a safe action plan. Try asking with the target folder, file, or command more explicitly."
+                            : fallbackAnswer
+                    )
+                    return
+                }
+
+                switch plan.action.kind {
+                case .answerDirectly:
+                    await MainActor.run {
+                        finishModelPlannedAction(
+                            question: question,
+                            answer: plan.action.finalAnswer ?? "I do not need a local tool for that.",
+                            backendLabel: backendLabel
+                        )
+                    }
+                    return
+                case .listGrants:
+                    let result = toolRouter.localGrantListResult(grants: grants)
+                    loopToolState.record(result)
+                    observations.append(result)
+                    if step == 1 {
+                        await MainActor.run {
+                            finishModelPlannedAction(
+                                question: question,
+                                answer: result.summary,
+                                backendLabel: "Local Files",
+                                toolResult: result
+                            )
+                        }
+                        return
+                    }
+                case .listFolder:
+                    let result = toolRouter.localFolderListResult(
+                        path: plan.action.arguments["path"],
+                        grants: grants
+                    )
+                    loopToolState.record(result)
+                    observations.append(result)
+                    if step == 1 {
+                        await MainActor.run {
+                            finishModelPlannedAction(
+                                question: question,
+                                answer: result.summary,
+                                backendLabel: "Local Files",
+                                toolResult: result
+                            )
+                        }
+                        return
+                    }
+                case .searchFiles:
+                    let query = plan.action.arguments["query"] ?? question
+                    let result = toolRouter.localFileSearchResult(
+                        question: query,
+                        grants: grants,
+                        toolState: loopToolState
+                    )
+                    loopToolState.record(result)
+                    observations.append(result)
+                    if step == 1 {
+                        await MainActor.run {
+                            finishModelPlannedAction(
+                                question: question,
+                                answer: result.summary,
+                                backendLabel: "Local Files",
+                                toolResult: result
+                            )
+                        }
+                        return
+                    }
+                case .readFile:
+                    guard let path = plan.action.arguments["path"], !path.isEmpty else {
+                        await MainActor.run {
+                            finishModelPlannedAction(
+                                question: question,
+                                answer: "The selected model asked to read a file but did not provide a path.",
+                                backendLabel: backendLabel
+                            )
+                        }
+                        return
+                    }
+                    let result = toolRouter.localFileReadResult(
+                        path: path,
+                        grants: grants,
+                        focusQuestion: question
+                    )
+                    loopToolState.record(result)
+                    observations.append(result)
+                    if step == 1 {
+                        await MainActor.run {
+                            finishModelPlannedAction(
+                                question: question,
+                                answer: Self.localFileReadAnswer(from: result),
+                                backendLabel: "Local Files",
+                                toolResult: result
+                            )
+                        }
+                        return
+                    }
+                case .stageWriteProposal:
+                    let result = modelPlannedWriteResult(
+                        from: plan.action,
+                        question: question,
+                        grants: grants,
+                        toolState: loopToolState,
+                        toolRouter: toolRouter
+                    )
+                    await MainActor.run {
+                        finishModelPlannedWrite(
+                            question: question,
+                            answer: Self.modelPlannedWriteAnswer(from: result),
+                            backendLabel: "Local Files",
+                            toolResult: result
+                        )
+                    }
+                    return
+                case .runTerminalCommand:
+                    await handleModelPlannedTerminalAction(
+                        plan.action,
+                        question: question,
+                        grants: grants,
+                        toolState: loopToolState,
+                        toolRouter: toolRouter,
+                        backendLabel: backendLabel
+                    )
+                    return
+                }
+            }
+
+            await MainActor.run {
+                finishModelPlannedAction(
+                    question: question,
+                    answer: "The selected model inspected available context but did not produce a final safe action.",
+                    backendLabel: backendLabel
+                )
+            }
+        }
+    }
+
+    private func generatedActionPlanText(prompt: String) async throws -> String {
+        var latestText = ""
+        let request = AIBackendRequest(
+            actionKind: .chat,
+            prompt: prompt,
+            maxOutputTokens: 1_024,
+            cloudOCRText: prompt,
+            cloudQuestion: "Return only the JSON object for this Pixel Pane action plan."
+        )
+        for try await event in selectedAIBackend.streamResponse(for: request) {
+            switch event {
+            case .metadata(let statistics):
+                await MainActor.run {
+                    updateLastAskStatistics(statistics)
+                }
+            case .snapshot(let text):
+                latestText = text
+            case .output(let output):
+                latestText = output.finalText
+                await MainActor.run {
+                    updateLastAskStatistics(output.statistics)
+                }
+            case .completed:
+                break
+            }
+        }
+        return latestText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func runDeterministicFallbackAfterActionPlanningFailure(
+        question: String,
+        grants: [LocalFileGrant],
+        environment: AssistantToolEnvironment,
+        toolRouter: AssistantToolRouter,
+        backendLabel: String,
+        fallbackMessage: String
+    ) async {
+        if let preflight = toolRouter.preflight(
+            question: question,
+            grants: grants,
+            environment: environment,
+            toolState: assistantToolState,
+            scope: .full
+        ) {
+            await MainActor.run {
+                finishModelPlannedPreflight(preflight, question: question)
+            }
+            return
+        }
+
+        if let terminalRequest = toolRouter.terminalCommandRequest(
+            question: question,
+            grants: grants,
+            toolState: assistantToolState
+        ) {
+            await finishTerminalRequestInCurrentTurn(
+                terminalRequest,
+                question: question,
+                grants: grants,
+                toolRouter: toolRouter
+            )
+            return
+        }
+
+        await MainActor.run {
+            finishModelPlannedAction(
+                question: question,
+                answer: fallbackMessage,
+                backendLabel: backendLabel
+            )
+        }
+    }
+
+    private func finishModelPlannedPreflight(
+        _ preflight: AssistantToolPreflightResult,
+        question: String
+    ) {
+        switch preflight {
+        case .directAnswer(let answer, let backendLabel, let toolResult):
+            finishModelPlannedAction(
+                question: question,
+                answer: answer,
+                backendLabel: backendLabel,
+                toolResult: toolResult
+            )
+        case .localFileWriteMessage(let message, let toolResult):
+            finishModelPlannedAction(
+                question: question,
+                answer: message,
+                backendLabel: "Local Files",
+                toolResult: toolResult
+            )
+        case .localFileWriteProposal(let proposal, let toolResult):
+            pendingLocalFileWriteProposal = proposal
+            pendingTerminalCommandProposal = nil
+            finishModelPlannedAction(
+                question: question,
+                answer: "I can propose this local file change. Confirm below before I write anything:\n\n\(proposal.detailText)",
+                backendLabel: "Local Files",
+                toolResult: toolResult
+            )
+        }
+    }
+
+    private func modelPlannedWriteResult(
+        from action: AssistantPlannedAction,
+        question: String,
+        grants: [LocalFileGrant],
+        toolState: AssistantToolState,
+        toolRouter: AssistantToolRouter
+    ) -> AssistantLocalFileToolResult {
+        if let targetPath = action.arguments["target_path"] ?? action.arguments["targetPath"] ?? action.arguments["path"],
+           let content = action.arguments["content"],
+           !targetPath.isEmpty,
+           !content.isEmpty {
+            let rawOperation = (action.arguments["operation"] ?? "create").lowercased()
+            let operation: AssistantGeneratedWriteDraft.Operation
+            if rawOperation.contains("append") {
+                operation = .append
+            } else if rawOperation.contains("replace")
+                || rawOperation.contains("update")
+                || rawOperation.contains("edit") {
+                operation = .replace
+            } else {
+                operation = .create
+            }
+            return toolRouter.generatedWriteProposal(
+                from: AssistantGeneratedWriteDraft(
+                    operation: operation,
+                    targetPath: targetPath,
+                    content: content
+                ),
+                question: question,
+                grants: grants,
+                toolState: toolState
+            )
+        }
+        return toolRouter.localFileWriteProposalResult(
+            question: question,
+            grants: grants,
+            toolState: toolState
+        )
+    }
+
+    private func handleModelPlannedTerminalAction(
+        _ action: AssistantPlannedAction,
+        question: String,
+        grants: [LocalFileGrant],
+        toolState: AssistantToolState,
+        toolRouter: AssistantToolRouter,
+        backendLabel: String
+    ) async {
+        guard let command = action.arguments["command"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !command.isEmpty else {
+            await MainActor.run {
+                finishModelPlannedAction(
+                    question: question,
+                    answer: "The selected model asked to run a terminal command but did not provide a command.",
+                    backendLabel: backendLabel
+                )
+            }
+            return
+        }
+
+        let intent = Self.plannedTerminalIntent(from: action.arguments)
+        let workingDirectory = modelPlannedWorkingDirectory(
+            from: action.arguments["working_directory"] ?? action.arguments["workingDirectory"],
+            intent: intent,
+            grants: grants,
+            toolState: toolState
+        )
+        let timeoutSeconds = Self.plannedTerminalTimeout(from: action.arguments["timeout_seconds"])
+        let reason = action.arguments["reason"] ?? action.reason ?? "The selected model planned this terminal action."
+        let request = toolRouter.terminalCommandRequest(
+            command: command,
+            workingDirectory: workingDirectory,
+            reason: reason,
+            timeoutSeconds: timeoutSeconds,
+            intent: intent
+        )
+        await finishTerminalRequestInCurrentTurn(
+            request,
+            question: question,
+            grants: grants,
+            toolRouter: toolRouter
+        )
+    }
+
+    private func finishTerminalRequestInCurrentTurn(
+        _ request: AssistantTerminalCommandRequest,
+        question: String,
+        grants: [LocalFileGrant],
+        toolRouter: AssistantToolRouter
+    ) async {
+        switch request {
+        case .message(let message):
+            await MainActor.run {
+                finishModelPlannedAction(
+                    question: question,
+                    answer: message,
+                    backendLabel: "Terminal"
+                )
+            }
+        case .proposal(let proposal):
+            if proposal.requiresConfirmation {
+                await MainActor.run {
+                    finishModelPlannedTerminalConfirmation(
+                        question: question,
+                        proposal: proposal
+                    )
+                }
+            } else {
+                let result = await toolRouter.runTerminalCommand(proposal, grants: grants)
+                await MainActor.run {
+                    finishModelPlannedAction(
+                        question: question,
+                        answer: Self.terminalAnswer(from: result),
+                        backendLabel: "Terminal",
+                        toolResult: result
+                    )
+                }
+            }
+        case .proposals(let proposals):
+            guard let proposal = proposals.first else {
+                await MainActor.run {
+                    finishModelPlannedAction(
+                        question: question,
+                        answer: "The selected model did not produce a terminal command to run.",
+                        backendLabel: "Terminal"
+                    )
+                }
+                return
+            }
+            if proposal.requiresConfirmation {
+                await MainActor.run {
+                    finishModelPlannedTerminalConfirmation(
+                        question: question,
+                        proposal: proposal
+                    )
+                }
+            } else {
+                let result = await toolRouter.runTerminalCommand(proposal, grants: grants)
+                await MainActor.run {
+                    finishModelPlannedAction(
+                        question: question,
+                        answer: Self.terminalAnswer(from: result),
+                        backendLabel: "Terminal",
+                        toolResult: result
+                    )
+                }
+            }
+        }
+    }
+
+    private func modelPlannedWorkingDirectory(
+        from proposedPath: String?,
+        intent: AssistantTerminalCommandIntent,
+        grants: [LocalFileGrant],
+        toolState: AssistantToolState
+    ) -> String {
+        let activeFolders = grants.filter { $0.isDirectory && FileManager.default.fileExists(atPath: $0.path) }
+        if let proposedPath,
+           !proposedPath.isEmpty {
+            let standardized = URL(fileURLWithPath: proposedPath).standardizedFileURL.path
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: standardized, isDirectory: &isDirectory),
+               isDirectory.boolValue {
+                if intent == .systemInspection
+                    || activeFolders.isEmpty
+                    || activeFolders.contains(where: { Self.isPath(standardized, inside: $0.path) }) {
+                    return standardized
+                }
+            }
+        }
+
+        if let recentTerminalDirectory = toolState.recentToolResults.compactMap(\.terminalWorkingDirectory).first,
+           FileManager.default.fileExists(atPath: recentTerminalDirectory) {
+            return recentTerminalDirectory
+        }
+        if let listedFolder = toolState.lastListedFolder?.path,
+           FileManager.default.fileExists(atPath: listedFolder) {
+            return listedFolder
+        }
+        if let folder = activeFolders.first {
+            return folder.path
+        }
+        return FileManager.default.homeDirectoryForCurrentUser.path
+    }
+
+    private static func plannedTerminalIntent(from arguments: [String: String]) -> AssistantTerminalCommandIntent {
+        let raw = (arguments["intent"] ?? "").lowercased()
+        if raw.contains("file") || raw.contains("search") {
+            return .fileSearch
+        }
+        if raw.contains("system") || raw.contains("inspection") || raw.contains("port") {
+            return .systemInspection
+        }
+        return .generic
+    }
+
+    private static func plannedTerminalTimeout(from value: String?) -> TimeInterval {
+        guard let value,
+              let seconds = Double(value) else {
+            return 120
+        }
+        return min(600, max(15, seconds))
+    }
+
+    private func finishModelPlannedTerminalConfirmation(
+        question: String,
+        proposal: AssistantTerminalCommandProposal
+    ) {
+        pendingLocalFileWriteProposal = nil
+        pendingTerminalCommandProposal = proposal
+        finishModelPlannedAction(
+            question: question,
+            answer: "I need your permission to run a terminal command in `\(URL(fileURLWithPath: proposal.workingDirectory).lastPathComponent)`.\n\n\(proposal.reason)",
+            backendLabel: "Terminal"
+        )
+    }
+
+    private func finishModelPlannedAction(
+        question: String,
+        answer: String,
+        backendLabel: String,
+        toolResult: AssistantLocalFileToolResult? = nil
+    ) {
+        if let toolResult {
+            assistantToolState.record(toolResult)
+        }
+        if backendLabel != "Terminal" {
+            pendingTerminalCommandProposal = nil
+        }
+        if backendLabel != "Local Files" {
+            pendingLocalFileWriteProposal = nil
+        }
+        if let index = askTurns.indices.last {
+            askTurns[index] = AskConversationTurn(
+                question: question,
+                answer: answer,
+                backendLabel: backendLabel,
+                statistics: askTurns[index].statistics
+            )
+        } else {
+            askTurns.append(
+                AskConversationTurn(
+                    question: question,
+                    answer: answer,
+                    backendLabel: backendLabel
+                )
+            )
+        }
+        loadingActions.remove(.ask)
+        actionBackendLabel = backendLabel
+        persistAskSession()
+        setOutputState(askOutputState(), for: .ask)
+        updateExpandedNotchSizeIfNeeded()
+        focusChatInputSoon()
+    }
+
+    private static func isPath(_ path: String, inside rootPath: String) -> Bool {
+        let candidate = URL(fileURLWithPath: path).standardizedFileURL.path
+        let root = URL(fileURLWithPath: rootPath).standardizedFileURL.path
+        if candidate == root { return true }
+        let prefix = root.hasSuffix("/") ? root : root + "/"
+        return candidate.hasPrefix(prefix)
     }
 
     private func handleAssistantToolPreflight(_ preflight: AssistantToolPreflightResult, question: String) {
@@ -2647,6 +3325,21 @@ struct ResultPanelView: View {
             sections.append("\nOutput was truncated to keep the chat responsive.")
         }
         return sections.joined(separator: "\n")
+    }
+
+    nonisolated private static func localFileReadAnswer(from result: AssistantLocalFileToolResult) -> String {
+        guard let snippet = result.context?.snippets.first else {
+            return result.summary
+        }
+        let source = result.sources.first
+        let truncated = source?.isTruncated == true ? "\n\n[Truncated to a safe preview.]" : ""
+        return """
+        \(result.summary)
+
+        \(snippet.path)
+
+        \(snippet.preview)\(truncated)
+        """
     }
 
     nonisolated private static func terminalSystemInspectionAnswer(
@@ -4948,29 +5641,7 @@ private struct FileLinkedAnswerText: View {
                                 .textSelection(.enabled)
 
                         case .path(let display, let path, _):
-                            Button {
-                                Self.revealInFinder(path)
-                            } label: {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "folder")
-                                        .font(.system(size: 10, weight: .semibold))
-
-                                    Text(display)
-                                        .font(.system(size: 12.5, weight: .medium, design: .monospaced))
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
-                                }
-                                .foregroundStyle(Color(red: 0.72, green: 0.82, blue: 1.0))
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 3)
-                                .background(.white.opacity(0.065), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                                .overlay {
-                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                        .stroke(.white.opacity(0.10), lineWidth: 1)
-                                }
-                            }
-                            .buttonStyle(.plain)
-                            .help("Show in Finder")
+                            FilePathChip(display: display, path: path)
                         }
                     }
                 }
@@ -4986,7 +5657,7 @@ private struct FileLinkedAnswerText: View {
 
     private static func segments(in line: String, baseDirectoryPaths: [String]) -> [Segment] {
         guard let regex = try? NSRegularExpression(
-            pattern: #"(/Users/[^\s,.;:)\]\}]+)"#,
+            pattern: #"(/Users/[^\s,\)\]\}\"']+)"#,
             options: []
         ) else {
             return [.text(line, UUID())]
@@ -5008,8 +5679,14 @@ private struct FileLinkedAnswerText: View {
             if range.location > cursor {
                 result.append(.text(nsLine.substring(with: NSRange(location: cursor, length: range.location - cursor)), UUID()))
             }
-            let path = nsLine.substring(with: range)
-            result.append(.path(display: path, path: path, UUID()))
+            let rawPath = nsLine.substring(with: range)
+            let split = splitPathCandidate(rawPath)
+            if !split.path.isEmpty {
+                result.append(.path(display: displayName(for: split.path), path: split.path, UUID()))
+            }
+            if !split.trailingText.isEmpty {
+                result.append(.text(split.trailingText, UUID()))
+            }
             cursor = range.location + range.length
         }
 
@@ -5036,12 +5713,70 @@ private struct FileLinkedAnswerText: View {
 
         return [
             .text(prefix, UUID()),
-            .path(display: name, path: resolvedPath, UUID())
+            .path(display: displayName(for: resolvedPath), path: resolvedPath, UUID())
         ]
     }
 
-    private static func revealInFinder(_ path: String) {
-        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+    private static func splitPathCandidate(_ candidate: String) -> (path: String, trailingText: String) {
+        var path = candidate
+        var trailing = ""
+        while let last = path.last, ".,;:".contains(last) {
+            trailing.insert(last, at: trailing.startIndex)
+            path.removeLast()
+        }
+        return (path, trailing)
+    }
+
+    private static func displayName(for path: String) -> String {
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        if !name.isEmpty {
+            return name
+        }
+        return path.replacingOccurrences(
+            of: FileManager.default.homeDirectoryForCurrentUser.path,
+            with: "~"
+        )
+    }
+
+}
+
+private struct FilePathChip: View {
+    let display: String
+    let path: String
+
+    var body: some View {
+        Button {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: iconName)
+                    .font(.system(size: 10, weight: .semibold))
+
+                Text(display)
+                    .font(.system(size: 12.5, weight: .medium, design: .monospaced))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .foregroundStyle(Color(red: 0.72, green: 0.82, blue: 1.0))
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .frame(maxWidth: 220, alignment: .leading)
+            .background(.white.opacity(0.065), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(.white.opacity(0.10), lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .help(path)
+    }
+
+    private var iconName: String {
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory) {
+            return isDirectory.boolValue ? "folder" : "doc.text"
+        }
+        return URL(fileURLWithPath: path).pathExtension.isEmpty ? "folder" : "doc.text"
     }
 }
 
