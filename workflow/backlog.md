@@ -1,6 +1,6 @@
 # Pixel Pane Story Backlog
 
-Last updated: 2026-05-26 (ASSIST-042 model-answer text polish)
+Last updated: 2026-05-26 (model-first terminal routing follow-up)
 
 This is the story-level source of truth. Claude/Codex should use this file when you say:
 
@@ -1303,6 +1303,11 @@ Notes:
 | `ASSIST-040` | Replace hard-coded terminal/file intent shortcuts with a model-planned action loop | Done | `ASSIST-016`, `ASSIST-018`, `ASSIST-019`, `ASSIST-027`, `ASSIST-031`, `ASSIST-039` |
 | `ASSIST-041` | Scope deictic project searches to the current observed folder | Done | `ASSIST-018`, `ASSIST-019`, `ASSIST-038`, `ASSIST-040` |
 | `ASSIST-042` | Polish notch assistant model-answer text formatting | Done | `ASSIST-001`, `ASSIST-018` |
+| `ASSIST-043` | Add app-owned folder/project profiling tool | Done | `ASSIST-018`, `ASSIST-031`, `ASSIST-040` |
+| `ASSIST-044` | Add agent task framing and bounded completion loop | Not Started | `ASSIST-021`, `ASSIST-040`, `ASSIST-043` |
+| `ASSIST-045` | Add synthesis-first answers with source/tool receipts | Not Started | `ASSIST-020`, `ASSIST-043`, `ASSIST-044` |
+| `ASSIST-046` | Add confirmed file/script creation and execution workflow | Not Started | `ASSIST-003`, `ASSIST-021`, `ASSIST-027`, `ASSIST-044` |
+| `ASSIST-047` | Refactor assistant harness runner out of UI and split modules | Not Started | `ASSIST-044`, `ASSIST-045`, `ASSIST-046` |
 
 ### `ASSIST-001` - Make The Notch A Chat-First Assistant Surface
 
@@ -1926,6 +1931,7 @@ Acceptance:
 Notes:
 
 - Implemented 2026-05-26. Added `AssistantWritePlanning.swift` for selected-model write planning prompts, JSON draft parsing, and natural write intent detection. `ResultPanelView` now routes delegated write prompts through the selected backend first, then converts the model draft into the existing confirmation-gated `LocalFileWriteProposal`. `LocalFileWriteProposalParser` now accepts generated drafts and resolves grant-relative paths such as `pixel-pane-test/story.txt` or `story.txt` against active folder state. The terminal planner now exits early for natural file-write prompts so they cannot be mistaken for test commands. The compiled harness check and `PixelPane/Scripts/verify-debug-build.sh` succeeded.
+- Follow-up 2026-05-26: moved selected-model write planning before generic app-owned file preflight in Ask routing so delegated writes are not stopped by deterministic path/content clarification or folder-listing fallbacks. The detector now recognizes `md file`/markdown-style natural writes, deictic `write this/these` prompts with recent tool context, and folder-name clarifications after a pending write parser message, including bounded typo matching against granted folder names.
 
 ### `ASSIST-033` - Ground Delegated Writes In Current-Session Observations
 
@@ -1945,6 +1951,7 @@ Acceptance:
 Notes:
 
 - Implemented 2026-05-26. `AssistantWritePlanningPromptBuilder` now includes bounded current-session prior turns and rules for preserving referenced result/output lines when the user asks to save "these results." The write planner now uses the full default output budget so structured drafts can carry real observed content instead of short placeholders. `ResultPanelView` no longer restores `ChatHistoryStore.latestAssistantSession()` for new assistant panels, and the unused global latest-session helper was removed. Harness checks cover the process-results regression, clean write prompts without prior turns, and preservation of generated result content.
+- Follow-up 2026-05-26: write-planning prompts now state that a current user message may be a clarification to a prior write request, and `this` joins `these results`/`that output`/`previous result` as a prior-answer reference. Harness checks cover the copied `write this to a md file within pizel-pane-tess` flow and a `pixel-pane-tests folder` clarification.
 
 ### `ASSIST-034` - Route Recent-File Rewrite Follow-Ups Through App-Owned Edit Planning
 
@@ -2120,3 +2127,84 @@ Acceptance:
 Notes:
 
 - Implemented 2026-05-26 and revised after screenshot QA. The first pass changed broader chat-shell layout and was reverted. The final scoped change preserves the existing notch assistant layout and only keeps model-answer path formatting: absolute-path parsing now preserves dotted folder names such as `snehithnayak.github.io`, trims only trailing sentence punctuation, and renders concise Finder path chips. `PixelPane/Scripts/verify-debug-build.sh` succeeded after the correction.
+
+### `ASSIST-043` - Add App-Owned Folder/Project Profiling Tool
+
+Created during the model-agnostic agentic harness sprint on 2026-05-26.
+
+Goal: Make broad local-scope questions such as "what is in this folder? what is this project?" produce a synthesized profile from app-owned tools instead of stopping at a raw file read.
+
+Acceptance:
+
+- [x] Add `profile_folder` to the model-agnostic action/tool contract.
+- [x] Folder/project/site/repo/workspace questions can route to app-owned profiling before plain model chat.
+- [x] Profiling uses generic workspace evidence, top-level contents, and common project markers without user-specific hard-coding.
+- [x] The transcript regression for a selected website folder returns a synthesized profile and does not stop at `Read granted file`.
+- [x] App builds successfully.
+
+Notes:
+
+- Implemented 2026-05-26. Added a `profile_folder` action/tool, app-owned profiling over granted folders, generic evidence from `AssistantWorkspaceProfiler`, README/config marker summaries, and top-level contents. App-owned preflight now resolves ordinal granted-source references before model chat so follow-ups can establish a last listed folder, and project/folder questions can return a synthesized Local Files answer. The action planner can also request `profile_folder`. The compiled harness check verifies the copied transcript failure path returns a website/project profile instead of raw README output. `PixelPane/Scripts/verify-debug-build.sh` succeeded.
+- Follow-up 2026-05-26. Fixed the broader terminal-routing root cause exposed by a copied top-processes transcript: app-owned terminal planning now runs before selected-model action planning, preventing platform-specific system-inspection prompts from being handled by invented model shell commands. Model-planned system-inspection commands still sanitize known Linux-style `ps --sort` output into macOS-compatible syntax, and terminal results treat usage/illegal-option stderr as failure even if the shell exits zero. Harness coverage verifies macOS-compatible top-process planning and usage-error failure detection. `PixelPane/Scripts/verify-debug-build.sh` succeeded.
+
+### `ASSIST-044` - Add Agent Task Framing And Bounded Completion Loop
+
+Created during the model-agnostic agentic harness sprint on 2026-05-26.
+
+Goal: Replace the fixed two-step observe-plan-act loop with a task frame and completion check that can continue read-only investigation until the user's goal is actually answered.
+
+Acceptance:
+
+- [ ] Add a task frame with goal, target scope, allowed actions, required evidence, and completion criteria.
+- [ ] The runner can perform up to a bounded number of automatic read-only steps before final synthesis.
+- [ ] The runner stops for ambiguity, missing grants, risky terminal commands, writes, script execution, or destructive actions.
+- [ ] Weak/no-tool model paths can use deterministic task framing and app-owned tools before synthesis.
+- [ ] Harness scenarios cover viewing files, summarizing folders/projects, terminal investigation, and failure iteration.
+
+Notes:
+
+- Follow-up 2026-05-26: the copied personal-site transcript exposed the still-open need for a real bounded task/completion loop. As an incremental generic fix, package-based local serve verification now extracts any declared localhost port from the project script, checks whether an existing listener already owns that port, and includes recent log output when no URL can be verified. The action-planning context now includes terminal exit codes so future loop iterations can reason from failed observations. This does not hard-code a user project or port; the harness fixture uses one fixed port only as a regression example. Full task-frame/completion-loop work remains Not Started under this story.
+- Follow-up 2026-05-26: Ask routing now gives the selected-model action planner a chance to resolve natural prompts before the deterministic terminal planner runs. The old keyword list no longer decides whether a prompt is "terminal enough"; nontrivial chats with granted or recent tool context route through model planning first, and the planner can choose `answer_directly` or a tool action. The terminal planner remains as executor/fallback and for confirmed pending commands, but phrases such as `kill it` no longer become literal shell commands. Deictic process-control text must be resolved from recent terminal observations, such as a prior PID, before Pixel Pane will stage a confirmation-gated terminal command. Harness coverage verifies that `kill it` is not treated as executable shell while `kill <pid>` still parses and requires confirmation.
+- Follow-up 2026-05-26: standardized the permission and recovery behavior exposed by the local-server/kill transcript. Status questions about whether something is already running locally now use read-only listener inspection and do not start servers. Process-control commands always require confirmation, including piped forms like `lsof -ti :8000 | xargs kill -9`. If a confirmed kill fails because the PID is stale, the runner performs one bounded read-only inspection of the referenced localhost port and, if a listener still exists, stages a new confirmation-gated kill for the actual listener instead of auto-killing or stopping after the first failed command. This is generic port/process reasoning, not project-specific hard-coding. Harness coverage verifies local status inspection, `xargs kill` risk classification, stale-kill continuation, and model-first deictic process handling.
+
+### `ASSIST-045` - Add Synthesis-First Answers With Source/Tool Receipts
+
+Created during the model-agnostic agentic harness sprint on 2026-05-26.
+
+Goal: Treat tool outputs as observations and require final synthesized answers for explanatory tasks, with compact receipts for files, folders, and terminal commands used.
+
+Acceptance:
+
+- [ ] Raw tool output is shown directly only for explicit read/show/list requests.
+- [ ] Explanatory prompts synthesize observations into a user-facing answer.
+- [ ] Answers include concise source/tool receipts without dumping debug state.
+- [ ] Prompt-injection text inside files/images/OCR cannot become tool instructions.
+- [ ] Harness scenarios verify summarization, project explanation, and command-output explanation across model routes.
+
+### `ASSIST-046` - Add Confirmed File/Script Creation And Execution Workflow
+
+Created during the model-agnostic agentic harness sprint on 2026-05-26.
+
+Goal: Support general file creation/editing and helper-script workflows through the app-owned permission layer without allowing the model to mutate or execute files directly.
+
+Acceptance:
+
+- [ ] File creation/editing remains constrained to granted paths and requires visible confirmation.
+- [ ] Script generation is staged as a confirmed file write before any execution is offered.
+- [ ] Script execution requires a separate terminal confirmation and bounded output.
+- [ ] The harness can iterate after script/build/test failure by reading relevant files and proposing the next safe step.
+- [ ] Harness scenarios cover creating notes, rewriting a file, writing a helper script, and running the script after confirmation.
+
+### `ASSIST-047` - Refactor Assistant Harness Runner Out Of UI And Split Modules
+
+Created during the model-agnostic agentic harness sprint on 2026-05-26.
+
+Goal: Reduce harness debt by moving orchestration out of `ResultPanelView.swift` and splitting the monolithic assistant harness into focused modules.
+
+Acceptance:
+
+- [ ] `ResultPanelView` owns UI state/rendering but not planning loops, tool routing, terminal policy, or final synthesis.
+- [ ] Tool definitions/state, file tools, terminal tools, workspace profiling, write/script tools, and the agent runner live in focused files.
+- [ ] Typed action payloads replace broad `[String: String]` argument plumbing where actions cross subsystem boundaries.
+- [ ] Duplicate read-path implementations are collapsed.
+- [ ] Existing harness checks and app build continue to pass.

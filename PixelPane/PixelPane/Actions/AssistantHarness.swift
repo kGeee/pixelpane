@@ -116,6 +116,7 @@ enum AssistantToolPreflightScope: Sendable {
 enum AssistantToolName: String, Codable, CaseIterable, Sendable {
     case listGrants = "list_grants"
     case listFolder = "list_folder"
+    case profileFolder = "profile_folder"
     case searchFiles = "search_files"
     case readFile = "read_file"
     case stageWriteProposal = "stage_write_proposal"
@@ -200,6 +201,28 @@ enum AssistantToolRegistry {
                     "summary": .init(type: "string", description: "Top-level folder listing."),
                     "sources": .init(type: "array", description: "Folder source records.", itemsType: "source"),
                     "metadata": .init(type: "object", description: "Item count and truncation metadata.")
+                ]
+            ),
+            riskLevel: .low,
+            requiredPermission: .grantedFolder
+        ),
+        AssistantToolDefinition(
+            name: .profileFolder,
+            description: "Inspect a user-granted folder as an arbitrary workspace and summarize what it appears to be.",
+            inputSchema: AssistantToolSchema(
+                type: "object",
+                required: [],
+                properties: [
+                    "path": .init(type: "string", description: "Optional granted folder path. If omitted, use the active or only granted folder.")
+                ]
+            ),
+            outputSchema: AssistantToolSchema(
+                type: "object",
+                required: ["summary", "sources", "metadata"],
+                properties: [
+                    "summary": .init(type: "string", description: "Synthesized folder/project profile."),
+                    "sources": .init(type: "array", description: "Folder and evidence file source records.", itemsType: "source"),
+                    "metadata": .init(type: "object", description: "Project type, evidence, item count, and truncation metadata.")
                 ]
             ),
             riskLevel: .low,
@@ -552,12 +575,27 @@ struct AssistantTerminalCommandResult: Equatable, Sendable {
     }
 
     nonisolated var succeeded: Bool {
-        exitCode == 0 && !didTimeOut
+        exitCode == 0 && !didTimeOut && !hasUsageError
+    }
+
+    nonisolated var hasUsageError: Bool {
+        let normalizedStderr = stderr.lowercased()
+        guard !normalizedStderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+        return normalizedStderr.contains("illegal option")
+            || normalizedStderr.contains("invalid option")
+            || normalizedStderr.contains("unknown option")
+            || normalizedStderr.contains("unrecognized option")
+            || normalizedStderr.contains("usage:")
     }
 
     nonisolated var summary: String {
         if didTimeOut {
             return "Terminal command timed out after \(Int(durationSeconds.rounded())) seconds."
+        }
+        if hasUsageError {
+            return "Terminal command failed because the command or flags are not supported on this system."
         }
         return succeeded
             ? "Terminal command completed successfully."
@@ -809,7 +847,7 @@ struct AssistantToolState: Codable, Equatable, Sendable {
         }
 
         switch result.toolName {
-        case .listFolder:
+        case .listFolder, .profileFolder:
             let folderSources = sourceStates.filter { $0.kindLabel == "Folder" }
             let fileSources = sourceStates.filter { $0.kindLabel == "File" }
             if folderSources.count == 1 {
@@ -1847,6 +1885,243 @@ struct AssistantLocalFileToolExecutor: Sendable {
         let fileSources: [AssistantLocalFileToolSource]
     }
 
+    private struct FolderProfile: Sendable {
+        let summary: String
+        let itemCount: Int
+        let isTruncated: Bool
+        let sources: [AssistantLocalFileToolSource]
+    }
+
+    nonisolated func folderProfileResult(
+        for question: String,
+        grants: [LocalFileGrant],
+        toolState: AssistantToolState
+    ) -> AssistantLocalFileToolResult? {
+        guard shouldProfileFolder(for: question) else { return nil }
+        let activeFolderGrants = grants.filter { grant in
+            grant.isDirectory && FileManager.default.fileExists(atPath: grant.path)
+        }
+        guard !activeFolderGrants.isEmpty else { return nil }
+
+        let preferredPath = explicitPreferredDirectoryGrant(
+            question: question,
+            grants: activeFolderGrants
+        )?.path ?? referencedGrant(
+            for: Self.normalized(question),
+            grants: activeFolderGrants,
+            toolState: toolState,
+            requireRecentSourceContext: false
+        )?.grant.path ?? toolState.lastListedFolder?.path
+
+        let validation = validator.validate(
+            AssistantToolCall(name: .profileFolder, arguments: preferredPath.map { ["path": $0] } ?? [:]),
+            grants: grants
+        )
+        guard validation.isValid else {
+            return AssistantLocalFileToolResult(
+                toolName: .profileFolder,
+                summary: validation.message ?? "Folder profiling is not available.",
+                sources: [],
+                context: LocalFileContext(grants: [], snippets: []),
+                writeProposalResult: nil,
+                metadata: AssistantToolResultMetadata(for: .profileFolder)
+            )
+        }
+
+        let profile = profileFolder(path: preferredPath, grants: activeFolderGrants)
+        return AssistantLocalFileToolResult(
+            toolName: .profileFolder,
+            summary: profile.summary,
+            sources: profile.sources,
+            context: LocalFileContext(grants: activeFolderGrants, snippets: []),
+            writeProposalResult: nil,
+            metadata: AssistantToolResultMetadata(
+                for: .profileFolder,
+                itemCount: profile.itemCount,
+                sourceCount: profile.sources.count,
+                isTruncated: profile.isTruncated
+            )
+        )
+    }
+
+    private nonisolated func shouldProfileFolder(for question: String) -> Bool {
+        let normalized = Self.normalized(question)
+        let projectScopeSignals = [
+            "project", "repo", "repository", "workspace", "codebase", "site", "website"
+        ]
+        let folderScopeSignals = ["folder", "directory"]
+        let broadProfileSignals = [
+            "what is", "what's", "whats", "what kind", "what type", "explain",
+            "summarize", "summary", "tell me about", "what is in", "what's in",
+            "whats in", "what do you see", "what can you see"
+        ]
+        let explicitFolderProfileSignals = [
+            "summarize", "summary", "explain", "tell me about", "what kind", "what type"
+        ]
+        if projectScopeSignals.contains(where: { normalized.contains($0) }) {
+            return broadProfileSignals.contains { normalized.contains($0) }
+        }
+        return folderScopeSignals.contains(where: { normalized.contains($0) })
+            && explicitFolderProfileSignals.contains { normalized.contains($0) }
+    }
+
+    private nonisolated func profileFolder(path: String?, grants: [LocalFileGrant]) -> FolderProfile {
+        let activeFolders = grants
+            .filter { $0.isDirectory && FileManager.default.fileExists(atPath: $0.path) }
+            .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+        guard !activeFolders.isEmpty else {
+            return FolderProfile(
+                summary: "I can profile a folder only after you grant one in Settings -> Files.",
+                itemCount: 0,
+                isTruncated: false,
+                sources: []
+            )
+        }
+
+        let selectedFolder = path.flatMap { requestedPath in
+            activeFolders.first { folder in
+                folder.url.standardizedFileURL.path == URL(fileURLWithPath: requestedPath).standardizedFileURL.path
+            }
+        }
+        guard let folder = selectedFolder ?? (activeFolders.count == 1 ? activeFolders[0] : nil) else {
+            let lines = activeFolders.map { "- \($0.path)" }
+            let sources = activeFolders.map { folder in
+                AssistantLocalFileToolSource(
+                    id: folder.id.uuidString,
+                    path: folder.path,
+                    displayName: folder.displayName,
+                    kindLabel: folder.kindLabel,
+                    snippetCount: 0,
+                    isTruncated: false
+                )
+            }
+            return FolderProfile(
+                summary: "I have access to multiple folders. Which one should I profile?\n\n\(lines.joined(separator: "\n"))",
+                itemCount: activeFolders.count,
+                isTruncated: false,
+                sources: sources
+            )
+        }
+
+        let overview = overview(for: folder)
+        let workspaceProfile = AssistantWorkspaceProfiler().profile(rootPath: folder.path)
+        let evidenceFiles = profileEvidenceFiles(in: folder.url.standardizedFileURL)
+        let evidenceSummaries = evidenceFiles.compactMap { evidenceSummary(for: $0) }
+        let kindSummary = projectKindSummary(from: workspaceProfile)
+        var lines: [String] = []
+        lines.append("This looks like \(kindSummary) at `\(folder.path)`.")
+        if !workspaceProfile.evidence.isEmpty {
+            lines.append("Evidence: \(workspaceProfile.evidence.prefix(8).joined(separator: ", ")).")
+        }
+        if !evidenceSummaries.isEmpty {
+            lines.append("")
+            lines.append("Key files:")
+            lines.append(contentsOf: evidenceSummaries.prefix(6).map { "- \($0)" })
+        }
+        lines.append("")
+        lines.append("Top-level contents:")
+        lines.append(contentsOf: overview.summary
+            .components(separatedBy: .newlines)
+            .filter { $0.hasPrefix("- ") }
+            .prefix(18))
+        if overview.isTruncated {
+            lines.append("- ... more items omitted")
+        }
+
+        let folderSource = AssistantLocalFileToolSource(
+            id: folder.id.uuidString,
+            path: folder.path,
+            displayName: folder.displayName,
+            kindLabel: folder.kindLabel,
+            snippetCount: 0,
+            isTruncated: overview.isTruncated
+        )
+        let evidenceSources = evidenceFiles.map { fileURL in
+            AssistantLocalFileToolSource(
+                id: fileURL.path,
+                path: fileURL.path,
+                displayName: fileURL.lastPathComponent,
+                kindLabel: "File",
+                snippetCount: 1,
+                isTruncated: false
+            )
+        }
+        return FolderProfile(
+            summary: lines.joined(separator: "\n"),
+            itemCount: overview.itemCount,
+            isTruncated: overview.isTruncated,
+            sources: [folderSource] + evidenceSources + overview.fileSources
+        )
+    }
+
+    private nonisolated func projectKindSummary(from profile: AssistantWorkspaceProfile) -> String {
+        var kinds: [String] = []
+        if profile.features.contains(.xcodeProject) {
+            kinds.append("a macOS/iOS Xcode project")
+        }
+        if profile.features.contains(.swiftPackage) {
+            kinds.append("a Swift package")
+        }
+        if profile.features.contains(.packageScripts) {
+            kinds.append("a JavaScript/Node project")
+        }
+        if profile.features.contains(.staticWebsite) {
+            kinds.append("a static website")
+        }
+        if profile.features.contains(.pythonProject) {
+            kinds.append("a Python project")
+        }
+        if profile.features.contains(.rustPackage) {
+            kinds.append("a Rust project")
+        }
+        if profile.features.contains(.goModule) {
+            kinds.append("a Go project")
+        }
+        if profile.features.contains(.modelArtifacts) {
+            kinds.append("a local model folder")
+        }
+        if profile.features.contains(.imageCollection) {
+            kinds.append("an image collection")
+        }
+        if profile.features.contains(.documentCollection) {
+            kinds.append("a document folder")
+        }
+        if kinds.isEmpty {
+            return "a general folder"
+        }
+        return kinds.prefix(3).joined(separator: " / ")
+    }
+
+    private nonisolated func profileEvidenceFiles(in root: URL) -> [URL] {
+        let preferredNames = [
+            "README.md", "README.markdown", "README.txt", "package.json", "Package.swift",
+            "pyproject.toml", "requirements.txt", "Cargo.toml", "go.mod", "Makefile",
+            "index.html", "CNAME", "_config.yml"
+        ]
+        return preferredNames
+            .map { root.appendingPathComponent($0) }
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+            .prefix(8)
+            .map { $0 }
+    }
+
+    private nonisolated func evidenceSummary(for url: URL) -> String? {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+            return url.lastPathComponent
+        }
+        let cleanedLines = text
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard let firstMeaningful = cleanedLines.first else {
+            return url.lastPathComponent
+        }
+        let preview = firstMeaningful.count > 140
+            ? String(firstMeaningful.prefix(140)).trimmingCharacters(in: .whitespacesAndNewlines) + "..."
+            : firstMeaningful
+        return "\(url.lastPathComponent): \(preview)"
+    }
+
     private nonisolated func overview(for grant: LocalFileGrant) -> FolderOverview {
         let url = grant.url.standardizedFileURL
         do {
@@ -2408,6 +2683,10 @@ struct AssistantTerminalCommandPolicy: Sendable {
             return Classification(riskLevel: .low, requiresConfirmation: false, blockReason: nil)
         }
 
+        if isProcessControlCommand(normalized) {
+            return Classification(riskLevel: .high, requiresConfirmation: true, blockReason: nil)
+        }
+
         let highRiskPatterns = [
             #"(^|[;&|]\s*)(sudo|su|doas)\b"#,
             #"(^|[;&|]\s*)rm\b"#,
@@ -2422,7 +2701,6 @@ struct AssistantTerminalCommandPolicy: Sendable {
             #"\s(>|>>)\s*[^\s]"#,
             #"(^|[;&|]\s*)tee\s+"#,
             #"(^|[;&|]\s*)(sed|perl)\s+.*\s-i\b"#,
-            #"(^|[;&|]\s*)(kill|killall|pkill)\b"#,
             #"(^|[;&|]\s*)(launchctl|diskutil|csrutil|shutdown|reboot|halt)\b"#,
             #"(^|[;&|]\s*)defaults\s+write\b"#,
             #"(^|[;&|]\s*)osascript\b"#
@@ -2450,6 +2728,14 @@ struct AssistantTerminalCommandPolicy: Sendable {
         }
 
         return Classification(riskLevel: .low, requiresConfirmation: false, blockReason: nil)
+    }
+
+    private nonisolated func isProcessControlCommand(_ normalized: String) -> Bool {
+        Self.matches(normalized, pattern: #"(^|[;&|]\s*)(kill|killall|pkill)\b"#)
+            || Self.matches(normalized, pattern: #"\bxargs\s+(?:-[^\s]+\s+)*kill\b"#)
+            || Self.matches(normalized, pattern: #"\bkill\s+-[0-9a-z]+\b"#)
+            || Self.matches(normalized, pattern: #"\bpkill\s+"#)
+            || Self.matches(normalized, pattern: #"\bkillall\s+"#)
     }
 
     private nonisolated static func normalized(_ command: String) -> String {
@@ -2657,7 +2943,8 @@ struct AssistantRepositoryCommandDiscoverer: Sendable {
             let packageDirectory = shellQuote(prefix)
             let baseCommand = "\(packageManager) run \(scriptName)"
             let quotedBaseCommand = shellQuote("cd \(packageDirectory) && \(baseCommand)")
-            let command = "log=\"${TMPDIR:-/tmp}/pixel-pane-dev-server-$(date +%s).log\"; nohup sh -lc \(quotedBaseCommand) > \"$log\" 2>&1 & pid=$!; echo \"PID: $pid\"; echo \"Log: $log\"; sleep 5; pids=\"$pid\"; for _ in 1 2 3; do children=\"\"; for parent in $pids; do children=\"$children $(pgrep -P \"$parent\" 2>/dev/null | tr '\\n' ' ')\"; done; pids=\"$pids $children\"; done; pid_csv=\"$(printf '%s\\n' $pids | awk 'NF && !seen[$1]++' | paste -sd, -)\"; listeners=\"$(lsof -nP -a -p \"$pid_csv\" -iTCP -sTCP:LISTEN 2>/dev/null)\"; printf '%s\\n' \"$listeners\"; grep -Eo 'https?://(localhost|127\\.0\\.0\\.1):[0-9]+' \"$log\" | sed 's#127\\.0\\.0\\.1#localhost#' | awk '!seen[$0]++ { print \"Verified URL: \" $0 }' | head -5; if ! grep -Eq 'https?://(localhost|127\\.0\\.0\\.1):[0-9]+' \"$log\"; then port=\"$(printf '%s\\n' \"$listeners\" | sed -nE 's/.*(127\\.0\\.0\\.1|\\*):([0-9]+).*/\\2/p' | head -1)\"; [ -n \"$port\" ] && echo \"Verified URL: http://localhost:$port/\"; fi"
+            let fixedPort = fixedLocalhostPort(in: script).map(String.init) ?? ""
+            let command = "log=\"${TMPDIR:-/tmp}/pixel-pane-dev-server-$(date +%s).log\"; nohup sh -lc \(quotedBaseCommand) > \"$log\" 2>&1 & pid=$!; echo \"PID: $pid\"; echo \"Log: $log\"; sleep 5; pids=\"$pid\"; for _ in 1 2 3; do children=\"\"; for parent in $pids; do children=\"$children $(pgrep -P \"$parent\" 2>/dev/null | tr '\\n' ' ')\"; done; pids=\"$pids $children\"; done; pid_csv=\"$(printf '%s\\n' $pids | awk 'NF && !seen[$1]++' | paste -sd, -)\"; listeners=\"$(lsof -nP -a -p \"$pid_csv\" -iTCP -sTCP:LISTEN 2>/dev/null)\"; printf '%s\\n' \"$listeners\"; found=0; while IFS= read -r url; do if [ -n \"$url\" ]; then echo \"Verified URL: $url\"; found=1; fi; done <<EOF\n$(grep -Eo 'https?://(localhost|127\\.0\\.0\\.1):[0-9]+' \"$log\" | sed 's#127\\.0\\.0\\.1#localhost#' | awk '!seen[$0]++' | head -5)\nEOF\nif [ \"$found\" -eq 0 ]; then port=\"$(printf '%s\\n' \"$listeners\" | sed -nE 's/.*(127\\.0\\.0\\.1|\\*):([0-9]+).*/\\2/p' | head -1)\"; if [ -n \"$port\" ]; then echo \"Verified URL: http://localhost:$port/\"; found=1; fi; fi; fixed_port=\(shellQuote(fixedPort)); if [ \"$found\" -eq 0 ] && [ -n \"$fixed_port\" ]; then fixed_listener=\"$(lsof -nP -iTCP:$fixed_port -sTCP:LISTEN 2>/dev/null | tail -n +2 | head -1)\"; if [ -n \"$fixed_listener\" ]; then echo \"Verified URL: http://localhost:$fixed_port/\"; echo \"Existing listener: $fixed_listener\"; found=1; fi; fi; if [ \"$found\" -eq 0 ]; then echo \"No verified local URL found yet.\"; echo \"Recent log output:\"; tail -40 \"$log\" 2>/dev/null; exit 1; fi"
             return DiscoveredCommand(
                 command: command,
                 reason: "Start the package.json \(scriptName) script in the background and verify the local server URL.",
@@ -2672,6 +2959,26 @@ struct AssistantRepositoryCommandDiscoverer: Sendable {
             reason: "Use the package.json \(scriptName) script.",
             timeoutSeconds: 300
         )
+    }
+
+    private nonisolated func fixedLocalhostPort(in script: String) -> Int? {
+        let patterns = [
+            #"http\.server\s+([0-9]{2,5})"#,
+            #"(?:--port|-p)\s+([0-9]{2,5})"#,
+            #"(?:localhost|127\.0\.0\.1):([0-9]{2,5})"#,
+            #"PORT=([0-9]{2,5})"#
+        ]
+        for pattern in patterns {
+            guard let range = script.range(of: pattern, options: .regularExpression) else { continue }
+            let match = String(script[range])
+            guard let digitRange = match.range(of: #"[0-9]{2,5}"#, options: .regularExpression),
+                  let port = Int(match[digitRange]),
+                  (1...65_535).contains(port) else {
+                continue
+            }
+            return port
+        }
+        return nil
     }
 
     private nonisolated func staticWebsiteServeCommand(
@@ -3271,13 +3578,17 @@ struct AssistantTerminalCommandPlanner: Sendable {
             || normalized.contains("what port")
             || normalized.contains("another port")
             || normalized.contains("dev server")
-            || normalized.contains("local server") {
+            || normalized.contains("local server")
+            || normalized.contains("running locally")
+            || normalized.contains("running local") {
             let portSignals = [
                 "port",
                 "localhost",
                 "local host",
                 "dev server",
                 "local server",
+                "running locally",
+                "running local",
                 "server running",
                 "listening"
             ]
@@ -3344,6 +3655,9 @@ struct AssistantTerminalCommandPlanner: Sendable {
     }
 
     private nonisolated func isServeIntent(_ normalized: String) -> Bool {
+        if isLocalServerStatusQuestion(normalized) {
+            return false
+        }
         let targetSignals = [
             "site",
             "website",
@@ -3360,7 +3674,6 @@ struct AssistantTerminalCommandPlanner: Sendable {
         let serveActionSignals = [
             "start",
             "serve",
-            "run",
             "view",
             "open",
             "preview",
@@ -3383,6 +3696,25 @@ struct AssistantTerminalCommandPlanner: Sendable {
             "local server"
         ]
         return isBuildIntent(normalized) && containsAny(localExecutionSignals, in: normalized)
+    }
+
+    private nonisolated func isLocalServerStatusQuestion(_ normalized: String) -> Bool {
+        let statusSignals = [
+            "is ",
+            "are ",
+            "do i have",
+            "currently",
+            "right now",
+            "already",
+            "running locally",
+            "running local",
+            "running on localhost",
+            "running on a port"
+        ]
+        let localSignals = ["locally", "localhost", "local server", "dev server", "port"]
+        return containsAny(localSignals, in: normalized)
+            && containsAny(statusSignals, in: normalized)
+            && !containsAny(["start", "serve", "launch", "open", "view", "build this", "run this"], in: normalized)
     }
 
     private nonisolated func containsAny(_ needles: [String], in value: String) -> Bool {
@@ -3559,7 +3891,7 @@ struct AssistantTerminalCommandPlanner: Sendable {
             "go", "curl", "wget", "kill", "killall", "pkill", "lsof", "nohup"
         ])
         if knownCommands.contains(String(first).lowercased()) {
-            return true
+            return !isDeicticProcessControlCommand(trimmed)
         }
         if isLikelyNaturalLanguage(trimmed) {
             return false
@@ -3574,6 +3906,22 @@ struct AssistantTerminalCommandPlanner: Sendable {
             return true
         }
         return false
+    }
+
+    private nonisolated func isDeicticProcessControlCommand(_ value: String) -> Bool {
+        let tokens = value
+            .split(separator: " ")
+            .map { String($0).lowercased() }
+        guard let first = tokens.first,
+              ["kill", "killall", "pkill"].contains(first) else {
+            return false
+        }
+        let arguments = tokens.dropFirst()
+        guard !arguments.isEmpty else { return true }
+        let deicticArguments = Set(["it", "that", "this", "them", "those", "process", "server", "app"])
+        return arguments.allSatisfy { argument in
+            deicticArguments.contains(argument.trimmingCharacters(in: CharacterSet(charactersIn: "\"'")))
+        }
     }
 
     private nonisolated func isNonExecutableGrantedFileReference(
@@ -4055,6 +4403,30 @@ struct AssistantToolRouter: Sendable {
                 )
             }
 
+            if let sourceReferenceResult = fileToolExecutor.grantedSourceReferenceResult(
+                for: question,
+                grants: grants,
+                toolState: toolState
+            ) {
+                return .directAnswer(
+                    answer: sourceReferenceResult.summary,
+                    backendLabel: "Local Files",
+                    toolResult: sourceReferenceResult
+                )
+            }
+
+            if let folderProfileResult = fileToolExecutor.folderProfileResult(
+                for: question,
+                grants: grants,
+                toolState: toolState
+            ) {
+                return .directAnswer(
+                    answer: folderProfileResult.summary,
+                    backendLabel: "Local Files",
+                    toolResult: folderProfileResult
+                )
+            }
+
             if !fileSearchDecision(question: question, grants: grants, toolState: toolState).shouldSearch,
                let screenAnswer = unavailableScreenContextAnswer(
                 for: question,
@@ -4066,6 +4438,18 @@ struct AssistantToolRouter: Sendable {
             return nil
         case .full:
             break
+        }
+
+        if let folderProfileResult = fileToolExecutor.folderProfileResult(
+            for: question,
+            grants: grants,
+            toolState: toolState
+        ) {
+            return .directAnswer(
+                answer: folderProfileResult.summary,
+                backendLabel: "Local Files",
+                toolResult: folderProfileResult
+            )
         }
 
         if let folderOverviewResult = fileToolExecutor.folderOverviewResult(
@@ -4160,6 +4544,29 @@ struct AssistantToolRouter: Sendable {
 
     nonisolated func localFolderListResult(path: String?, grants: [LocalFileGrant]) -> AssistantLocalFileToolResult {
         fileToolExecutor.listFolder(path: path, grants: grants)
+    }
+
+    nonisolated func localFolderProfileResult(
+        question: String,
+        path: String?,
+        grants: [LocalFileGrant],
+        toolState: AssistantToolState
+    ) -> AssistantLocalFileToolResult {
+        if let path {
+            let scopedQuestion = "\(question)\n\nTarget folder: \(path)"
+            if let result = fileToolExecutor.folderProfileResult(
+                for: scopedQuestion,
+                grants: grants,
+                toolState: toolState
+            ) {
+                return result
+            }
+        }
+        return fileToolExecutor.folderProfileResult(
+            for: question,
+            grants: grants,
+            toolState: toolState
+        ) ?? fileToolExecutor.listFolder(path: path, grants: grants)
     }
 
     nonisolated func localFileReadResult(

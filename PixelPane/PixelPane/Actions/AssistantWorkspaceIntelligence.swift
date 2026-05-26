@@ -42,7 +42,7 @@ struct AssistantWorkspaceProfiler: Sendable {
     private let maxDepth: Int
     private let maxVisitedEntriesPerGrant: Int
 
-    init(maxDepth: Int = 4, maxVisitedEntriesPerGrant: Int = 2_500) {
+    nonisolated init(maxDepth: Int = 4, maxVisitedEntriesPerGrant: Int = 2_500) {
         self.maxDepth = maxDepth
         self.maxVisitedEntriesPerGrant = maxVisitedEntriesPerGrant
     }

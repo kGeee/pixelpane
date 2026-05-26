@@ -45,6 +45,31 @@ enum AssistantTerminalHarnessCheck {
             isDirectory: true,
             addedAt: Date()
         )
+        let fixedPortSiteURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pixel-pane-fixed-port-site-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: fixedPortSiteURL, withIntermediateDirectories: true)
+        try? "<!doctype html><title>Fixed Port Site</title>".write(
+            to: fixedPortSiteURL.appendingPathComponent("index.html"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try? """
+        {
+          "scripts": {
+            "start": "python3 -m http.server 8000"
+          }
+        }
+        """.write(
+            to: fixedPortSiteURL.appendingPathComponent("package.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let fixedPortSiteGrant = LocalFileGrant(
+            id: UUID(),
+            path: fixedPortSiteURL.path,
+            isDirectory: true,
+            addedAt: Date()
+        )
         let staticSiteURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("snehithnayak.github.io-\(UUID().uuidString)", isDirectory: true)
         try? FileManager.default.createDirectory(
@@ -58,6 +83,15 @@ enum AssistantTerminalHarnessCheck {
         )
         try? "snehithn.com".write(
             to: staticSiteURL.appendingPathComponent("CNAME"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try? """
+        # snehithn.com
+
+        Welcome to my personal website's Github page.
+        """.write(
+            to: staticSiteURL.appendingPathComponent("README.md"),
             atomically: true,
             encoding: .utf8
         )
@@ -78,6 +112,7 @@ enum AssistantTerminalHarnessCheck {
         )
         defer {
             try? FileManager.default.removeItem(at: fixtureURL)
+            try? FileManager.default.removeItem(at: fixedPortSiteURL)
             try? FileManager.default.removeItem(at: staticSiteURL)
             try? FileManager.default.removeItem(at: writeFixtureURL)
         }
@@ -114,6 +149,10 @@ enum AssistantTerminalHarnessCheck {
 
         if let topProcesses = proposal("what are the top running processes on my computer?") {
             expect(topProcesses.command.contains("ps aux"), "top processes should use ps aux")
+            expect(
+                !topProcesses.command.contains("--sort"),
+                "top processes should use macOS-compatible ps/sort syntax"
+            )
             expect(topProcesses.intent == .systemInspection, "top processes should use system inspection intent")
             expect(
                 topProcesses.workingDirectory == home,
@@ -130,6 +169,26 @@ enum AssistantTerminalHarnessCheck {
                 "top processes should return stdout"
             )
         }
+
+        let usageError = AssistantTerminalCommandResult(
+            intent: .systemInspection,
+            command: "ps aux --sort=-%mem | head -n 11",
+            workingDirectory: repo,
+            exitCode: 0,
+            stdout: "",
+            stderr: "ps: illegal option -- -\nusage: ps [-AaCcEefhjlMmrSTvwXx]",
+            durationSeconds: 0.04,
+            didTimeOut: false,
+            wasOutputTruncated: false
+        )
+        expect(
+            !usageError.succeeded,
+            "terminal result should not count usage-error stderr as success even with exit code 0"
+        )
+        expect(
+            usageError.summary.contains("not supported"),
+            "terminal result summary should surface unsupported command/flag failures"
+        )
 
         let repoSource = AssistantLocalFileToolSource(
             id: repo,
@@ -361,6 +420,45 @@ enum AssistantTerminalHarnessCheck {
             isDirectory: true,
             addedAt: Date()
         )
+        let implicitMarkdownWritePrompt = "write this to a md file within pizel-pane-tess"
+        expect(
+            router.shouldPlanWriteWithModel(
+                question: implicitMarkdownWritePrompt,
+                grants: [writeGrant, typoGrant],
+                toolState: writeToolState
+            ),
+            "implicit markdown writes with prior-result references and typoed folder names should route to selected-model planning"
+        )
+        let implicitMarkdownPreflight = router.preflight(
+            question: implicitMarkdownWritePrompt,
+            grants: [writeGrant, typoGrant],
+            environment: localEnvironment,
+            toolState: writeToolState,
+            scope: .appOwnedOnly
+        )
+        if case nil = implicitMarkdownPreflight {
+            expect(true, "implicit markdown write preflight should not stop at target/content clarification")
+        } else {
+            failures.append("implicit markdown write preflight should continue to selected-model planning")
+        }
+        let pendingWriteMessage = AssistantLocalFileToolResult(
+            toolName: .stageWriteProposal,
+            summary: "Checked whether the user requested a confirmed local file write.",
+            sources: [],
+            context: nil,
+            writeProposalResult: .message("Name the target path and content before I can propose a local file change."),
+            metadata: AssistantToolResultMetadata(for: .stageWriteProposal)
+        )
+        var pendingWriteState = writeToolState
+        pendingWriteState.record(pendingWriteMessage)
+        expect(
+            router.shouldPlanWriteWithModel(
+                question: "pixel-pane-tests folder",
+                grants: [writeGrant, typoGrant],
+                toolState: pendingWriteState
+            ),
+            "folder-name clarification after an ambiguous write should continue selected-model write planning"
+        )
         let typoTextFileURL = typoGrantURL.appendingPathComponent("top_processes.txt")
         try? "Top running processes by CPU:\n- PixelPane\n- WindowServer".write(
             to: typoTextFileURL,
@@ -590,6 +688,26 @@ enum AssistantTerminalHarnessCheck {
             expect(serveSite.requiresConfirmation, "starting a dev server should require confirmation")
         }
 
+        if let fixedPortSite = proposal(
+            "build this site and tell me what port its running on locally.",
+            grants: [fixedPortSiteGrant]
+        ) {
+            expect(
+                fixedPortSite.command.contains("fixed_port='8000'"),
+                "fixed-port package serve commands should remember the declared localhost port"
+            )
+            expect(
+                fixedPortSite.command.contains("Existing listener:"),
+                "fixed-port package serve commands should inspect an existing listener when startup reports address-in-use"
+            )
+            expect(
+                fixedPortSite.command.contains("Recent log output:"),
+                "failed dev-server startup should expose the recent log tail for the next reasoning step"
+            )
+        } else {
+            failures.append("fixed-port package site should produce a local serve proposal")
+        }
+
         if let personalSite = proposal(
             "can you build my personal website so i can view it locally?",
             grants: [repoGrant, staticSiteGrant]
@@ -610,6 +728,24 @@ enum AssistantTerminalHarnessCheck {
             expect(personalSite.requiresConfirmation, "static site server startup should require confirmation")
         }
 
+        if let localStatus = proposal(
+            "is my personal website running locally right now?",
+            grants: [repoGrant, staticSiteGrant]
+        ) {
+            expect(
+                localStatus.command.hasPrefix("lsof -nP"),
+                "local running-status questions should inspect listeners instead of starting a server"
+            )
+            expect(
+                !localStatus.command.contains("npm run")
+                    && !localStatus.command.contains("python3 -m http.server"),
+                "local running-status questions should not start a server"
+            )
+            expect(!localStatus.requiresConfirmation, "read-only listener inspection should not require confirmation")
+        } else {
+            failures.append("local running-status question should produce a read-only listener inspection")
+        }
+
         let staticSiteSource = AssistantLocalFileToolSource(
             id: staticSiteGrant.path,
             path: staticSiteGrant.path,
@@ -622,6 +758,32 @@ enum AssistantTerminalHarnessCheck {
             grantedSourcesUsed: [AssistantToolSourceState(source: staticSiteSource)],
             lastListedFolder: AssistantToolSourceState(source: staticSiteSource)
         )
+        if case .directAnswer(let answer, _, let toolResult)? = router.preflight(
+            question: "what is in this folder? what is this project?",
+            grants: [repoGrant, staticSiteGrant],
+            environment: localEnvironment,
+            toolState: staticSiteToolState,
+            scope: .appOwnedOnly
+        ) {
+            expect(
+                toolResult?.toolName == .profileFolder,
+                "project folder question should use profile_folder"
+            )
+            expect(
+                answer.contains("static website") || answer.contains("website"),
+                "project profile should identify website/static-site evidence"
+            )
+            expect(
+                answer.contains("README.md") && answer.contains("Top-level contents:"),
+                "project profile should synthesize evidence and top-level contents"
+            )
+            expect(
+                !answer.hasPrefix("Read granted file."),
+                "project profile should not stop at raw read_file output"
+            )
+        } else {
+            failures.append("project folder question should return a synthesized profile")
+        }
         let priorServerResult = AssistantLocalFileToolResult(
             toolName: .runTerminalCommand,
             summary: "Terminal command completed successfully.",
@@ -663,9 +825,19 @@ enum AssistantTerminalHarnessCheck {
         )
         expect(
             actionPlanningPrompt.contains("PID: 2132")
+                && actionPlanningPrompt.contains("Exit code: 0")
                 && actionPlanningPrompt.contains("kill <pid>"),
             "selected-model action planning should expose recent terminal PIDs and process-stop guidance"
         )
+        if case nil = router.terminalCommandRequest(
+            question: "kill it",
+            grants: [staticSiteGrant],
+            toolState: priorServerState
+        ) {
+            expect(true, "deictic process-control prompts should not be executed as literal shell")
+        } else {
+            failures.append("deictic process-control prompts should route through selected-model planning, not literal terminal fallback")
+        }
         let parsedActionPlan = AssistantActionPlanParser().parse(
             """
             {"action":"run_terminal_command","arguments":{"command":"kill 2132","working_directory":"\(staticSiteGrant.path)","reason":"Stop the previously started local server.","intent":"generic","timeout_seconds":"15"}}
@@ -690,6 +862,21 @@ enum AssistantTerminalHarnessCheck {
             failures.append("model-planned kill should produce a confirmation proposal, got message: \(message)")
         case .proposals:
             failures.append("model-planned kill should produce one terminal proposal")
+        }
+        switch router.terminalCommandRequest(
+            command: "lsof -ti :8000 | xargs kill -9",
+            workingDirectory: staticSiteGrant.path,
+            reason: "Kill the process currently listening on a port.",
+            timeoutSeconds: 15,
+            intent: .generic
+        ) {
+        case .proposal(let portKillProposal):
+            expect(portKillProposal.requiresConfirmation, "piped xargs kill should require confirmation")
+            expect(portKillProposal.riskLevel == .high, "piped xargs kill should be high risk")
+        case .message(let message):
+            failures.append("piped xargs kill should produce a confirmation proposal, got message: \(message)")
+        case .proposals:
+            failures.append("piped xargs kill should produce one terminal proposal")
         }
 
         if let contextualSite = proposal(

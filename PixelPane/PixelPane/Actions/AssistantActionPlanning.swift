@@ -4,6 +4,7 @@ enum AssistantPlannedActionKind: String, Equatable, Sendable {
     case answerDirectly = "answer_directly"
     case listGrants = "list_grants"
     case listFolder = "list_folder"
+    case profileFolder = "profile_folder"
     case searchFiles = "search_files"
     case readFile = "read_file"
     case stageWriteProposal = "stage_write_proposal"
@@ -50,15 +51,17 @@ struct AssistantActionPlanningPromptBuilder: Sendable {
 
         Output only one JSON object. No markdown and no explanation outside JSON.
         JSON shape:
-        {"action":"answer_directly|list_grants|list_folder|search_files|read_file|stage_write_proposal|run_terminal_command","arguments":{"path":"","query":"","scope_path":"","command":"","working_directory":"","reason":"","intent":"generic|file_search|system_inspection","timeout_seconds":"120","operation":"create|replace|append","target_path":"","content":""},"final_answer":""}
+        {"action":"answer_directly|list_grants|list_folder|profile_folder|search_files|read_file|stage_write_proposal|run_terminal_command","arguments":{"path":"","query":"","scope_path":"","command":"","working_directory":"","reason":"","intent":"generic|file_search|system_inspection","timeout_seconds":"120","operation":"create|replace|append","target_path":"","content":""},"final_answer":""}
 
         Planning rules:
         - Use answer_directly only when no app tool is needed or when the observations already answer the user.
         - Use list_folder to inspect a granted folder before choosing a build, serve, test, or read action when the workspace is ambiguous.
+        - Use profile_folder when the user asks what a folder, project, repo, site, workspace, or codebase is.
         - Use search_files to find local files by topic, project, website, filename, or content inside granted locations.
         - Use read_file for a specific granted text file or a recent file the user refers to.
         - Use stage_write_proposal for local file create/edit requests. Include operation, target_path, and complete content only when the user delegated the content to you.
         - Use run_terminal_command for explicit shell commands, builds, tests, dev servers, process control, and system inspection. Provide command, working_directory, reason, optional intent, and optional timeout_seconds.
+        - If the user asks whether something is already running locally, inspect local listeners or recent verified URLs. Do not start a server unless the user asks to start, build, serve, open, view, or run it locally.
         - If the user asks to stop, end, or kill a previously started server/process, prefer the PID from recent terminal output and plan a command like kill <pid> in the same working directory.
         - If a recent terminal output includes a verified localhost URL or PID, use that observation instead of scanning unrelated ports.
         - Do not invent file access outside the granted locations. If no safe action is possible, use answer_directly and say what is missing.
@@ -116,6 +119,9 @@ struct AssistantActionPlanningPromptBuilder: Sendable {
                 if let workingDirectory = result.terminalWorkingDirectory {
                     lines.append("  Working directory: \(workingDirectory)")
                 }
+                if let exitCode = result.terminalExitCode {
+                    lines.append("  Exit code: \(exitCode)")
+                }
                 if let stdout = result.terminalStdout, !stdout.isEmpty {
                     lines.append("  stdout: \(truncate(stdout, limit: 1_200))")
                 }
@@ -145,6 +151,7 @@ struct AssistantActionPlanningPromptBuilder: Sendable {
                 if let terminal = observation.terminalResult {
                     lines.append("  Command: \(truncate(terminal.command, limit: 600))")
                     lines.append("  Working directory: \(terminal.workingDirectory)")
+                    lines.append("  Exit code: \(terminal.exitCode)")
                     if !terminal.stdout.isEmpty {
                         lines.append("  stdout: \(truncate(terminal.stdout, limit: 1_400))")
                     }
@@ -255,6 +262,8 @@ struct AssistantActionPlanParser: Sendable {
             return .listGrants
         case "list_folder", "listfolder", "folder", "inspect_folder":
             return .listFolder
+        case "profile_folder", "profilefolder", "profile_project", "inspect_project", "project_profile":
+            return .profileFolder
         case "search_files", "searchfiles", "file_search", "search":
             return .searchFiles
         case "read_file", "readfile", "read":

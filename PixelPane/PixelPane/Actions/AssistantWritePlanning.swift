@@ -58,9 +58,10 @@ struct AssistantWritePlanningPromptBuilder: Sendable {
         - Output only one JSON object. No markdown and no explanation.
         - The target_path must be inside one granted folder or exactly one granted file.
         - Prefer an explicitly named granted folder from the user prompt.
+        - If the current user request is a clarification to a prior write request, combine it with the prior write request and current tool context.
         - If the user refers to "this folder" or a recent folder, use the Recent folder when it is not "none".
         - If the user asks to format, reformat, clean up, polish, organize, or make a recent file nicer, use the current content from Recent file snippets and target that same file.
-        - If the user refers to "these results", "that output", "the previous result", "the last answer", or similar, use the relevant prior assistant answer in this current chat as the file content.
+        - If the user refers to "this", "these results", "that output", "the previous result", "the last answer", or similar, use the relevant prior assistant answer in this current chat as the file content.
         - Preserve referenced result lines exactly unless the user asks for a summary or rewrite.
         - Do not invent placeholder results when prior chat output answers the user's reference.
         - If the user does not provide a filename for a text/story/note, choose a reasonable filename such as story.txt or notes.md.
@@ -199,6 +200,9 @@ enum AssistantWriteIntentDetector {
             return false
         }
         let normalized = normalize(question)
+        if isPendingWriteClarification(normalized, grants: grants, toolState: toolState) {
+            return true
+        }
         let hasWriteIntent = hasWriteVerb(normalized) || hasTransformVerb(normalized)
         guard hasWriteIntent else { return false }
         if hasExplicitContentDelimiter(normalized) {
@@ -216,7 +220,29 @@ enum AssistantWriteIntentDetector {
            containsAny(normalized, ["this folder", "inside this", "in here", "there", "same folder"]) {
             return true
         }
-        if containsAny(normalized, ["text file", "txt file", ".txt", ".md", "markdown file", "story.txt", "notes.txt"]) {
+        if containsAny(normalized, [
+            "text file",
+            "txt file",
+            ".txt",
+            ".md",
+            "md file",
+            "markdown",
+            "markdown file",
+            "story.txt",
+            "notes.txt",
+            "within ",
+            "inside ",
+            "to a file",
+            "as a file",
+            "save this",
+            "save these",
+            "write this",
+            "write these"
+        ]) {
+            return true
+        }
+        if hasRecentActionableContext(toolState),
+           containsAny(normalized, ["this", "these", "that", "previous", "last answer", "last result"]) {
             return true
         }
         if hasTransformVerb(normalized), hasRecentWritableFile(toolState) {
@@ -236,6 +262,9 @@ enum AssistantWriteIntentDetector {
             "overwrite file",
             "text file",
             "txt file",
+            "md file",
+            ".md",
+            "markdown",
             "inside the file",
             "inside a file",
             "to a file",
@@ -285,6 +314,39 @@ enum AssistantWriteIntentDetector {
         (toolState.lastFileSources + toolState.grantedSourcesUsed).contains { $0.kindLabel == "File" }
     }
 
+    private nonisolated static func hasRecentActionableContext(_ toolState: AssistantToolState) -> Bool {
+        if !toolState.recentToolResults.isEmpty || !toolState.lastFileSnippets.isEmpty {
+            return true
+        }
+        return !toolState.lastFileSources.isEmpty || !toolState.grantedSourcesUsed.isEmpty
+    }
+
+    private nonisolated static func isPendingWriteClarification(
+        _ normalized: String,
+        grants: [LocalFileGrant],
+        toolState: AssistantToolState
+    ) -> Bool {
+        guard let recentWrite = toolState.recentToolResults.first(where: { $0.toolName == .stageWriteProposal }),
+              let summary = recentWrite.writeProposalSummary?.lowercased(),
+              summary.contains("name the target path") || summary.contains("target path and content") else {
+            return false
+        }
+        return mentionsGrantedLocation(normalized, grants: grants)
+            || fuzzyMentionsGrantedLocation(normalized, grants: grants)
+            || containsAny(normalized, [
+                "folder",
+                "file",
+                "path",
+                "directory",
+                "repo",
+                "workspace",
+                "here",
+                "there",
+                "this one",
+                "that one"
+            ])
+    }
+
     private nonisolated static func hasExplicitContentDelimiter(_ normalized: String) -> Bool {
         normalized.contains(" with content:")
             || normalized.contains(" content:")
@@ -302,6 +364,54 @@ enum AssistantWriteIntentDetector {
             return (!name.isEmpty && normalized.contains(name))
                 || normalized.contains(grant.path.lowercased())
         }
+    }
+
+    private nonisolated static func fuzzyMentionsGrantedLocation(
+        _ normalized: String,
+        grants: [LocalFileGrant]
+    ) -> Bool {
+        let tokens = normalized
+            .split { !$0.isLetter && !$0.isNumber && $0 != "-" && $0 != "_" }
+            .map(String.init)
+            .filter { $0.count >= 4 }
+        guard !tokens.isEmpty else { return false }
+        return grants.contains { grant in
+            let name = URL(fileURLWithPath: grant.path).lastPathComponent.lowercased()
+            guard name.count >= 4 else { return false }
+            return tokens.contains { token in
+                token == name || boundedEditDistance(token, name, maxDistance: 3) != nil
+            }
+        }
+    }
+
+    private nonisolated static func boundedEditDistance(
+        _ lhs: String,
+        _ rhs: String,
+        maxDistance: Int
+    ) -> Int? {
+        let left = Array(lhs)
+        let right = Array(rhs)
+        guard abs(left.count - right.count) <= maxDistance else { return nil }
+        if left.isEmpty { return right.count <= maxDistance ? right.count : nil }
+        if right.isEmpty { return left.count <= maxDistance ? left.count : nil }
+
+        var previous = Array(0...right.count)
+        for i in 1...left.count {
+            var current = [i] + Array(repeating: 0, count: right.count)
+            var rowMinimum = current[0]
+            for j in 1...right.count {
+                let substitution = previous[j - 1] + (left[i - 1] == right[j - 1] ? 0 : 1)
+                let insertion = current[j - 1] + 1
+                let deletion = previous[j] + 1
+                current[j] = min(substitution, insertion, deletion)
+                rowMinimum = min(rowMinimum, current[j])
+            }
+            guard rowMinimum <= maxDistance else { return nil }
+            previous = current
+        }
+
+        let distance = previous[right.count]
+        return distance <= maxDistance ? distance : nil
     }
 
     private nonisolated static func containsAny(_ value: String, _ needles: [String]) -> Bool {

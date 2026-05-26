@@ -1906,17 +1906,6 @@ struct ResultPanelView: View {
             return
         }
 
-        if let preflight = toolRouter.preflight(
-            question: question,
-            grants: fileGrants,
-            environment: toolEnvironment,
-            toolState: assistantToolState,
-            scope: .appOwnedOnly
-        ) {
-            handleAssistantToolPreflight(preflight, question: question)
-            return
-        }
-
         if toolRouter.shouldPlanWriteWithModel(
             question: question,
             grants: fileGrants,
@@ -1927,6 +1916,17 @@ struct ResultPanelView: View {
                 grants: fileGrants,
                 toolRouter: toolRouter
             )
+            return
+        }
+
+        if let preflight = toolRouter.preflight(
+            question: question,
+            grants: fileGrants,
+            environment: toolEnvironment,
+            toolState: assistantToolState,
+            scope: .appOwnedOnly
+        ) {
+            handleAssistantToolPreflight(preflight, question: question)
             return
         }
 
@@ -1944,6 +1944,20 @@ struct ResultPanelView: View {
             return
         }
 
+        if let terminalRequest = toolRouter.terminalCommandRequest(
+            question: question,
+            grants: fileGrants,
+            toolState: assistantToolState
+        ) {
+            handleAssistantTerminalCommandRequest(
+                terminalRequest,
+                question: question,
+                grants: fileGrants,
+                toolRouter: toolRouter
+            )
+            return
+        }
+
         if let fallbackPreflight = toolRouter.preflight(
             question: question,
             grants: fileGrants,
@@ -1953,38 +1967,6 @@ struct ResultPanelView: View {
         ) {
             handleAssistantToolPreflight(fallbackPreflight, question: question)
             return
-        }
-
-        let preModelTerminalProposals: [AssistantTerminalCommandProposal]
-        if let terminalRequest = toolRouter.terminalCommandRequest(
-            question: question,
-            grants: fileGrants,
-            toolState: assistantToolState
-        ) {
-            let proposals: [AssistantTerminalCommandProposal]
-            switch terminalRequest {
-            case .proposal(let proposal):
-                proposals = [proposal]
-            case .proposals(let batch):
-                proposals = batch
-            case .message:
-                proposals = []
-            }
-            if !proposals.isEmpty,
-               proposals.allSatisfy({ $0.intent == .fileSearch && !$0.requiresConfirmation }),
-               Self.shouldUseFileDiscoveryAsModelContext(question) {
-                preModelTerminalProposals = proposals
-            } else {
-                handleAssistantTerminalCommandRequest(
-                    terminalRequest,
-                    question: question,
-                    grants: fileGrants,
-                    toolRouter: toolRouter
-                )
-                return
-            }
-        } else {
-            preModelTerminalProposals = []
         }
 
         let cloudModeEnabled = routingSettings.effectiveMode == .cloud
@@ -2083,15 +2065,6 @@ struct ResultPanelView: View {
             let toolStateSnapshot = toolStateBeforeRun
             var updatedToolState = toolStateSnapshot
             var contextToolResults: [AssistantLocalFileToolResult] = []
-
-            for preModelTerminalProposal in preModelTerminalProposals {
-                let terminalResult = await toolRouter.runTerminalCommand(
-                    preModelTerminalProposal,
-                    grants: fileGrants
-                )
-                updatedToolState.record(terminalResult)
-                contextToolResults.append(terminalResult)
-            }
 
             let contextualReadResult = toolRouter.contextualFileReadResult(
                 question: question,
@@ -2236,24 +2209,18 @@ struct ResultPanelView: View {
         let lowValue = Set(["hi", "hello", "thanks", "thank you", "ok", "okay"])
         if lowValue.contains(normalized) { return false }
 
-        let actionSignals = [
-            "terminal", "shell", "command", "run", "execute", "build", "compile",
-            "test", "lint", "typecheck", "type check", "start", "serve", "server",
-            "localhost", "port", "locally", "stop", "end", "kill", "process", "pid",
-            "file", "files", "folder", "folders", "directory", "project", "repo",
-            "repository", "workspace", "site", "website", "read", "open", "search",
-            "find", "locate", "where is", "look for", "look through", "what is in",
-            "what's in", "whats in", "what do you see", "what can you see", "list"
-        ]
-        if actionSignals.contains(where: { normalized.contains($0) }) {
+        if !grants.isEmpty {
             return true
         }
 
         let hasRecentToolContext = !toolState.recentToolResults.isEmpty
             || toolState.lastListedFolder != nil
             || !toolState.lastFileSources.isEmpty
-        let deicticSignals = ["this", "that", "it", "them", "those", "these", "last one", "previous"]
-        return hasRecentToolContext && deicticSignals.contains { normalized.contains($0) }
+        if hasRecentToolContext {
+            return true
+        }
+
+        return normalized.contains("`") || normalized.hasPrefix("$ ")
     }
 
     private func planAssistantActionLoopWithModel(
@@ -2375,6 +2342,24 @@ struct ResultPanelView: View {
                         }
                         return
                     }
+                case .profileFolder:
+                    let result = toolRouter.localFolderProfileResult(
+                        question: question,
+                        path: plan.action.arguments["path"],
+                        grants: grants,
+                        toolState: loopToolState
+                    )
+                    loopToolState.record(result)
+                    observations.append(result)
+                    await MainActor.run {
+                        finishModelPlannedAction(
+                            question: question,
+                            answer: result.summary,
+                            backendLabel: "Local Files",
+                            toolResult: result
+                        )
+                    }
+                    return
                 case .searchFiles:
                     let query = plan.action.arguments["query"] ?? question
                     let result = toolRouter.localFileSearchResult(
@@ -2638,7 +2623,7 @@ struct ResultPanelView: View {
         let timeoutSeconds = Self.plannedTerminalTimeout(from: action.arguments["timeout_seconds"])
         let reason = action.arguments["reason"] ?? action.reason ?? "The selected model planned this terminal action."
         let request = toolRouter.terminalCommandRequest(
-            command: command,
+            command: Self.sanitizedModelPlannedTerminalCommand(command, intent: intent),
             workingDirectory: workingDirectory,
             reason: reason,
             timeoutSeconds: timeoutSeconds,
@@ -2770,6 +2755,21 @@ struct ResultPanelView: View {
             return 120
         }
         return min(600, max(15, seconds))
+    }
+
+    private static func sanitizedModelPlannedTerminalCommand(
+        _ command: String,
+        intent: AssistantTerminalCommandIntent
+    ) -> String {
+        guard intent == .systemInspection else { return command }
+        let normalized = normalizedQuestion(command)
+        if normalized.contains("ps aux --sort") || normalized.contains("ps -aux --sort") {
+            if normalized.contains("%mem") || normalized.contains("memory") {
+                return "ps aux | sort -nrk 4 | head -n 15"
+            }
+            return "ps aux | sort -nrk 3 | head -n 15"
+        }
+        return command
     }
 
     private func finishModelPlannedTerminalConfirmation(
@@ -3178,11 +3178,25 @@ struct ResultPanelView: View {
         setOutputState(askOutputState(), for: .ask)
         updateExpandedNotchSizeIfNeeded()
 
+        let toolStateSnapshot = assistantToolState
         Task {
             let toolResult = await toolRouter.runTerminalCommand(proposal, grants: grants)
+            let continuation = await Self.processTerminationContinuation(
+                after: toolResult,
+                question: question,
+                grants: grants,
+                toolState: toolStateSnapshot,
+                toolRouter: toolRouter
+            )
             await MainActor.run {
                 assistantToolState.record(toolResult)
-                let answer = Self.terminalAnswer(from: toolResult)
+                if let inspection = continuation?.inspection {
+                    assistantToolState.record(inspection)
+                }
+                if let pendingProposal = continuation?.pendingProposal {
+                    pendingTerminalCommandProposal = pendingProposal
+                }
+                let answer = continuation?.answer ?? Self.terminalAnswer(from: toolResult)
                 if let index = askTurns.indices.last {
                     askTurns[index] = AskConversationTurn(
                         question: askTurns[index].question,
@@ -3198,6 +3212,143 @@ struct ResultPanelView: View {
                 focusChatInputSoon()
             }
         }
+    }
+
+    private struct TerminalContinuation {
+        let answer: String
+        let inspection: AssistantLocalFileToolResult?
+        let pendingProposal: AssistantTerminalCommandProposal?
+    }
+
+    private static func processTerminationContinuation(
+        after result: AssistantLocalFileToolResult,
+        question: String,
+        grants: [LocalFileGrant],
+        toolState: AssistantToolState,
+        toolRouter: AssistantToolRouter
+    ) async -> TerminalContinuation? {
+        guard let terminal = result.terminalResult,
+              isFailedProcessTermination(terminal) else {
+            return nil
+        }
+        guard let port = referencedLocalhostPort(question: question, toolState: toolState, currentResult: result) else {
+            return nil
+        }
+
+        let inspectionRequest = toolRouter.terminalCommandRequest(
+            command: "lsof -nP -iTCP:\(port) -sTCP:LISTEN",
+            workingDirectory: terminal.workingDirectory,
+            reason: "Check which process is currently listening on port \(port) after the previous process ID was not running.",
+            timeoutSeconds: 15,
+            intent: .systemInspection
+        )
+        guard case .proposal(let inspectionProposal) = inspectionRequest,
+              !inspectionProposal.requiresConfirmation else {
+            return nil
+        }
+
+        let inspection = await toolRouter.runTerminalCommand(inspectionProposal, grants: grants)
+        let pids = listenerPIDs(from: inspection.terminalResult?.stdout ?? "")
+        guard !pids.isEmpty else {
+            let answer = """
+            The previous process ID was not running, so I checked port \(port) next.
+
+            I did not find any current listener on `localhost:\(port)`.
+
+            Previous error:
+            ```
+            \(terminal.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+            ```
+            """
+            return TerminalContinuation(answer: answer, inspection: inspection, pendingProposal: nil)
+        }
+
+        let killCommand = "kill \(pids.joined(separator: " "))"
+        let killRequest = toolRouter.terminalCommandRequest(
+            command: killCommand,
+            workingDirectory: terminal.workingDirectory,
+            reason: "Kill the process currently listening on port \(port) after the previous PID was stale.",
+            timeoutSeconds: 15,
+            intent: .generic
+        )
+        guard case .proposal(let killProposal) = killRequest else {
+            return nil
+        }
+
+        let answer = """
+        The previous PID was not running, so I checked port \(port) and found current listener PID\(pids.count == 1 ? "" : "s") \(pids.joined(separator: ", ")).
+
+        I need your permission to kill the process\(pids.count == 1 ? "" : "es") currently listening on `localhost:\(port)`.
+
+        Inspection output:
+        ```
+        \((inspection.terminalResult?.stdout ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
+        ```
+        """
+        return TerminalContinuation(answer: answer, inspection: inspection, pendingProposal: killProposal)
+    }
+
+    private static func isFailedProcessTermination(_ terminal: AssistantTerminalCommandResult) -> Bool {
+        let normalizedCommand = terminal.command.lowercased()
+        let normalizedError = terminal.stderr.lowercased()
+        guard terminal.exitCode != 0 else { return false }
+        return (normalizedCommand.hasPrefix("kill ")
+            || normalizedCommand.contains(" kill ")
+            || normalizedCommand.contains("xargs kill")
+            || normalizedCommand.hasPrefix("pkill ")
+            || normalizedCommand.hasPrefix("killall "))
+            && (normalizedError.contains("no such process") || normalizedError.contains("illegal pid"))
+    }
+
+    private static func referencedLocalhostPort(
+        question: String,
+        toolState: AssistantToolState,
+        currentResult: AssistantLocalFileToolResult
+    ) -> String? {
+        let texts = [question, currentResult.terminalResult?.stdout, currentResult.terminalResult?.stderr]
+            .compactMap { $0 } + toolState.recentToolResults.flatMap { result in
+                [result.terminalStdout, result.terminalStderr, result.terminalCommand].compactMap { $0 }
+            }
+        for text in texts {
+            if let port = firstPort(in: text) {
+                return port
+            }
+        }
+        return nil
+    }
+
+    private static func firstPort(in text: String) -> String? {
+        let patterns = [
+            #"(?i)\bport\s+([0-9]{2,5})\b"#,
+            #"(?i)(?:localhost|127\.0\.0\.1|\*):([0-9]{2,5})\b"#
+        ]
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            guard let match = regex.firstMatch(in: text, range: range),
+                  match.numberOfRanges > 1,
+                  let portRange = Range(match.range(at: 1), in: text) else {
+                continue
+            }
+            let port = String(text[portRange])
+            guard let value = Int(port), (1...65_535).contains(value) else { continue }
+            return port
+        }
+        return nil
+    }
+
+    private static func listenerPIDs(from lsofOutput: String) -> [String] {
+        var seen: Set<String> = []
+        var pids: [String] = []
+        for line in lsofOutput.split(separator: "\n").map(String.init) {
+            let fields = line.split { $0 == " " || $0 == "\t" }.map(String.init)
+            guard fields.count >= 2, fields[0] != "COMMAND", Int(fields[1]) != nil else { continue }
+            if !seen.contains(fields[1]) {
+                seen.insert(fields[1])
+                pids.append(fields[1])
+            }
+        }
+        return pids
     }
 
     nonisolated private static func terminalBatchAnswer(from results: [AssistantLocalFileToolResult]) -> String {
@@ -3226,38 +3377,6 @@ struct ResultPanelView: View {
             return sections.joined(separator: "\n")
         }
         return results.map(Self.terminalAnswer(from:)).joined(separator: "\n\n")
-    }
-
-    private static func shouldUseFileDiscoveryAsModelContext(_ question: String) -> Bool {
-        let normalized = normalizedQuestion(question)
-        let contentSignals = [
-            "what is in",
-            "what's in",
-            "list",
-            "summarize",
-            "tell me",
-            "experience",
-            "background",
-            "work",
-            "roles",
-            "education",
-            "skills",
-            "whole thing",
-            "full thing",
-            "read it"
-        ]
-        let existenceOnlySignals = [
-            "can you see",
-            "do you see",
-            "is there",
-            "where is",
-            "locate"
-        ]
-        if existenceOnlySignals.contains(where: { normalized.contains($0) }),
-           !contentSignals.contains(where: { normalized.contains($0) }) {
-            return false
-        }
-        return contentSignals.contains { normalized.contains($0) }
     }
 
     private static func mergedLocalFileContext(
