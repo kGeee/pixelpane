@@ -551,7 +551,7 @@ private struct LocalFilesSettingsView: View {
     var body: some View {
         Form {
             Section("Local File Access") {
-                Text("Pixel Pane can read and search only the files and folders you grant here. Local file changes require an explicit confirmation that names the target path before anything is written.")
+                Text("Pixel Pane can read and search only the files and folders you grant here. Terminal commands run only from granted folders, and risky commands require explicit confirmation before they run.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
 
@@ -609,7 +609,7 @@ private struct LocalFilesSettingsView: View {
             }
 
             Section("Privacy") {
-                Text("In Local mode, file snippets and confirmed file writes stay on this Mac. In Cloud mode, relevant snippets may be sent to Pixel Pane Cloud because you selected cloud routing; file writes still run locally only after confirmation.")
+                Text("In Local mode, file snippets, confirmed file writes, and terminal output stay on this Mac. In Cloud mode, relevant snippets may be sent to Pixel Pane Cloud because you selected cloud routing; file writes and terminal commands still run locally only.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }

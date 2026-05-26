@@ -1,6 +1,6 @@
 # Pixel Pane Story Backlog
 
-Last updated: 2026-05-24 (ASSIST-019 follow-up fixed)
+Last updated: 2026-05-26 (ASSIST-041 current-scope project search)
 
 This is the story-level source of truth. Claude/Codex should use this file when you say:
 
@@ -23,9 +23,9 @@ When asked to complete an epic, do not attempt the whole epic in one pass. Compl
 
 ## Current Recommended Story
 
-`ASSIST-020` - Add tool-use transcript and source transparency UI is the current recommended story.
+`ASSIST-040` - Replace hard-coded terminal/file intent shortcuts with a model-planned action loop is the current recommended story.
 
-Reason: The app now has a model-agnostic harness, explicit assistant tool schemas, persistent per-chat tool state, transient image/OCR context, local file tools, and source-aware context packing. The next slice should expose the used sources/tools in the UI.
+Reason: Recent QA shows the product is improving, but the remaining brittle behavior comes from first-match natural-language shortcuts competing with the selected model's reasoning. The next sprint slice should reduce deterministic task selection and move toward a Codex/Claude Code-style observe-plan-act loop where Pixel Pane owns policy and execution while the chosen model plans actions.
 
 ---
 
@@ -201,7 +201,7 @@ Acceptance:
 
 - [ ] `LSUIElement` is enabled.
 - [ ] Menu bar item exposes Capture, Settings, Show Last Result when available, and Quit.
-- [ ] App builds successfully.
+- [x] App builds successfully.
 - [ ] Manual QA confirms no Dock icon.
 
 Current state: implemented, needs manual QA.
@@ -1283,6 +1283,25 @@ Notes:
 | `ASSIST-020` | Add tool-use transcript and source transparency UI | Not Started | `ASSIST-017`, `ASSIST-018`, `PRIV-006` |
 | `ASSIST-021` | Add prompt-injection and tool-safety hardening for files/images | Not Started | `ASSIST-018`, `ASSIST-019` |
 | `ASSIST-022` | Add cross-model assistant harness QA matrix | Not Started | `ASSIST-016`, `ASSIST-017`, `ASSIST-018`, `ASSIST-019`, `ASSIST-020`, `ASSIST-021` |
+| `ASSIST-023` | Add bounded terminal tool support for granted repos | Done | `ASSIST-016`, `ASSIST-018`, `ASSIST-019` |
+| `ASSIST-024` | Fix follow-up granted-source routing for local file tools | Done | `ASSIST-016`, `ASSIST-018`, `ASSIST-019`, `ASSIST-023` |
+| `ASSIST-025` | Add terminal-backed file discovery and edit target resolution | Done | `ASSIST-016`, `ASSIST-018`, `ASSIST-019`, `ASSIST-023`, `ASSIST-024` |
+| `ASSIST-026` | Add mode-independent agentic file discovery/read loop | Done | `ASSIST-016`, `ASSIST-018`, `ASSIST-019`, `ASSIST-023`, `ASSIST-025` |
+| `ASSIST-027` | Add general terminal agent with risk-based approval | Done | `ASSIST-016`, `ASSIST-023`, `ASSIST-026` |
+| `ASSIST-028` | Fix folder-selection continuation loops in the agent harness | Done | `ASSIST-018`, `ASSIST-024`, `ASSIST-026`, `ASSIST-027` |
+| `ASSIST-029` | Add copy-chat debug export for agent transcripts | Done | `ASSIST-004`, `ASSIST-019`, `ASSIST-020` |
+| `ASSIST-030` | Harden dev-server and natural-language terminal routing from copied transcripts | Done | `ASSIST-027`, `ASSIST-029` |
+| `ASSIST-031` | Add modular workspace profiling for agentic terminal planning | Done | `ASSIST-027`, `ASSIST-030` |
+| `ASSIST-032` | Route delegated file writes through selected-model planning | Done | `ASSIST-003`, `ASSIST-018`, `ASSIST-026`, `ASSIST-027` |
+| `ASSIST-033` | Ground delegated writes in current-session observations | Done | `ASSIST-004`, `ASSIST-019`, `ASSIST-032` |
+| `ASSIST-034` | Route recent-file rewrite follow-ups through app-owned edit planning | Done | `ASSIST-018`, `ASSIST-019`, `ASSIST-032`, `ASSIST-033` |
+| `ASSIST-035` | Constrain model-planned writes to the app-resolved named grant | Done | `ASSIST-018`, `ASSIST-032`, `ASSIST-033`, `ASSIST-034` |
+| `ASSIST-036` | Resolve named granted folders for local file listing | Done | `ASSIST-018`, `ASSIST-024`, `ASSIST-028`, `ASSIST-035` |
+| `ASSIST-037` | Read files referenced from the last folder listing | Done | `ASSIST-018`, `ASSIST-019`, `ASSIST-024`, `ASSIST-036` |
+| `ASSIST-038` | Prefer recent source observations over broad grant/search fallbacks | Done | `ASSIST-018`, `ASSIST-019`, `ASSIST-024`, `ASSIST-037` |
+| `ASSIST-039` | Prefer workspace execution over generic port inspection | Done | `ASSIST-027`, `ASSIST-031`, `ASSIST-038` |
+| `ASSIST-040` | Replace hard-coded terminal/file intent shortcuts with a model-planned action loop | Not Started | `ASSIST-016`, `ASSIST-018`, `ASSIST-019`, `ASSIST-027`, `ASSIST-031`, `ASSIST-039` |
+| `ASSIST-041` | Scope deictic project searches to the current observed folder | Done | `ASSIST-018`, `ASSIST-019`, `ASSIST-038`, `ASSIST-040` |
 
 ### `ASSIST-001` - Make The Notch A Chat-First Assistant Surface
 
@@ -1349,7 +1368,8 @@ Acceptance:
 
 Notes:
 
-- Implemented 2026-05-21. Added a local `ChatHistoryStore` backed by UserDefaults for text-only chat transcripts. Plain notch chats resume the latest assistant session, capture chats persist their message transcript with a lightweight "Screen region" label, and screenshots are not saved in history. The composer now has a small history menu for recent chats and a New Chat action. Settings now includes a History tab with saved-chat count, per-chat delete, and Clear History. Debug build succeeded.
+- Implemented 2026-05-21. Added a local `ChatHistoryStore` backed by UserDefaults for text-only chat transcripts. Capture chats persist their message transcript with a lightweight "Screen region" label, and screenshots are not saved in history. The composer now has a small history menu for explicitly reopening recent chats and a New Chat action. Settings now includes a History tab with saved-chat count, per-chat delete, and Clear History. Debug build succeeded.
+- Follow-up 2026-05-26: Fresh assistant chats no longer auto-restore the latest saved assistant session. History remains per saved chat and is only reintroduced by explicitly reopening a session; new chats start with empty turns/tool state unless they are capture-context chats.
 - Follow-up 2026-05-22: Split the composer controls so New Chat is a direct small action and History is a labeled recent-chat menu with relative recency, keeping the UI minimal while making the two entry points easier to find. Full search/browser work remains tracked in `ASSIST-006`.
 
 ### `ASSIST-005` - Expand Local Model Setup To Text-Only MLX Models
@@ -1567,7 +1587,7 @@ Implementation order:
 5. `ASSIST-021` hardens untrusted file/image content and side-effect boundaries.
 6. `ASSIST-022` proves the same flow works across local text, local vision, cloud, and weak/no-tool models.
 
-Non-goals for this sprint: autonomous computer control, background screen monitoring, broad shell access, unconfirmed file writes, remote write tools, persistent screenshot memory, or model-specific hard-coded answers.
+Non-goals for this sprint: autonomous computer control, background screen monitoring, unbounded shell access, unconfirmed file writes, remote write tools, persistent screenshot memory, or model-specific hard-coded answers.
 
 ### `ASSIST-016` - Add Model-Agnostic Assistant Capability Contract And Tool Router
 
@@ -1666,6 +1686,10 @@ Notes:
 
 - This should stay minimal in the notch. Prefer a compact source row/details popover over large cards.
 - Risk: Low-medium. Mostly UI clarity, but it depends on structured outputs from the preceding stories.
+- Follow-up 2026-05-26: Notch assistant loading-state polish replaced the static `Thinking...` chat placeholder with a compact animated indicator. This did not start or complete the broader `ASSIST-020` source transparency UI story.
+- Follow-up 2026-05-26: Notch assistant transcript polish keeps the latest chat turn anchored to the bottom during new/streaming answers and uses automatic scroll indicators so the scrollbar hides when idle. This did not start or complete the broader `ASSIST-020` source transparency UI story.
+- Follow-up 2026-05-26: Assistant answers now render absolute `/Users/...` paths as clickable Finder reveal controls. This did not start or complete the broader `ASSIST-020` source transparency UI story.
+- Follow-up 2026-05-26: Assistant answers now also resolve relative `- File:` and `- Folder:` rows from recent folder listings against tool-state folders, so listed child items are clickable Finder reveal controls. This did not start or complete the broader `ASSIST-020` source transparency UI story.
 
 ### `ASSIST-021` - Add Prompt-Injection And Tool-Safety Hardening For Files/Images
 
@@ -1700,3 +1724,380 @@ Acceptance:
 Notes:
 
 - This is the exit story for the sprint. Do not mark the harness sprint complete until this matrix has run or each unrun case has an explicit blocker.
+
+### `ASSIST-023` - Add Bounded Terminal Tool Support For Granted Repos
+
+Auto-created during terminal-harness work on 2026-05-24.
+
+Goal: Let the notch assistant reliably run terminal commands for repo work through Pixel Pane's app-owned tool layer, without hard-coding project-specific paths or commands.
+
+Acceptance:
+
+- [x] Terminal execution is represented as an assistant tool with schema, risk metadata, validation, and source/tool-state recording.
+- [x] Commands run only from an existing user-granted folder working directory.
+- [x] Explicit commands such as backticked shell commands, `terminal: ...`, `shell: ...`, and `$ ...` can be routed to the terminal tool.
+- [x] Common repo tasks such as build/test/lint can be discovered from repo helpers/manifests instead of hard-coded to Pixel Pane.
+- [x] Terminal execution captures stdout, stderr, exit code, duration, timeout, and truncation metadata without blocking the UI.
+- [x] Risky/destructive commands require visible confirmation before running; privileged shell patterns are blocked.
+- [x] Settings explains that terminal commands are local and tied to granted folders.
+- [x] App builds successfully.
+
+Notes:
+
+- Implemented 2026-05-24. Added `run_terminal_command` to the assistant tool registry and a bounded `AssistantTerminalCommandExecutor` that runs shell commands off the main actor with timeout and output caps. Added `AssistantTerminalCommandPlanner` for explicit shell requests plus repo task discovery from executable scripts, Makefile targets, package.json scripts, Swift/Cargo/Go manifests, and Xcode projects/workspaces. The Ask flow now routes terminal requests before model calls, auto-runs low/medium-risk commands, and stages a confirmation panel for high-risk commands. Local verification wrapper build succeeded.
+
+### `ASSIST-024` - Fix Follow-Up Granted-Source Routing For Local File Tools
+
+Auto-created during follow-up tool-routing QA on 2026-05-24.
+
+Goal: Make the assistant reliably carry a selected granted source across follow-up file and write requests, especially when the selected local model does not use native tool calls.
+
+Acceptance:
+
+- [x] Ordinal follow-ups such as "what is the second one?" resolve through the app-owned local file tool layer instead of model chat.
+- [x] Selecting a single granted folder updates the persistent assistant tool state for later "this folder" requests.
+- [x] Ambiguous multi-folder list prompts do not silently set the first folder as the active folder.
+- [x] Folder-content requests such as "what is in the second one?" can list the referenced granted folder directly.
+- [x] Confirmed local write proposals resolve relative target paths against the active folder when one is selected.
+- [x] App builds successfully.
+
+Notes:
+
+- Implemented 2026-05-24. Added granted-source ordinal reference routing to `AssistantLocalFileToolExecutor`, tightened `AssistantToolState.record` so only single-folder results become active, and passed active-folder context into `LocalFileWriteProposalParser`. Added support for explicit `edit file`, `modify file`, `update file`, and `overwrite file` write proposal prefixes. Local verification wrapper build succeeded, and compiled harness checks reproduced the screenshot flow plus relative write routing to the selected grant.
+
+### `ASSIST-025` - Add Terminal-Backed File Discovery And Edit Target Resolution
+
+Auto-created during terminal-harness reliability work on 2026-05-24.
+
+Goal: Make file existence/search questions and follow-up edits reliably use deterministic terminal/file-tool execution inside user-granted folders before falling back to model chat.
+
+Acceptance:
+
+- [x] Specific file discovery questions such as "can you see my resume within this granted folder?" route to a terminal-backed file search instead of a generic grant list or model denial.
+- [x] The file search command is discovered from the granted working directory and uses `rg --files` when available with a `find` fallback; it does not hard-code user paths or project-specific file names.
+- [x] Terminal file-search output is parsed into structured file sources and persisted into assistant tool state for follow-up reads/edits.
+- [x] Generic grant-list answers no longer block specific file discovery prompts when the user asks about a concrete file type or target.
+- [x] Confirmed local write proposals can resolve relative or basename targets against recent terminal/file sources and recursively inside granted folders while still requiring visible confirmation before writing.
+- [x] App builds successfully.
+
+Notes:
+
+- Implemented 2026-05-24. Added a file-search terminal intent, terminal search planning for concrete file-location prompts, structured parsing of discovered file paths into assistant tool state, and follow-up edit target resolution against recent/nested files. Compiled harness verification against `/Users/nayak/Documents/snehithnayak.github.io` found `resume.pdf` and `resume-latex/resume.tex`, and a no-write edit proposal for `resume.tex` resolved to the nested LaTeX source. Local verification wrapper build succeeded.
+
+### `ASSIST-026` - Add Mode-Independent Agentic File Discovery/Read Loop
+
+Auto-created during agentic harness hardening on 2026-05-25.
+
+Goal: Make Pixel Pane behave like an app-owned local agent harness: run safe terminal/file discovery and read steps before model generation, regardless of whether the selected route is MLX Text, MLX Vision, Apple local text, or Cloud Mode.
+
+Acceptance:
+
+- [x] The same terminal/file tool planning runs before local and cloud model generation.
+- [x] Local Mode keeps all terminal execution, file discovery, file reads, and model prompting local.
+- [x] App-generated low-risk file discovery commands run automatically; risky or user-authored terminal commands still require confirmation.
+- [x] Concrete file-content prompts can fan out terminal searches across multiple granted folders instead of asking the user to choose a folder.
+- [x] Discovered files can be read by the app-owned file tool and packed into model context before either local or cloud routing.
+- [x] Terminal result UI avoids dumping long generated shell commands by default and shows concise folder/source summaries.
+- [x] App builds successfully.
+
+Notes:
+
+- Implemented 2026-05-25. Added batched terminal file-search proposals, automatic low-risk discovery, contextual read selection for discovered files, larger focused file-read previews, and mode-independent prompt packing. Harness verification for `what is in my resume? list my experience` with two granted folders produced two automatic file-search proposals, required no confirmation, found `/Users/nayak/Documents/snehithnayak.github.io/resume-latex/resume.tex`, read that file, and packed it into both Local and Cloud prompts with route-specific labels. `PixelPane/Scripts/verify-debug-build.sh` succeeded.
+
+### `ASSIST-027` - Add General Terminal Agent With Risk-Based Approval
+
+Auto-created during agentic harness hardening on 2026-05-25.
+
+Goal: Let Pixel Pane use the terminal as a model-agnostic agent capability for system inspection, repo work, scripts, and file operations, while automatically running only safe read-only commands and asking permission for commands that can mutate state, run code, touch the network, or affect the system.
+
+Acceptance:
+
+- [x] Terminal planning is owned by the app harness and works regardless of Local Mode, Cloud Mode, or selected local model.
+- [x] General safe system-inspection prompts can plan and run terminal commands without requiring a granted folder.
+- [x] Explicit shell prompts such as `run ps aux | head -n 5` are detected and preserve the requested command.
+- [x] Potentially risky commands, including `mkdir`, `touch`, writes/redirection, installs, builds, scripts, network commands, kill/process-control commands, and `sudo`/privileged commands require visible confirmation.
+- [x] Known shell-bomb patterns remain blocked.
+- [x] Repo build/test/lint discovery still uses manifests and helper scripts instead of hard-coded project commands.
+- [x] Compiled harness checks cover process inspection, explicit commands, bare shell commands, folder creation approval, build-script approval, and privileged-command approval.
+- [x] App builds successfully.
+
+Notes:
+
+- Implemented 2026-05-25. Terminal working-directory validation now allows any existing folder, so general computer queries can run from the user's home folder without a file grant. The planner maps common system questions to bounded commands for running processes, disk space, memory, OS info, date/time, and local IP info; it also detects natural folder-creation requests, broader explicit shell commands, and bare shell commands such as `echo harness-ok`. The risk policy now auto-runs low-risk read-only commands but requires confirmation for write-like, build/script, package-manager, network, process-control, privileged, and system-affecting commands. Added `PixelPane/Scripts/assistant-terminal-harness-check.swift`; it passed, as did `PixelPane/Scripts/verify-debug-build.sh`.
+- Follow-up 2026-05-25. Fixed system-inspection terminal runs so prompts like `what are the top running processes on my computer?` use a neutral home working directory instead of inheriting the most recent repo/folder context. Added a `systemInspection` terminal intent and a concise process summary formatter so the chat shows top process names/PIDs/CPU/memory instead of dumping raw `ps aux` output. The compiled harness now covers the prior-regression case with recent repo tool state, and `PixelPane/Scripts/verify-debug-build.sh` succeeded.
+
+### `ASSIST-028` - Fix Folder-Selection Continuation Loops In The Agent Harness
+
+Auto-created during agentic harness hardening on 2026-05-25.
+
+Goal: Make granted-folder selection behave like an actual agent tool action instead of a placeholder that can loop when the user replies with an ordinal follow-up.
+
+Acceptance:
+
+- [x] Ordinal replies such as `1st one` after an ambiguous folder prompt select the referenced granted folder and immediately list its top-level contents.
+- [x] Ambiguous folder prompts record an explicit pending folder-selection continuation in assistant tool state.
+- [x] Resolving that pending continuation clears it, avoiding stale follow-up routing.
+- [x] Numeric ordinal aliases such as `1st`, `2nd`, and `3rd` work in the same routing path as word aliases.
+- [x] The harness no longer replies with `Inspect /path` placeholders for granted folder selection.
+- [x] Compiled harness checks cover the ambiguous-folder and ordinal-selection flow through explicit pending tool state.
+- [x] App builds successfully.
+
+Notes:
+
+- Implemented 2026-05-25. `AssistantLocalFileToolExecutor` now turns directory source references into `list_folder` execution directly. Ambiguous folder prompts record a `selectFolderToList` pending continuation with the candidate sources, and ordinal follow-ups resolve against that state instead of a phrase-specific shortcut. The compiled harness check now reproduces the screenshot flow with two folder grants: `what is in this folder?` asks which grant to inspect and records pending state; `1st one` lists the selected folder and clears pending state. `PixelPane/Scripts/verify-debug-build.sh` succeeded.
+
+### `ASSIST-029` - Add Copy-Chat Debug Export For Agent Transcripts
+
+Auto-created during agentic harness debugging on 2026-05-25.
+
+Goal: Let the user copy a complete temporary chat/debug transcript so agent behavior can be pasted into a development thread and improved.
+
+Acceptance:
+
+- [x] The assistant composer exposes a compact `Copy Chat` control.
+- [x] The copied transcript includes user prompts, assistant answers, backend labels, and model statistics where available.
+- [x] The transcript includes current route, response style, capture context status, granted file sources, active image context metadata, recent tool results, selected/pending source state, and pending terminal or file-write confirmations.
+- [x] The export avoids retaining or serializing screenshot image pixels.
+- [x] App builds successfully.
+
+Notes:
+
+- Implemented 2026-05-25. Added an icon-only `Copy Chat` button next to the existing Files/History/Image controls in the notch composer. It copies a Markdown-style debug transcript to the pasteboard, including conversation turns and the app-owned tool state needed to debug terminal/file harness behavior. `PixelPane/Scripts/verify-debug-build.sh` succeeded.
+
+### `ASSIST-030` - Harden Dev-Server And Natural-Language Terminal Routing From Copied Transcripts
+
+Auto-created during agentic harness debugging on 2026-05-25.
+
+Goal: Fix copied-transcript regressions where the assistant narrated fake terminal work, failed to start/check local dev servers agentically, or executed natural-language localhost troubleshooting as a shell command.
+
+Acceptance:
+
+- [x] Natural-language localhost troubleshooting such as `http://localhost:3000 doesnt work. is it another port?` routes to a safe listening-port inspection instead of executing the sentence as a command.
+- [x] Explicit command-shaped prompts such as `curl http://localhost:3000` still route as terminal commands.
+- [x] Site/local-view prompts discover package dev-server scripts from `package.json` without hardcoded project paths.
+- [x] Follow-ups such as `yes start it` can use selected/recent granted repo context to propose the discovered dev-server command.
+- [x] Dev-server startup runs only after visible confirmation and reports likely `localhost` URLs from listening ports.
+- [x] Cloud and local model prompts are instructed not to claim file, terminal, build, or server actions unless Pixel Pane has actual app tool results for them.
+- [x] Focused harness checks cover the copied-transcript regressions.
+- [x] App builds successfully.
+
+Notes:
+
+- Implemented 2026-05-25. `AssistantRepositoryCommandDiscoverer` now has a `serve` task that detects `dev`, `start`, `serve`, or `preview` package scripts and wraps them in a confirmation-gated background command that emits a log path plus `lsof` listening-port output. Terminal planning now treats local dev-server and localhost troubleshooting as first-class system-inspection flows, while the shell-command classifier distinguishes URL-containing natural-language questions from explicit command-shaped input. Context packing now tells both local and cloud routes not to narrate imagined tool execution. The compiled harness check and `PixelPane/Scripts/verify-debug-build.sh` succeeded.
+
+### `ASSIST-031` - Add Modular Workspace Profiling For Agentic Terminal Planning
+
+Auto-created during agentic harness architecture hardening on 2026-05-25.
+
+Goal: Replace first-match command discovery with an evidence-based workspace profiling layer so terminal planning can choose the right local target across apps, websites, packages, model folders, document folders, image folders, and broad filesystem grants.
+
+Acceptance:
+
+- [x] Workspace profiling is separated from terminal command planning.
+- [x] Granted folders are profiled for evidence such as package scripts, static websites, Xcode projects, Swift/Rust/Go/Python projects, model artifacts, image collections, and document collections.
+- [x] Terminal build/test/lint/serve planning selects a workspace by prompt/task evidence before discovering commands.
+- [x] Static websites without `package.json` can be served locally through a generic local HTTP server.
+- [x] Package dev-server startup scopes port discovery to the launched process tree and reports verified local URLs instead of arbitrary system listeners.
+- [x] Copied-transcript regression is covered: a personal static website grant wins over an unrelated nested Pixel Pane backend package.
+- [x] Focused harness checks cover static website selection, nested backend selection, explicit terminal commands, system inspection, folder creation approval, and folder-selection continuations.
+- [x] App builds successfully.
+
+Notes:
+
+- Implemented 2026-05-25. Added `AssistantWorkspaceIntelligence.swift` with `AssistantWorkspaceProfiler` and `AssistantWorkspaceTargetResolver`. The terminal planner now resolves workspace targets before command discovery for build/test/lint/serve tasks, while explicit shell and general system inspection keep their existing neutral working-directory behavior. Static websites are served with `python3 -m http.server 0 --bind 127.0.0.1` and verified via the launched PID's listening socket. Package dev servers now inspect the launched process tree and log-discovered localhost URLs rather than listing every matching port on the machine. The terminal result formatter prioritizes `Verified URL:` lines. The compiled harness check and `PixelPane/Scripts/verify-debug-build.sh` succeeded.
+
+### `ASSIST-032` - Route Delegated File Writes Through Selected-Model Planning
+
+Auto-created during harness architecture review on 2026-05-26.
+
+Goal: Remove the brittle hard-coded write-parser failure path so the selected local/cloud model can choose filenames and content for delegated local write tasks, while Pixel Pane keeps grant validation and confirmation-gated execution.
+
+Acceptance:
+
+- [x] Natural write prompts that delegate creative/practical choices, such as creating a short story in a granted folder, are not rejected for missing explicit content.
+- [x] The selected model plans the write draft as structured JSON, including operation, target path, and complete content.
+- [x] Pixel Pane validates the model-chosen target against user-granted files/folders before staging any proposal.
+- [x] Writes still use the existing visible confirmation UI and no file is changed until Confirm.
+- [x] Natural file-write prompts are not misrouted to terminal/test/build command planning.
+- [x] Harness checks cover delegated writes, model-planned relative target resolution, and the copied `write "this is a test"` regression.
+- [x] App builds successfully.
+
+Notes:
+
+- Implemented 2026-05-26. Added `AssistantWritePlanning.swift` for selected-model write planning prompts, JSON draft parsing, and natural write intent detection. `ResultPanelView` now routes delegated write prompts through the selected backend first, then converts the model draft into the existing confirmation-gated `LocalFileWriteProposal`. `LocalFileWriteProposalParser` now accepts generated drafts and resolves grant-relative paths such as `pixel-pane-test/story.txt` or `story.txt` against active folder state. The terminal planner now exits early for natural file-write prompts so they cannot be mistaken for test commands. The compiled harness check and `PixelPane/Scripts/verify-debug-build.sh` succeeded.
+
+### `ASSIST-033` - Ground Delegated Writes In Current-Session Observations
+
+Auto-created during delegated write QA on 2026-05-26.
+
+Goal: Ensure model-planned file writes can resolve references like "these results" from the active chat without leaking or auto-restoring global chat history into new sessions.
+
+Acceptance:
+
+- [x] Delegated write planning receives recent turns from the current chat before the pending write turn is appended.
+- [x] The write-planning prompt explicitly forbids hidden/global history assumptions.
+- [x] Referenced prior terminal/model output is available to the selected model for content generation.
+- [x] Fresh assistant chats do not auto-load the latest saved assistant session.
+- [x] Harness checks cover prior-result write grounding and clean-session prompt behavior.
+- [x] App builds successfully.
+
+Notes:
+
+- Implemented 2026-05-26. `AssistantWritePlanningPromptBuilder` now includes bounded current-session prior turns and rules for preserving referenced result/output lines when the user asks to save "these results." The write planner now uses the full default output budget so structured drafts can carry real observed content instead of short placeholders. `ResultPanelView` no longer restores `ChatHistoryStore.latestAssistantSession()` for new assistant panels, and the unused global latest-session helper was removed. Harness checks cover the process-results regression, clean write prompts without prior turns, and preservation of generated result content.
+
+### `ASSIST-034` - Route Recent-File Rewrite Follow-Ups Through App-Owned Edit Planning
+
+Auto-created during delegated write/edit QA on 2026-05-26.
+
+Goal: Make follow-ups such as "it's formatted poorly, format it nicer" operate on the recently created/read granted file through the app-owned file tool layer, without relying on a specific local model or executing file paths as shell commands.
+
+Acceptance:
+
+- [x] Staged local write proposals record their target file as recent file context for follow-up edits.
+- [x] Formatting/rewrite follow-ups for a recent file route to selected-model write planning instead of plain chat.
+- [x] The app reads the recent granted file before asking the selected model to transform its content.
+- [x] Bare granted text-file paths route to Local Files reads instead of terminal execution.
+- [x] Common generated-write literal newline artifacts such as ` n-` are normalized before staging.
+- [x] Harness checks cover the recent-file formatting flow, raw filepath regression, and newline artifact normalization.
+- [x] App builds successfully.
+
+Notes:
+
+- Implemented 2026-05-26. `stage_write_proposal` results now include the target file as a source and `AssistantToolState` treats staged write targets as recent files. Formatting/cleanup/rewrite prompts for a recent file now route to selected-model write planning, and `ResultPanelView` first asks the app-owned local file tool to read the recent file so any selected local/cloud model receives actual current content as a snippet. The terminal planner no longer treats non-executable granted file paths as shell commands, while raw file paths are accepted by the read preflight. Generated write content now normalizes the observed ` n-` newline artifact before confirmation. The compiled harness check and `PixelPane/Scripts/verify-debug-build.sh` succeeded.
+
+### `ASSIST-035` - Constrain Model-Planned Writes To The App-Resolved Named Grant
+
+Auto-created during delegated write QA on 2026-05-26.
+
+Goal: Prevent selected models from placing generated files into the wrong granted folder when the user names or slightly mistypes the intended folder.
+
+Acceptance:
+
+- [x] The app resolves folder-like user text to a specific granted folder before accepting a model-planned write target.
+- [x] Small folder-name typos such as `pixel-pane-texts` resolve to the closest granted folder such as `pixel-pane-test`.
+- [x] If the model proposes an absolute target in a different granted folder, Pixel Pane keeps the filename/content but stages the write inside the app-resolved folder.
+- [x] Exact granted folder names continue to work without relying on the selected model.
+- [x] Harness checks cover the wrong-grant absolute-target regression.
+- [x] App builds successfully.
+
+Notes:
+
+- Implemented 2026-05-26. `AssistantLocalFileToolExecutor` now resolves an explicit preferred write folder from the user request before staging deterministic or generated write proposals. The resolver uses exact granted paths/names first, then bounded edit-distance matching over folder-like tokens so a typo such as `pixel-pane-texts` selects `pixel-pane-test` over the broader `pixel-pane` grant. For generated writes, an absolute model target outside the app-resolved folder is constrained to the proposed filename under the intended folder before grant validation and confirmation. The compiled harness check and `PixelPane/Scripts/verify-debug-build.sh` succeeded.
+
+### `ASSIST-036` - Resolve Named Granted Folders For Local File Listing
+
+Auto-created during folder-listing QA on 2026-05-26.
+
+Goal: Make folder content questions use the app-resolved named grant instead of falling through to model chat or the most recent/broader grant.
+
+Acceptance:
+
+- [x] Named folder content questions route to the Local Files tool before model generation.
+- [x] Similar granted folder names prefer the explicit longer match, so `pixel-pane-test` does not resolve to `pixel-pane`.
+- [x] Small separator/plural typos such as `pixel=pane-tests` resolve to the closest granted folder.
+- [x] A stale `lastListedFolder` cannot override an explicit folder name in the current user prompt.
+- [x] Harness checks cover exact, typo, and stale-recent-folder cases.
+- [x] App builds successfully.
+
+Notes:
+
+- Implemented 2026-05-26. Folder overview routing now uses the same app-owned preferred-directory resolver introduced for write targeting. The resolver builds folder-like tokens across punctuation boundaries, so `pixel=pane-tests` and `pixel-pane-tests` can match the granted `pixel-pane-test` folder without choosing the broader `pixel-pane` grant. The compiled harness check and `PixelPane/Scripts/verify-debug-build.sh` succeeded.
+
+### `ASSIST-037` - Read Files Referenced From The Last Folder Listing
+
+Auto-created during folder-listing follow-up QA on 2026-05-26.
+
+Goal: Make follow-ups such as "what's inside that txt file?" and "sure do it" read the file exposed by the prior folder listing through the app-owned Local Files tool.
+
+Acceptance:
+
+- [x] Folder listing tool results include visible top-level file sources, not only the folder source.
+- [x] Recording a folder-listing result stores visible files as recent file sources for follow-up turns.
+- [x] Generic follow-ups that reference a file type, such as `that txt file`, resolve to a unique recent readable file of that type.
+- [x] Confirmation-style follow-ups such as `sure do it` can read the unique recent readable file instead of falling through to model chat.
+- [x] The implementation is generic over filenames, extensions, granted folders, and selected models.
+- [x] Harness checks cover list-then-read and list-then-confirm-read flows.
+- [x] App builds successfully.
+
+Notes:
+
+- Implemented 2026-05-26. `list_folder` results now carry visible child files as `File` sources, and `AssistantToolState.record` stores those files as recent file context while still tracking the listed folder separately. Read preflight can resolve app-owned implicit references such as `that txt file`, `read it`, and `sure do it` against the recent readable files before model generation. The compiled harness check and `PixelPane/Scripts/verify-debug-build.sh` succeeded.
+
+### `ASSIST-038` - Prefer Recent Source Observations Over Broad Grant/Search Fallbacks
+
+Auto-created during hard-coded harness cleanup on 2026-05-26.
+
+Goal: Remove the brittle behavior where follow-ups like "what are these files?" ignore the latest folder-list observation and fall back to broad grant inventory or unrelated search snippets.
+
+Acceptance:
+
+- [x] Recent source references are resolved from structured tool state before grant inventory answers.
+- [x] Recent source references are resolved before broad file search/model context paths can pollute `lastFileSources`.
+- [x] The implementation is generic over filenames, folders, extensions, and selected models.
+- [x] A later unrelated file search does not override the latest folder-list source set for deictic source questions.
+- [x] Harness checks cover `what are these files?` after a folder listing and after polluted file-search state.
+- [x] App builds successfully.
+
+Notes:
+
+- Implemented 2026-05-26. Added a state-first recent-source summary path that detects deictic source references from the current prompt and answers from the latest structured `list_folder` sources. Preflight now checks that recent-source path before selected-model chat, broad grant inventory, and file search. This replaces the observed broad grant fallback without hard-coding product behavior to a specific filename or folder. The compiled harness check and `PixelPane/Scripts/verify-debug-build.sh` succeeded.
+
+### `ASSIST-039` - Prefer Workspace Execution Over Generic Port Inspection
+
+Auto-created during hard-coded harness cleanup on 2026-05-26.
+
+Goal: Fix the brittle terminal-planner priority where a prompt like "build this site and tell me what port its running on locally" scans all listening ports instead of building/serving the recently selected workspace.
+
+Acceptance:
+
+- [x] Workspace execution intents are considered before passive system-inspection shortcuts when the prompt asks to build/run/serve a project or site.
+- [x] Localhost troubleshooting without an execution action still routes to safe listening-port inspection.
+- [x] "Build this site ... locally/port" resolves against recent tool state such as the last listed granted folder.
+- [x] Static websites are served with a generic local server from the selected folder and report a verified localhost URL.
+- [x] The implementation is generic over grants, folder names, and selected model route.
+- [x] Harness checks cover the copied chat regression and the preserved localhost troubleshooting case.
+- [x] App builds successfully.
+
+Notes:
+
+- Implemented 2026-05-26. The terminal planner now gives workspace build/test/lint/serve tasks priority over generic system inspection once the prompt includes an execution intent. `isServeIntent` was narrowed so bare localhost/port troubleshooting does not look like a request to start a server, while "build this site and tell me what port its running on locally" is treated as a local serve task and resolved through the workspace profiler. Added a harness regression using the last listed static site folder and preserved the existing "is it another port?" `lsof` behavior. The compiled harness check and `PixelPane/Scripts/verify-debug-build.sh` succeeded.
+
+### `ASSIST-040` - Replace Hard-Coded Terminal/File Intent Shortcuts With A Model-Planned Action Loop
+
+Auto-created during hard-coded harness cleanup on 2026-05-26.
+
+Goal: Move Pixel Pane closer to Codex CLI/Claude Code by letting the selected model plan tool actions from the user's prompt and current observations, while Pixel Pane remains the model-agnostic executor, safety policy, permission layer, and source tracker.
+
+Acceptance:
+
+- [ ] Add a selected-model planning pass that can request bounded actions such as list folder, read file, search files, propose write, run terminal command, or answer directly.
+- [ ] Keep deterministic code focused on permissions, risk classification, source resolution, validation, execution, and fallback behavior rather than broad natural-language task selection.
+- [ ] Support a short observe-plan-act loop so the model can inspect a workspace before choosing a build/dev-server command when needed.
+- [ ] Preserve Local Mode privacy: local model planning, tool execution, observations, and follow-up prompts stay on the Mac.
+- [ ] Maintain safety: writes, server starts, scripts, installs, destructive commands, and privileged commands require confirmation or are blocked.
+- [ ] Retire or narrow the existing phrase shortcut lattice once model-planned actions cover the same workflows.
+- [ ] Add a cross-model harness suite with weak local models, stronger local models, and Cloud Mode over the same task set.
+- [ ] App builds successfully.
+
+Notes:
+
+- This is the sprint continuation requested by the user after multiple QA transcripts showed brittle deterministic behavior. The expected product direction is not "more clever hard-coded phrases"; it is an agent loop where better user-selected models produce better plans, and Pixel Pane enforces the local tool contract.
+
+### `ASSIST-041` - Scope Deictic Project Searches To The Current Observed Folder
+
+Auto-created during hard-coded harness cleanup on 2026-05-26.
+
+Goal: Remove the brittle behavior where a follow-up like "what is this project though?" searches every granted folder and lets unrelated high-scoring snippets override the current folder the user just selected.
+
+Acceptance:
+
+- [x] Deictic project/repo/site/folder questions use the latest observed folder as the search scope when that folder is inside an active grant.
+- [x] Broad granted-folder search remains available when the user asks a new unscoped discovery question.
+- [x] The selected model receives snippets only from the current observed folder for scoped project-summary follow-ups.
+- [x] The implementation is generic over folder names, project names, and selected local/cloud model route.
+- [x] Harness checks cover a website folder selected after another repo grant and verify snippets do not come from the unrelated repo.
+- [ ] App builds successfully.
+
+Notes:
+
+- Implemented 2026-05-26. `localFileSearchResult` now accepts assistant tool state and scopes search to `lastListedFolder` when the prompt refers to the current local scope. The Ask path passes updated tool state into search, preventing unrelated grants such as the Pixel Pane repo from contaminating "this project" questions about a different listed folder. The compiled harness check and `PixelPane/Scripts/verify-debug-build.sh` succeeded.

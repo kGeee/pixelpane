@@ -199,7 +199,12 @@ struct LocalFileWriteProposalParser: Sendable {
 
     nonisolated init() {}
 
-    nonisolated func proposal(for question: String, grants: [LocalFileGrant]) -> LocalFileWriteProposalResult {
+    nonisolated func proposal(
+        for question: String,
+        grants: [LocalFileGrant],
+        preferredDirectoryPath: String? = nil,
+        recentTargetPaths: [String] = []
+    ) -> LocalFileWriteProposalResult {
         let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalized = trimmed.lowercased()
         guard isWriteIntent(normalized) else { return .none }
@@ -210,31 +215,106 @@ struct LocalFileWriteProposalParser: Sendable {
         }
 
         if normalized.hasPrefix("replace in ") || normalized.hasPrefix("replace text in ") {
-            return replaceTextProposal(from: trimmed, grants: activeGrants)
+            return replaceTextProposal(
+                from: trimmed,
+                grants: activeGrants,
+                preferredDirectoryPath: preferredDirectoryPath,
+                recentTargetPaths: recentTargetPaths
+            )
         }
 
         if normalized.hasPrefix("append to ") {
-            return contentProposal(from: trimmed, prefix: "append to", operation: .append, grants: activeGrants)
+            return contentProposal(
+                from: trimmed,
+                prefix: "append to",
+                operation: .append,
+                grants: activeGrants,
+                preferredDirectoryPath: preferredDirectoryPath,
+                recentTargetPaths: recentTargetPaths
+            )
         }
 
-        if normalized.hasPrefix("create file ")
-            || normalized.hasPrefix("create ")
-            || normalized.hasPrefix("write file ")
-            || normalized.hasPrefix("write ") {
-            let prefix: String
-            if normalized.hasPrefix("create file ") {
-                prefix = "create file"
-            } else if normalized.hasPrefix("create ") {
-                prefix = "create"
-            } else if normalized.hasPrefix("write file ") {
-                prefix = "write file"
-            } else {
-                prefix = "write"
-            }
-            return contentProposal(from: trimmed, prefix: prefix, operation: .createOrReplace, grants: activeGrants)
+        let contentPrefixes = [
+            "create file",
+            "create",
+            "write file",
+            "write",
+            "edit file",
+            "modify file",
+            "update file",
+            "overwrite file"
+        ]
+        if let prefix = contentPrefixes.first(where: { normalized.hasPrefix($0 + " ") }) {
+            return contentProposal(
+                from: trimmed,
+                prefix: prefix,
+                operation: .createOrReplace,
+                grants: activeGrants,
+                preferredDirectoryPath: preferredDirectoryPath,
+                recentTargetPaths: recentTargetPaths
+            )
         }
 
         return .message("I can propose file changes with commands like `create file notes.md with content: ...`, `append to notes.md: ...`, or `replace in notes.md \"old\" with \"new\"`.")
+    }
+
+    nonisolated func proposal(
+        from draft: AssistantGeneratedWriteDraft,
+        grants: [LocalFileGrant],
+        preferredDirectoryPath: String? = nil,
+        recentTargetPaths: [String] = []
+    ) -> LocalFileWriteProposalResult {
+        let activeGrants = grants.filter { FileManager.default.fileExists(atPath: $0.path) }
+        guard !activeGrants.isEmpty else {
+            return .message("Grant a file or folder in Settings -> Files before I can propose local file changes.")
+        }
+
+        let content = normalizedGeneratedContent(
+            draft.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        guard !content.isEmpty else {
+            return .message("The model planned an empty file change.")
+        }
+        guard content.count <= maxContentCharacters else {
+            return .message("That proposed file change is too large. Keep confirmed local writes under \(maxContentCharacters) characters.")
+        }
+
+        guard let targetURL = resolvedURL(
+            for: draft.targetPath,
+            grants: activeGrants,
+            preferredDirectoryPath: preferredDirectoryPath,
+            recentTargetPaths: recentTargetPaths
+        ) else {
+            return .message("The model chose a target path outside the granted folders. Try naming the granted folder more explicitly.")
+        }
+
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: targetURL.path, isDirectory: &isDirectory),
+           isDirectory.boolValue {
+            return .message("The model chose a folder instead of a file path. Ask again with a filename, or let me choose one.")
+        }
+
+        let fileExists = FileManager.default.fileExists(atPath: targetURL.path)
+        let operation: LocalFileWriteProposal.Operation
+        switch draft.operation {
+        case .append:
+            guard fileExists else {
+                return .message("I can append only to an existing granted text file. Ask me to create a file instead.")
+            }
+            operation = .append(content: content)
+        case .replace:
+            operation = fileExists ? .replaceContents(content: content) : .create(content: content)
+        case .create:
+            operation = fileExists ? .replaceContents(content: content) : .create(content: content)
+        }
+
+        return .proposal(
+            LocalFileWriteProposal(
+                id: UUID(),
+                targetPath: targetURL.path,
+                operation: operation
+            )
+        )
     }
 
     private nonisolated enum ParsedContentOperation {
@@ -242,11 +322,26 @@ struct LocalFileWriteProposalParser: Sendable {
         case append
     }
 
+    private nonisolated func normalizedGeneratedContent(_ content: String) -> String {
+        guard content.contains(" n-") || content.contains(" n\n") || content.contains(" n\r\n") else {
+            return content
+        }
+        return content
+            .replacingOccurrences(of: " n- ", with: "\n- ")
+            .replacingOccurrences(of: " n-", with: "\n-")
+            .replacingOccurrences(of: " n\r\n", with: "\n\n")
+            .replacingOccurrences(of: " n\n", with: "\n\n")
+    }
+
     private nonisolated func isWriteIntent(_ normalized: String) -> Bool {
         normalized.hasPrefix("create file ")
             || normalized.hasPrefix("create ")
             || normalized.hasPrefix("write file ")
             || normalized.hasPrefix("write ")
+            || normalized.hasPrefix("edit file ")
+            || normalized.hasPrefix("modify file ")
+            || normalized.hasPrefix("update file ")
+            || normalized.hasPrefix("overwrite file ")
             || normalized.hasPrefix("append to ")
             || normalized.hasPrefix("replace in ")
             || normalized.hasPrefix("replace text in ")
@@ -256,7 +351,9 @@ struct LocalFileWriteProposalParser: Sendable {
         from command: String,
         prefix: String,
         operation: ParsedContentOperation,
-        grants: [LocalFileGrant]
+        grants: [LocalFileGrant],
+        preferredDirectoryPath: String?,
+        recentTargetPaths: [String]
     ) -> LocalFileWriteProposalResult {
         let body = String(command.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
         guard let parsed = parsePathAndContent(from: body) else {
@@ -271,7 +368,12 @@ struct LocalFileWriteProposalParser: Sendable {
             return .message("That proposed file change is too large. Keep confirmed local writes under \(maxContentCharacters) characters.")
         }
 
-        guard let targetURL = resolvedURL(for: parsed.path, grants: grants) else {
+        guard let targetURL = resolvedURL(
+            for: parsed.path,
+            grants: grants,
+            preferredDirectoryPath: preferredDirectoryPath,
+            recentTargetPaths: recentTargetPaths
+        ) else {
             return .message("The target path must be inside a granted folder or match a granted file.")
         }
 
@@ -298,7 +400,9 @@ struct LocalFileWriteProposalParser: Sendable {
 
     private nonisolated func replaceTextProposal(
         from command: String,
-        grants: [LocalFileGrant]
+        grants: [LocalFileGrant],
+        preferredDirectoryPath: String?,
+        recentTargetPaths: [String]
     ) -> LocalFileWriteProposalResult {
         let prefixes = ["replace text in ", "replace in "]
         guard let prefix = prefixes.first(where: { command.lowercased().hasPrefix($0) }) else {
@@ -318,7 +422,12 @@ struct LocalFileWriteProposalParser: Sendable {
         guard replacement.newText.count <= maxContentCharacters else {
             return .message("That replacement is too large. Keep confirmed local writes under \(maxContentCharacters) characters.")
         }
-        guard let targetURL = resolvedURL(for: parsedPath.path, grants: grants),
+        guard let targetURL = resolvedURL(
+            for: parsedPath.path,
+            grants: grants,
+            preferredDirectoryPath: preferredDirectoryPath,
+            recentTargetPaths: recentTargetPaths
+        ),
               FileManager.default.fileExists(atPath: targetURL.path) else {
             return .message("The target file must already exist inside a granted folder or match a granted file.")
         }
@@ -397,25 +506,169 @@ struct LocalFileWriteProposalParser: Sendable {
         return (oldText, String(newRest[..<newEnd]))
     }
 
-    private nonisolated func resolvedURL(for path: String, grants: [LocalFileGrant]) -> URL? {
-        let rawURL = path.hasPrefix("/")
-            ? URL(fileURLWithPath: path)
-            : grants.first(where: { $0.isDirectory })?.url.appendingPathComponent(path)
+    private nonisolated func resolvedURL(
+        for path: String,
+        grants: [LocalFileGrant],
+        preferredDirectoryPath: String?,
+        recentTargetPaths: [String]
+    ) -> URL? {
+        let cleanedPath = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let recentURL = recentTargetURL(
+            matching: cleanedPath,
+            grants: grants,
+            recentTargetPaths: recentTargetPaths
+        ) {
+            return recentURL
+        }
+
+        let rawURL: URL?
+        if cleanedPath.hasPrefix("/") {
+            rawURL = URL(fileURLWithPath: cleanedPath)
+        } else if let grantRelativeURL = grantRelativeURL(for: cleanedPath, grants: grants) {
+            rawURL = grantRelativeURL
+        } else if let preferredDirectoryPath,
+                  let preferredGrant = grants.first(where: { grant in
+                      grant.isDirectory
+                          && grant.url.standardizedFileURL.path == URL(fileURLWithPath: preferredDirectoryPath).standardizedFileURL.path
+                  }) {
+            rawURL = preferredGrant.url.appendingPathComponent(cleanedPath)
+        } else {
+            rawURL = grants.first(where: { $0.isDirectory })?.url.appendingPathComponent(cleanedPath)
+        }
         guard let candidate = rawURL?.standardizedFileURL else { return nil }
 
-        let candidatePath = candidate.path
+        if isAllowed(candidate, grants: grants) {
+            return candidate
+        }
+
+        guard !cleanedPath.contains("/") else { return nil }
+        return recursiveTargetURL(
+            named: cleanedPath,
+            grants: grants,
+            preferredDirectoryPath: preferredDirectoryPath
+        )
+    }
+
+    private nonisolated func grantRelativeURL(
+        for cleanedPath: String,
+        grants: [LocalFileGrant]
+    ) -> URL? {
+        let parts = cleanedPath.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        guard let first = parts.first else { return nil }
+        let candidates = grants.filter(\.isDirectory)
+        guard let grant = candidates.first(where: { grant in
+            let name = grant.url.lastPathComponent
+            return name.localizedCaseInsensitiveCompare(first) == .orderedSame
+                || grant.displayName.localizedCaseInsensitiveCompare(first) == .orderedSame
+        }) else {
+            return nil
+        }
+        let remainder = parts.dropFirst().joined(separator: "/")
+        guard !remainder.isEmpty else { return grant.url.standardizedFileURL }
+        return grant.url.appendingPathComponent(remainder).standardizedFileURL
+    }
+
+    private nonisolated func recentTargetURL(
+        matching reference: String,
+        grants: [LocalFileGrant],
+        recentTargetPaths: [String]
+    ) -> URL? {
+        let cleaned = reference.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return nil }
+        let matches = recentTargetPaths.compactMap { rawPath -> URL? in
+            let url = URL(fileURLWithPath: rawPath).standardizedFileURL
+            guard isAllowed(url, grants: grants) else { return nil }
+            if url.lastPathComponent.localizedCaseInsensitiveCompare(cleaned) == .orderedSame
+                || url.path.localizedCaseInsensitiveContains(cleaned) {
+                return url
+            }
+            return nil
+        }
+        return matches.sorted { $0.path.localizedCaseInsensitiveCompare($1.path) == .orderedAscending }.first
+    }
+
+    private nonisolated func recursiveTargetURL(
+        named fileName: String,
+        grants: [LocalFileGrant],
+        preferredDirectoryPath: String?
+    ) -> URL? {
+        let activeFolders = grants.filter(\.isDirectory)
+        let preferred = preferredDirectoryPath.flatMap { preferredPath in
+            activeFolders.first { folder in
+                folder.url.standardizedFileURL.path == URL(fileURLWithPath: preferredPath).standardizedFileURL.path
+            }
+        }
+        let orderedFolders = ([preferred].compactMap { $0 } + activeFolders).reduce(into: [LocalFileGrant]()) { result, folder in
+            guard !result.contains(where: { $0.path == folder.path }) else { return }
+            result.append(folder)
+        }
+
+        var matches: [URL] = []
+        for folder in orderedFolders {
+            if let match = firstFile(named: fileName, in: folder.url.standardizedFileURL, maxDepth: 8) {
+                matches.append(match)
+            }
+        }
+        return matches.sorted { $0.path.localizedCaseInsensitiveCompare($1.path) == .orderedAscending }.first
+    }
+
+    private nonisolated func firstFile(named fileName: String, in root: URL, maxDepth: Int) -> URL? {
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .isHiddenKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else {
+            return nil
+        }
+
+        var matches: [URL] = []
+        for case let url as URL in enumerator {
+            let relative = relativePath(from: root, to: url)
+            let parts = relative.split(separator: "/").map(String.init)
+            if shouldSkip(relativePath: relative) {
+                enumerator.skipDescendants()
+                continue
+            }
+            guard parts.count <= maxDepth else {
+                enumerator.skipDescendants()
+                continue
+            }
+            guard url.lastPathComponent.localizedCaseInsensitiveCompare(fileName) == .orderedSame else { continue }
+            let values = try? url.resourceValues(forKeys: [.isRegularFileKey])
+            if values?.isRegularFile == true {
+                matches.append(url)
+            }
+        }
+        return matches.sorted { $0.path.localizedCaseInsensitiveCompare($1.path) == .orderedAscending }.first
+    }
+
+    private nonisolated func isAllowed(_ candidate: URL, grants: [LocalFileGrant]) -> Bool {
+        let candidatePath = candidate.standardizedFileURL.path
         for grant in grants {
             let grantURL = grant.url.standardizedFileURL
             if grant.isDirectory {
                 let root = grantURL.path.hasSuffix("/") ? grantURL.path : grantURL.path + "/"
                 if candidatePath.hasPrefix(root) {
-                    return candidate
+                    return true
                 }
             } else if candidatePath == grantURL.path {
-                return candidate
+                return true
             }
         }
-        return nil
+        return false
+    }
+
+    private nonisolated func shouldSkip(relativePath: String) -> Bool {
+        let skipped = Set([".git", "node_modules", "DerivedData", ".build", "build", "dist", ".next"])
+        return relativePath.split(separator: "/").contains { skipped.contains(String($0)) }
+    }
+
+    private nonisolated func relativePath(from root: URL, to url: URL) -> String {
+        let rootPath = root.standardizedFileURL.path
+        let path = url.standardizedFileURL.path
+        let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+        guard path.hasPrefix(prefix) else { return path }
+        return String(path.dropFirst(prefix.count))
     }
 }
 

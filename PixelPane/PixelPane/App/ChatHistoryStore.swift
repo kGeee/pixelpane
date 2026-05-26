@@ -62,12 +62,6 @@ final class ChatHistoryStore: ObservableObject {
         sessions.first { $0.contextID == contextID && $0.contextKind == kind }
     }
 
-    func latestAssistantSession() -> StoredChatSession? {
-        sessions
-            .filter { $0.contextKind == .assistant && !$0.turns.isEmpty }
-            .max { $0.updatedAt < $1.updatedAt }
-    }
-
     func recentSessions(limit: Int = 8) -> [StoredChatSession] {
         Array(sessions.filter { !$0.turns.isEmpty }.prefix(limit))
     }

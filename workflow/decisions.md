@@ -490,3 +490,279 @@ Consequences:
 
 Follow-up:
 Run the `ASSIST-022` cross-model matrix after source transparency and prompt-injection hardening land.
+
+## 2026-05-24 - Bounded Local Terminal Tool
+
+Status: Accepted
+
+Decision:
+Pixel Pane may expose terminal execution to the notch assistant only as an app-owned tool. Terminal commands must run from an existing user-granted folder working directory, with bounded runtime and output capture. High-risk or destructive commands require visible user confirmation before execution, and privileged shell patterns are blocked.
+
+Context:
+Repo work often requires real terminal feedback: builds, tests, linting, git status, and project-specific helper scripts. The model should be able to benefit from that feedback, but it must not receive unchecked shell access or hard-code Pixel Pane-specific commands. The existing assistant harness already owns local file grants, write confirmation, context packing, and tool state, so terminal execution belongs behind the same contract.
+
+Consequences:
+- Terminal output is local tool output and is treated as untrusted data in model context.
+- Commands default to user-granted folder working directories; the model cannot pick arbitrary filesystem roots.
+- Common repo commands are discovered from scripts and manifests where possible instead of hard-coded to this repo.
+- The UI must show a confirmation panel for high-risk commands and record terminal runs in assistant tool state.
+- This is not autonomous computer control or unbounded shell access.
+
+Follow-up:
+`ASSIST-020` should include terminal tool runs in the source/tool-use transparency UI, and `ASSIST-021` should include terminal-output prompt-injection and destructive-command QA cases.
+
+## 2026-05-24 - Terminal-Backed File Discovery Before Model Chat
+
+Status: Accepted
+
+Decision:
+Pixel Pane should route specific local-file discovery questions through deterministic terminal-backed search inside user-granted folders before model chat or generic grant-list answers. Discovered paths should become structured file sources in assistant tool state so follow-up reads and confirmed edit proposals can resolve the same files.
+
+Context:
+The assistant had access to `/Users/nayak/Documents/snehithnayak.github.io` but still answered a resume question as if it could not read the nested resume source/PDF, then fell back to listing granted folders. This shows that model chat and generic grant inventory are not enough for reliability. Open-source coding agents such as Cline, OpenHands, and aider converge on the same principle: terminal/file actions should be explicit tool observations that the harness feeds back into state, not hopeful model narration.
+
+Consequences:
+- File discovery is an app-owned action, not a model claim.
+- The terminal tool may run low-risk search commands such as `rg --files`/`find` in granted folders without hard-coded paths.
+- Terminal file-search output is treated as untrusted data but can update source state for follow-up file reads and staged write proposals.
+- Confirmed writes remain confirmation-gated and limited to granted folders even when a recent terminal search found a target.
+- Generic "what files can you view?" answers remain available, but they should not block concrete "can you see/find X?" searches.
+
+Follow-up:
+Add these terminal discovery cases to the `ASSIST-022` cross-model QA matrix and expose terminal/file sources in `ASSIST-020` source transparency UI.
+
+## 2026-05-25 - Mode-Independent Agentic Tool Loop
+
+Status: Accepted
+
+Decision:
+Pixel Pane's assistant harness should own the agentic loop independently of the selected model route. The app runs deterministic safe tool steps such as terminal-backed file discovery, local file reads, source tracking, and context packing before handing a prompt to MLX Text, MLX Vision, Apple local text, or Cloud Mode. Local Mode keeps every part of that loop local.
+
+Context:
+The same user prompt could fail differently in Local Mode and Cloud Mode because the selected model was still being asked to infer when tools should run. That is backwards for a reliable local assistant. OpenCode and pi use model-agnostic agent runtimes where provider choice is separate from file/terminal/session orchestration; OpenHands and Cline likewise keep tools as explicit actions/observations. Pixel Pane needs the same split in Swift: model route decides language quality, not whether local tools actually execute.
+
+Consequences:
+- Local/Cloud mode changes model routing only; it does not change tool availability, tool planning, or file grant enforcement.
+- App-generated low-risk discovery commands may run automatically inside user-granted folders.
+- User-authored, destructive, privileged, or write-like terminal commands still require confirmation or are blocked.
+- File discovery can fan out across multiple granted folders when the user asks for a concrete target.
+- File reads are app-owned observations and can be packed into Local or Cloud prompts with route-specific privacy labels.
+- Terminal/file UI should show concise action summaries and sources, not raw generated shell scripts unless needed for transparency.
+
+Follow-up:
+`ASSIST-020` should expose these automatic agent steps as compact source/tool chips, and `ASSIST-022` should test the same prompts across Local Mode, Cloud Mode, and weak/no-tool local models.
+
+## 2026-05-25 - General Terminal Agent With Risk-Based Approval
+
+Status: Accepted
+
+Decision:
+Pixel Pane may expose broad terminal execution through the same app-owned agent harness across Local Mode and Cloud Mode. The harness, not the selected model, decides when a terminal command can run automatically, when it needs confirmation, and when it must be blocked. Safe read-only observation commands can run without a granted file folder; potentially risky commands require visible confirmation before execution.
+
+Context:
+The assistant needs to answer general computer and repo questions such as "what are the top running processes?", "run this script", "build this project", and "create a folder" without being limited to file-search flows. OpenCode, pi, Cline, and OpenHands all separate provider/model choice from terminal and filesystem orchestration. Pixel Pane should use the same architecture: local models and cloud models produce language, while the Swift harness owns command planning, command execution, permission prompts, tool observations, and privacy routing.
+
+Consequences:
+- Local Mode remains fully local: terminal planning, execution, output capture, context packing, and model prompting stay on the Mac.
+- Cloud Mode uses the same local tool loop but only receives app-packed observations after local execution.
+- Existing-folder working directories are allowed even when they are not user-granted file folders, so general system inspection can run from the user's home folder.
+- Low-risk read-only commands such as process, disk, OS, date/time, and explicit read-only shell inspection may auto-run.
+- Write-like commands, builds, scripts, package installs, network commands, process control, privileged commands, and system-affecting commands require visible confirmation.
+- Known shell-bomb patterns remain blocked.
+- Confirmation UI needs continued polish under `ASSIST-020` so terminal runs are transparent without dumping long shell text into the chat.
+
+Follow-up:
+`ASSIST-022` should promote `PixelPane/Scripts/assistant-terminal-harness-check.swift` into the cross-model QA matrix, including Local Mode, Cloud Mode, and weak/no-tool local models.
+
+## 2026-05-25 - Evidence-Based Workspace Profiling For Agentic Terminal Planning
+
+Status: Accepted
+
+Decision:
+Pixel Pane should profile granted folders and candidate nested workspaces before planning build/test/lint/serve terminal commands. The app-owned harness should choose a target workspace from evidence such as manifests, project files, static website markers, model artifacts, image/document collections, prompt terms, and recent tool state before command discovery runs.
+
+Context:
+The assistant incorrectly served Pixel Pane's nested backend package when the user asked to build/view a personal website because the old planner grabbed the first `package.json` it found. That is not how a reliable coding agent behaves. Agentic systems such as ChatGPT-style code interpreters, OpenCode, and Hermes-like local agents separate target selection from command execution: first identify the workspace/artifact, then plan the command, then verify the observation.
+
+Consequences:
+- Terminal planning no longer treats "first manifest found" as the target.
+- Static websites, Xcode apps, package backends, model folders, image folders, and document folders can be recognized as different workspace shapes.
+- Serving a site can use a generic local static server when no package dev script exists.
+- Dev-server port reporting must prefer verified URLs from the launched process/logs over arbitrary machine-wide listeners.
+- Broad filesystem grants require bounded, shallow profiling with skipped dependency/system folders rather than unbounded scans.
+
+Follow-up:
+`ASSIST-022` should expand the QA matrix to include target-selection cases for static websites, nested package apps, Xcode apps, model folders, image folders, and broad home/Documents grants.
+
+## 2026-05-26 - Selected Model Plans Delegated Local Writes
+
+Status: Accepted
+
+Decision:
+When the user asks Pixel Pane to create or edit a local file and delegates choices such as filename, subject, or content, the selected model route should plan the write draft. Pixel Pane then validates the model-selected target against user-granted locations and stages a confirmation-gated local write proposal. Model output still never mutates files directly.
+
+Context:
+The prior harness rejected prompts like "create a txt file inside this folder containing a short story; you can pick what the story is about" because the deterministic write parser required the user to provide both a path and exact content. A follow-up like `write "this is a test" inside the text file` could then fall into terminal/test routing. That is the wrong split for a Codex-like local assistant: the model should reason about underspecified tasks, while the app owns permissions, observations, validation, and side effects.
+
+Consequences:
+- Local model choice now affects delegated file-write planning quality.
+- Pixel Pane keeps the safety boundary: only granted files/folders are valid targets and the user must confirm before any write.
+- The deterministic parser remains only for exact user-authored write commands; delegated tasks go through model planning.
+- Natural file-write prompts are excluded from terminal command planning so they cannot be misread as build/test/run requests.
+
+Follow-up:
+Generalize this planning boundary beyond writes into a fuller Codex-like action/observation loop where the selected model can request file reads, edits, and terminal commands, while Pixel Pane remains the executor and policy layer.
+
+## 2026-05-26 - Current Session Is The Assistant Memory Boundary
+
+Status: Accepted
+
+Decision:
+Pixel Pane should not auto-inject global or latest-chat history into a fresh assistant chat. Current-session turns may be used to resolve follow-up references such as "these results," and saved chats may be reopened explicitly, but a new assistant chat starts with empty turns and empty assistant tool state unless it is created from a screen capture context.
+
+Context:
+Delegated file-write planning improved by asking the selected local/cloud model to draft the target and content, but a QA chat revealed an under-contexted write: after a terminal process-list answer, the user asked to create a file "with these results" and the planner did not receive the prior answer, so the model hallucinated generic test results. At the same time, the app still auto-restored the latest saved assistant session for fresh chats, which is a hidden global-memory behavior the user does not want.
+
+Consequences:
+- Model-planned writes receive bounded prior turns from the active chat only.
+- The write-planning prompt explicitly tells the selected model not to assume hidden or global chat history.
+- Fresh assistant panels no longer restore the latest saved assistant session.
+- Chat history remains local and per-session, available through explicit history selection and clearing.
+- Capture-context chats can still carry their capture/OCR context and same-session follow-ups without retaining screenshot pixels in history.
+
+Follow-up:
+`ASSIST-020` should expose current-session tool/result provenance clearly, and `ASSIST-022` should include clean-new-chat regressions so no prompt path accidentally reintroduces global history.
+
+## 2026-05-26 - Recent File Rewrite Follow-Ups Stay App-Owned
+
+Status: Accepted
+
+Decision:
+When the user asks to format, clean up, polish, or otherwise rewrite a recently created/read granted file, Pixel Pane should resolve the target file from app-owned tool state, read its current content through the Local Files tool, and ask the selected model only for transformed replacement content. The result must still become a confirmed local write proposal before any file changes.
+
+Context:
+A QA chat successfully created a file from prior terminal output, but the follow-up "it's formatted poorly. please format it nicer." fell through to ordinary model chat because the target file was not recorded as recent file context. When the user then pasted the file path, the terminal planner treated the path as a command and zsh returned permission denied. This exposed a model-agnostic harness issue: file edit follow-ups need app-owned target resolution and file reads, not model guesses or shell execution.
+
+Consequences:
+- Staged write proposals record their target file as recent source context for follow-up edits.
+- Formatting/rewrite follow-ups can route to selected-model write planning across local/cloud models.
+- The app reads the granted file before model transformation so the model receives actual current content.
+- Bare non-executable granted file paths are file references, not terminal commands.
+- Weak local models may produce lower-quality formatting, but target resolution, file reads, grant validation, and confirmation remain independent of model choice.
+
+Follow-up:
+`ASSIST-022` should include cross-model QA for create-then-format, raw filepath reads, and exact-file rewrite confirmation behavior.
+
+## 2026-05-26 - App Resolves Named Write Grants Before Model Targets
+
+Status: Accepted
+
+Decision:
+When a user names a folder for a delegated write, Pixel Pane should resolve the intended granted folder in app code before accepting the selected model's target path. If the model proposes a path in a different grant, Pixel Pane should preserve the filename and content but constrain the staged write to the app-resolved folder.
+
+Context:
+A QA chat asked to create a text file in `pixel-pane-texts` while grants included `/Users/nayak/Documents/pixel-pane` and `/Users/nayak/Documents/pixel-pane-test`. The selected model produced a plausible file with the correct content but staged it in `/Users/nayak/Documents/pixel-pane/top_processes.txt`, because the app was trusting the model to choose among granted folders. This should be model-agnostic harness logic instead.
+
+Consequences:
+- The app resolves exact granted paths/names first, then uses bounded edit-distance matching for folder-like tokens.
+- A typo such as `pixel-pane-texts` resolves to `pixel-pane-test` instead of the broader `pixel-pane` grant.
+- Selected models still choose filename/content for delegated writes, but they no longer own the grant selection when the user names a target folder.
+- Confirmation remains required before any file is written.
+
+Follow-up:
+`ASSIST-022` should include cross-model tests for multiple grants with similar names, typos, exact folder names, and model-proposed absolute paths in the wrong grant.
+
+## 2026-05-26 - App Resolves Named Folder Listings Before Model Chat
+
+Status: Accepted
+
+Decision:
+When a user asks what is inside a named granted folder, Pixel Pane should resolve the intended folder in app code before model generation. The resolver should prefer exact and longer folder-name matches over prefixes, support bounded typo matching, and let explicit current-prompt folder names override stale recent-folder state.
+
+Context:
+A QA chat asked what was in `pixel=pane-tests` and then clarified `pixel-pane-test`, but the assistant first fell through to local model chat and later listed `/Users/nayak/Documents/pixel-pane` instead of `/Users/nayak/Documents/pixel-pane-test`. The root cause matched the write-targeting issue: folder selection was still brittle app logic, with prefix matching that let `pixel-pane` win before `pixel-pane-test`.
+
+Consequences:
+- Folder listing correctness no longer depends on the selected local/cloud model.
+- The same named-grant resolver is used for folder listings and delegated writes.
+- Typos such as `pixel=pane-tests` can resolve to `pixel-pane-test` without granting broader access.
+- Recent folder state remains useful for "this folder" follow-ups, but explicit names in the current prompt take precedence.
+
+Follow-up:
+`ASSIST-022` should include cross-model QA for named folder listings with similar grants, punctuation mistakes, pluralization, and stale recent-folder state.
+
+## 2026-05-26 - Folder Listings Carry File Sources For Follow-Up Reads
+
+Status: Accepted
+
+Decision:
+When Pixel Pane lists a granted folder, the tool result should include visible child files as structured file sources in addition to the folder source. Follow-up read requests should resolve unique recent file/type references, such as "that txt file" or "sure do it," through the app-owned Local Files read tool before model generation.
+
+Context:
+A QA chat listed `/Users/nayak/Documents/pixel-pane-test` and showed `top_processes.txt`, but a follow-up asking what was inside that text file fell through to model chat. The model correctly complained that no tool result contained readable file content. The missing piece was not model intelligence; it was an incomplete observation handoff from the folder-list tool to the next turn.
+
+Consequences:
+- Folder listings become actionable observations, not just display text.
+- The selected model can remain agentic over accurate app-provided observations.
+- File reads still enforce grants and readable-file checks in app code.
+- The behavior is generic over filenames, extensions, grants, and selected local/cloud models.
+
+Follow-up:
+`ASSIST-022` should include list-then-read QA for single and multiple visible files, file type references, ambiguous follow-ups, and confirmation-style follow-ups.
+
+## 2026-05-26 - Recent Source Observations Win Before Broad Fallbacks
+
+Status: Accepted
+
+Decision:
+Pixel Pane should resolve follow-up questions that point at recent file/folder sources from structured assistant tool state before invoking broad grant inventory, fresh file search, or selected-model chat. Broad fallbacks are still useful, but only after current-session observations fail to resolve the request.
+
+Context:
+A QA chat listed two files in `pixel-pane-test`, then the user asked "what are these files?" The harness routed through broad file/grant behavior and the selected model answered with the full grant list instead of the files just observed. This happened because generic file-search/grant heuristics outranked the latest structured tool observation.
+
+Consequences:
+- The assistant behaves more like a CLI agent: observe, preserve sources, then act on the latest observation.
+- Deictic follow-ups such as "these files" no longer depend on hard-coded filenames or folder names.
+- Broad search remains available for new discovery questions, but does not overwrite the user's immediate referent.
+- The selected model receives cleaner context and is less likely to produce stale or irrelevant access summaries.
+
+Follow-up:
+`ASSIST-022` should include source-reference precedence cases across Local Mode, Cloud Mode, and weak/no-tool local models.
+
+## 2026-05-26 - Workspace Execution Wins Before Generic Port Inspection
+
+Status: Accepted
+
+Decision:
+When a prompt asks Pixel Pane to build, run, start, serve, or otherwise execute a known workspace, terminal planning should resolve the workspace and discover the appropriate command before considering generic local port inspection. Port/listener inspection remains appropriate for passive troubleshooting prompts that ask what is already running.
+
+Context:
+A QA chat listed the user's granted static website folder, then the user asked to "build this site and tell me what port its running on locally." The harness saw "what port" first and ran `lsof -nP -iTCP -sTCP:LISTEN | head -80`, returning unrelated system listeners without building or serving the site. The issue was not model quality; it was a deterministic shortcut outranking the observe-plan-act flow.
+
+Consequences:
+- Recent tool state such as the last listed folder can drive workspace execution tasks.
+- A prompt that asks to serve a site gets a confirmation-gated server command from the selected workspace, not a machine-wide listener dump.
+- Bare localhost troubleshooting such as "localhost:3000 doesn't work; is it another port?" still uses safe read-only listener inspection.
+- The immediate fix is model-agnostic, but it also reinforces the next sprint direction: task selection should move from phrase shortcuts to selected-model action planning, with Pixel Pane enforcing permissions and risk policy.
+
+Follow-up:
+`ASSIST-040` should replace the remaining broad terminal/file shortcut lattice with a selected-model action planner and keep deterministic code focused on safety, validation, source resolution, and execution.
+
+## 2026-05-26 - Current Observed Scope Wins For Project Search
+
+Status: Accepted
+
+Decision:
+When a user asks a deictic local-project question such as "what is this project?" after Pixel Pane has just listed or selected a folder, local file search should be scoped to that observed folder before the selected model receives context. Broad search across all grants should be reserved for unscoped discovery prompts.
+
+Context:
+A QA chat listed `/Users/nayak/Documents/snehithnayak.github.io`, then asked "what is this project though?" Pixel Pane searched all granted folders, packed both website snippets and Pixel Pane product docs, and the selected MLX model answered about Pixel Pane. The answer looked like a hard-coded response because the context was polluted by an unrelated grant.
+
+Consequences:
+- Current-session observations define the referent for "this project," "this repo," "this site," and similar follow-ups.
+- The selected model still writes the final answer, but it receives relevant snippets instead of a mixed bag from every grant.
+- The fix is model-agnostic and avoids hard-coding a project answer; Pixel Pane only constrains the search scope from state.
+- This does not replace the need for `ASSIST-040`; the larger sprint should still move broad task selection into a selected-model action planner.
+
+Follow-up:
+`ASSIST-040` should use the same principle in the planner loop: resolve current observed scope first, then ask the selected model what action to take inside that scope.

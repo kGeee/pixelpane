@@ -1,6 +1,6 @@
 # Implementation References
 
-Last updated: 2026-05-24
+Last updated: 2026-05-26
 
 Use this file when stories need platform/service-specific details. Prefer primary sources over blog posts.
 
@@ -68,7 +68,7 @@ Primary references:
 
 ## Model-Agnostic Assistant Harness
 
-Research date: 2026-05-24. Use for `ASSIST-016` through `ASSIST-022`.
+Research date: 2026-05-24. Updated 2026-05-26 for general terminal agent support, delegated write planning, current-session history boundaries, recent-file rewrite follow-ups, named-grant targeting, folder-list file follow-ups, and state-first recent source references. Use for `ASSIST-016` through `ASSIST-038`.
 
 Product target:
 
@@ -82,7 +82,21 @@ Tool-use conclusions:
 - OpenAI, Anthropic, MCP, Hugging Face, and llama.cpp all describe tool/function calling as a loop where the model requests a tool and the application or server-side executor runs it. Pixel Pane should keep the executor deterministic and app-owned.
 - Use JSON-schema-like tool definitions internally even when a model route cannot receive native tool schemas. This keeps tool names, inputs, outputs, source IDs, and validation consistent across adapters.
 - Native tool calling is an optimization, not a requirement. For non-native local models, Pixel Pane should use deterministic intent routing for obvious app-state/file/write/image cases and a structured prompt fallback only where safe.
+- For delegated local write tasks, the selected model should plan the draft content/target as structured JSON, while the app validates grant boundaries and stages the existing confirmation-gated write proposal. Avoid requiring the user to provide exact content when the prompt explicitly delegates that judgment to the assistant.
+- Delegated write planning may include bounded prior turns from the active chat to resolve references like "these results" or "that output." It must not include hidden global history or auto-restored latest-chat content.
+- Rewrite/format follow-ups for a recently staged or read file should remain model-agnostic: the app resolves the recent granted file, reads current content through Local Files, and asks the selected model only to return replacement content that is still grant-validated and confirmation-gated.
+- Folder targeting for delegated writes and folder listings should be app-owned. If the user names or slightly mistypes a granted folder, Pixel Pane should resolve the intended grant before model generation or write staging, and constrain selected-model target paths to that grant before confirmation.
+- Folder-listing observations should include visible child files as structured sources so follow-up references can route through the app-owned read tool before model generation. The selected model may reason over the read result, but it should not need to invent file paths from plain transcript text.
+- Recent structured observations should take precedence over broad grant inventory and fresh file search. A question that points at "these files" or a named recent source should resolve from tool state first, then ask the selected model only when the app does not have an actionable observation.
 - Tool outputs should be high-signal and source-aware: stable source IDs, display path, snippet/range/truncation metadata, and a short result body. Avoid dumping whole files unless the user explicitly asks and the context budget allows it.
+- Terminal execution, when enabled, should remain an app-owned local tool rather than prompt-only behavior: run from existing local working directories, capture stdout/stderr/exit code with timeout/output caps, require confirmation for risky commands, and treat terminal output as untrusted data. File reads/writes still enforce the user-granted file boundary, but general system-inspection terminal commands do not need a file grant.
+
+Open-source agent patterns reviewed:
+
+- Cline exposes project file editing and terminal command execution as agent capabilities while keeping edits/commands visible and approval-aware. Pixel Pane should borrow the pattern of real terminal observations feeding the next assistant step, while keeping file reads/writes grant-checked and risky terminal commands confirmation-gated.
+- OpenHands documents a structured action-observation tool system with schema validation, executors, tool registry, and terminal/file tools. Pixel Pane's Swift harness should keep the same separation: planner/request, validated executor, structured observation, and stored tool state.
+- aider's editing docs emphasize model-specific edit formats such as whole-file and search/replace blocks. Pixel Pane should avoid trusting weak models to freehand edits directly; instead, it should parse/stage local write proposals and apply exact file mutations only after confirmation.
+- OpenCode and pi both emphasize a model-agnostic coding-agent layer where providers are interchangeable and the agent runtime owns session state, file operations, terminal execution, and UI events. Pixel Pane should follow that split: Local/Cloud is only a model route, while the harness owns tools and observations.
 
 File access conclusions:
 
@@ -104,6 +118,12 @@ Context packing conclusions:
 - Small local context windows should degrade by trimming or summarizing lower-priority sources, not by adding placeholder sections like "Files: none".
 - Source boundaries should be visible in both prompts and UI metadata so retrieved content is clearly data, not instructions.
 
+Session/history conclusions:
+
+- The active chat session is the memory boundary for prompt packing and delegated write planning.
+- Fresh assistant chats should start with no prior turns or tool state; saved chats can be restored only by explicit history selection.
+- Capture-context chats may include the active capture/OCR context and same-session follow-ups without persisting screenshot pixels.
+
 Safety conclusions:
 
 - Prompt injection is a core risk whenever the assistant reads files, OCR, webpages, or images. Use defense in depth: least privilege, structured data/instruction separation, deterministic argument validation, human confirmation for side effects, and local audit metadata for blocked/downgraded actions.
@@ -123,6 +143,12 @@ Primary references:
 - Hugging Face chat templates and tool use: https://huggingface.co/docs/transformers/chat_extras
 - Hugging Face multimodal chat templates: https://huggingface.co/docs/transformers/chat_templating_multimodal
 - llama.cpp function calling: https://github.com/ggml-org/llama.cpp/blob/master/docs/function-calling.md
+- Cline repository: https://github.com/cline/cline
+- OpenHands tool system docs: https://docs.openhands.dev/sdk/arch/tool-system
+- aider edit formats: https://aider.chat/docs/more/edit-formats.html
+- OpenCode repository: https://github.com/opencode-ai/opencode
+- pi agent harness repository: https://github.com/earendil-works/pi
+- pi dashboard overview: https://pi-dashboard.dev/
 - Apple macOS App Sandbox file access: https://developer.apple.com/documentation/security/accessing-files-from-the-macos-app-sandbox
 - Apple security-scoped bookmark access: https://developer.apple.com/documentation/professional-video-applications/enabling-security-scoped-bookmark-and-url-access
 - Apple `NSOpenPanel.canChooseDirectories`: https://developer.apple.com/documentation/appkit/nsopenpanel/canchoosedirectories

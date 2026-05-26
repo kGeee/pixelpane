@@ -41,6 +41,7 @@ struct ResultPanelView: View {
     @State private var askInput = ""
     @State private var askTurns: [AskConversationTurn] = []
     @State private var pendingLocalFileWriteProposal: LocalFileWriteProposal?
+    @State private var pendingTerminalCommandProposal: AssistantTerminalCommandProposal?
     @State private var assistantImageContext: AssistantImageContext?
     @State private var assistantToolState: AssistantToolState
     @State private var isPreparingAssistantImage = false
@@ -172,7 +173,7 @@ struct ResultPanelView: View {
     ) -> StoredChatSession? {
         switch result.sourceType {
         case .assistant:
-            store.latestAssistantSession()
+            nil
         case .ocr:
             store.session(
                 contextID: defaultChatContextID(for: result),
@@ -248,6 +249,7 @@ struct ResultPanelView: View {
             recoverySection
             assistantContextSection
             localFileWriteConfirmationSection
+            terminalCommandConfirmationSection
             askInputSection
         }
     }
@@ -266,6 +268,7 @@ struct ResultPanelView: View {
             recoverySection
             assistantContextSection
             localFileWriteConfirmationSection
+            terminalCommandConfirmationSection
             askInputSection
         }
     }
@@ -536,6 +539,71 @@ struct ResultPanelView: View {
         }
     }
 
+    @ViewBuilder
+    private var terminalCommandConfirmationSection: some View {
+        if let proposal = pendingTerminalCommandProposal, selectedAction == .ask {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Image(systemName: "terminal")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.orange)
+
+                    Text("Allow terminal")
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                        .foregroundStyle(.primary)
+
+                    Spacer()
+                }
+
+                Text(proposal.reason)
+                    .font(.system(size: 12, weight: .regular))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(URL(fileURLWithPath: proposal.workingDirectory).lastPathComponent)
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.primary)
+
+                    Text(proposal.command)
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 7)
+                .background(.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+                HStack(spacing: 8) {
+                    OverlayPillButton(
+                        title: "Allow",
+                        systemImage: "play.fill",
+                        style: .accent,
+                        action: confirmTerminalCommand
+                    )
+
+                    OverlayPillButton(
+                        title: "Cancel",
+                        systemImage: "xmark",
+                        style: .secondary,
+                        action: cancelTerminalCommand
+                    )
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(.orange.opacity(0.20), lineWidth: 1)
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 10)
+        }
+    }
+
     private var header: some View {
         HStack(alignment: .center, spacing: 12) {
             ActionGradientBadge(systemImage: selectedAction.systemImage)
@@ -683,6 +751,7 @@ struct ResultPanelView: View {
         if selectedAction == .ask {
             AskTranscriptView(
                 turns: askTurns,
+                toolState: assistantToolState,
                 emptyText: hasCaptureContext
                     ? "Chat about this capture."
                     : ""
@@ -951,6 +1020,15 @@ struct ResultPanelView: View {
                     onSelect: loadChatSession
                 )
 
+                OverlayPillButton(
+                    title: "Copy Chat",
+                    systemImage: "doc.on.doc",
+                    style: .secondary,
+                    displayStyle: .iconOnly,
+                    action: copyChatTranscript
+                )
+                .disabled(!canCopyChatTranscript)
+
                 AssistantImageMenuButton(
                     context: assistantImageContext,
                     isPreparing: isPreparingAssistantImage,
@@ -982,6 +1060,257 @@ struct ResultPanelView: View {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(activeText, forType: .string)
         showConfirmation("Copied")
+    }
+
+    private var canCopyChatTranscript: Bool {
+        !askTurns.isEmpty
+            || pendingTerminalCommandProposal != nil
+            || pendingLocalFileWriteProposal != nil
+            || !assistantToolState.recentToolResults.isEmpty
+    }
+
+    private func copyChatTranscript() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(chatTranscriptExportText(), forType: .string)
+        showConfirmation("Chat copied")
+    }
+
+    private func chatTranscriptExportText() -> String {
+        var sections: [String] = []
+        sections.append(
+            """
+            # Pixel Pane Chat Export
+            Exported: \(Self.chatExportDateString())
+            Context: \(chatContextKind.displayName)
+            Route: \(routingSettings.effectiveMode.displayName)
+            Response Style: \(responseDetail.title)
+            Capture Context: \(hasCaptureContext ? "attached" : "none")
+            Selected Action: \(selectedAction.title)
+            Loading Actions: \(loadingActions.map(\.title).sorted().joined(separator: ", "))
+            Current Backend Label: \(actionBackendLabel ?? "none")
+            Current Source Label: \(actionSourceLabel ?? "none")
+            Current Target Label: \(actionTargetLabel ?? "none")
+            Active Text Characters: \(activeText.count)
+            Hidden Reasoning Characters: \(hiddenReasoning?.count ?? 0)
+            """
+        )
+
+        sections.append(chatRuntimeDebugExportText())
+
+        if let hiddenReasoning, !hiddenReasoning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            sections.append(
+                """
+                ## Hidden Thinking / Reasoning
+                \(Self.truncatedForDebugExport(hiddenReasoning, limit: 12_000))
+                """
+            )
+        }
+
+        if let assistantImageContext {
+            sections.append(
+                """
+                ## Active Image Context
+                Source: \(Self.displayName(for: assistantImageContext.source))
+                Label: \(assistantImageContext.label)
+                OCR: \(assistantImageContext.ocrText?.isEmpty == false ? "available" : "none")
+                OCR Excerpt:
+                \(Self.truncatedForDebugExport(assistantImageContext.ocrText ?? "", limit: 4_000))
+                """
+            )
+        }
+
+        if let visualContext = assistantToolState.activeVisualContext {
+            sections.append(
+                """
+                ## Active Visual Tool Context
+                Source: \(visualContext.source.rawValue)
+                Label: \(visualContext.label)
+                Image Input: \(visualContext.hasImageInput ? "yes" : "no")
+                OCR: \(visualContext.hasOCRText ? "available" : "none")
+                Updated: \(Self.chatExportDateString(visualContext.updatedAt))
+                OCR Excerpt:
+                \(visualContext.ocrExcerpt ?? "")
+                """
+            )
+        }
+
+        if !localFileAccess.grants.isEmpty {
+            let grantLines = localFileAccess.grants.map { grant in
+                "- \(grant.kindLabel): \(grant.path)"
+            }
+            sections.append("## Granted File Access\n\(grantLines.joined(separator: "\n"))")
+        }
+
+        if !askTurns.isEmpty {
+            let turnText = askTurns.enumerated().map { index, turn in
+                var lines = [
+                    "### Turn \(index + 1)",
+                    "User:",
+                    turn.question,
+                    "",
+                    "Assistant (\(turn.backendLabel)):",
+                    turn.answer.isEmpty ? "[Thinking / no answer yet]" : turn.answer
+                ]
+                if !turn.statistics.isEmpty {
+                    let stats = turn.statistics.map { statistic in
+                        let detail = statistic.detail.map { " (\($0))" } ?? ""
+                        return "- \(statistic.label): \(statistic.value)\(detail)"
+                    }
+                    lines.append("")
+                    lines.append("Stats:")
+                    lines.append(contentsOf: stats)
+                }
+                return lines.joined(separator: "\n")
+            }
+            sections.append("## Conversation\n\(turnText.joined(separator: "\n\n"))")
+        }
+
+        let toolStateText = assistantToolStateExportText()
+        if !toolStateText.isEmpty {
+            sections.append("## Agent Tool State\n\(toolStateText)")
+        }
+
+        if let toolStateJSON = assistantToolStateJSONExportText() {
+            sections.append("## Raw Assistant Tool State JSON\n```json\n\(toolStateJSON)\n```")
+        }
+
+        if let pendingTerminalCommandProposal {
+            sections.append(
+                """
+                ## Pending Terminal Confirmation
+                Command: \(pendingTerminalCommandProposal.command)
+                Directory: \(pendingTerminalCommandProposal.workingDirectory)
+                Reason: \(pendingTerminalCommandProposal.reason)
+                Risk: \(pendingTerminalCommandProposal.riskLevel.rawValue)
+                Requires Confirmation: \(pendingTerminalCommandProposal.requiresConfirmation ? "yes" : "no")
+                """
+            )
+        }
+
+        if let pendingLocalFileWriteProposal {
+            sections.append(
+                """
+                ## Pending File Write Confirmation
+                Action: \(pendingLocalFileWriteProposal.actionLabel)
+                Target: \(pendingLocalFileWriteProposal.targetPath)
+                Details: \(pendingLocalFileWriteProposal.detailText)
+                """
+            )
+        }
+
+        return sections
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
+    }
+
+    private func chatRuntimeDebugExportText() -> String {
+        var lines: [String] = [
+            "## Current Runtime State",
+            "- Chat Context ID: \(chatContextID)",
+            "- Chat Context Kind: \(chatContextKind.displayName)",
+            "- Ask Input Draft: \(askInput.isEmpty ? "[empty]" : Self.truncatedForDebugExport(askInput, limit: 2_000))",
+            "- Pending File Write: \(pendingLocalFileWriteProposal?.detailText ?? "none")",
+            "- Pending Terminal: \(pendingTerminalCommandProposal?.command ?? "none")"
+        ]
+
+        if !outputStatistics.isEmpty {
+            lines.append("- Active Output Statistics:")
+            lines.append(contentsOf: outputStatistics.map { statistic in
+                let detail = statistic.detail.map { " (\($0))" } ?? ""
+                return "  - \(statistic.label): \(statistic.value)\(detail)"
+            })
+        }
+
+        if !activeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.append("- Active Text Snapshot:")
+            lines.append(Self.truncatedForDebugExport(activeText, limit: 8_000))
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    private func assistantToolStateExportText() -> String {
+        var lines: [String] = []
+
+        if let pending = assistantToolState.pendingContinuation {
+            lines.append("Pending continuation: \(pending.kind.rawValue)")
+            lines.append(contentsOf: pending.sources.map { "- Candidate: \($0.kindLabel) \($0.path)" })
+        }
+
+        if let lastListedFolder = assistantToolState.lastListedFolder {
+            lines.append("Last listed folder: \(lastListedFolder.path)")
+        }
+
+        if !assistantToolState.lastFileSources.isEmpty {
+            lines.append("Recent file sources:")
+            lines.append(contentsOf: assistantToolState.lastFileSources.map { source in
+                "- \(source.kindLabel): \(source.path) [display: \(source.displayName), snippets: \(source.snippetCount), truncated: \(source.isTruncated)]"
+            })
+        }
+
+        if !assistantToolState.grantedSourcesUsed.isEmpty {
+            lines.append("Granted sources used:")
+            lines.append(contentsOf: assistantToolState.grantedSourcesUsed.map { source in
+                "- \(source.kindLabel): \(source.path) [display: \(source.displayName), snippets: \(source.snippetCount), truncated: \(source.isTruncated)]"
+            })
+        }
+
+        if !assistantToolState.lastFileSnippets.isEmpty {
+            lines.append("Recent file snippets:")
+            lines.append(contentsOf: assistantToolState.lastFileSnippets.map { snippet in
+                """
+                - \(snippet.path) [score: \(snippet.score)]
+                  \(Self.truncatedForDebugExport(snippet.preview, limit: 2_500).replacingOccurrences(of: "\n", with: "\n  "))
+                """
+            })
+        }
+
+        if !assistantToolState.recentToolResults.isEmpty {
+            lines.append("Recent tool results:")
+            lines.append(contentsOf: assistantToolState.recentToolResults.map { result in
+                let truncated = result.isTruncated ? ", truncated" : ""
+                var resultLines = [
+                    "- \(result.toolName.rawValue): \(result.summary) [items: \(result.itemCount), sources: \(result.sourceCount)\(truncated), at: \(Self.chatExportDateString(result.createdAt))]"
+                ]
+                if let sources = result.sources, !sources.isEmpty {
+                    resultLines.append(contentsOf: sources.map { "  Source: \($0.kindLabel) \($0.path) [snippets: \($0.snippetCount), truncated: \($0.isTruncated)]" })
+                }
+                if let snippets = result.snippets, !snippets.isEmpty {
+                    resultLines.append(contentsOf: snippets.map { snippet in
+                        """
+                          Snippet: \(snippet.path) [score: \(snippet.score)]
+                          \(Self.truncatedForDebugExport(snippet.preview, limit: 2_000).replacingOccurrences(of: "\n", with: "\n  "))
+                        """
+                    })
+                }
+                if let writeProposalSummary = result.writeProposalSummary {
+                    resultLines.append("  Write proposal/result: \(writeProposalSummary)")
+                }
+                if let command = result.terminalCommand {
+                    resultLines.append("  Terminal command: \(command)")
+                    resultLines.append("  Working directory: \(result.terminalWorkingDirectory ?? "unknown")")
+                    resultLines.append("  Exit code: \(result.terminalExitCode.map(String.init) ?? "unknown"), duration: \(result.terminalDurationSeconds.map { String(format: "%.2fs", $0) } ?? "unknown"), timed out: \(result.terminalDidTimeOut == true ? "yes" : "no"), output truncated: \(result.terminalWasOutputTruncated == true ? "yes" : "no")")
+                    if let stdout = result.terminalStdout, !stdout.isEmpty {
+                        resultLines.append("  STDOUT:\n\(Self.truncatedForDebugExport(stdout, limit: 8_000).replacingOccurrences(of: "\n", with: "\n  "))")
+                    }
+                    if let stderr = result.terminalStderr, !stderr.isEmpty {
+                        resultLines.append("  STDERR:\n\(Self.truncatedForDebugExport(stderr, limit: 4_000).replacingOccurrences(of: "\n", with: "\n  "))")
+                    }
+                }
+                return resultLines.joined(separator: "\n")
+            })
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    private func assistantToolStateJSONExportText() -> String? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        guard let data = try? encoder.encode(assistantToolState) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     private func exportText() {
@@ -1083,6 +1412,32 @@ struct ResultPanelView: View {
         return formatter.string(from: Date())
     }
 
+    private static func chatExportDateString() -> String {
+        chatExportDateString(Date())
+    }
+
+    private static func chatExportDateString(_ date: Date) -> String {
+        ISO8601DateFormatter().string(from: date)
+    }
+
+    private static func truncatedForDebugExport(_ value: String, limit: Int) -> String {
+        guard value.count > limit else { return value }
+        let end = value.index(value.startIndex, offsetBy: limit)
+        return String(value[..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
+            + "\n[... truncated \(value.count - limit) characters ...]"
+    }
+
+    private static func displayName(for source: AssistantImageContextSource) -> String {
+        switch source {
+        case .capture:
+            return "Capture"
+        case .userAttachment:
+            return "User attachment"
+        case .clipboard:
+            return "Clipboard"
+        }
+    }
+
     private var actionStates: [PanelActionState] {
         PanelActionState.states(
             selectedAction: selectedAction,
@@ -1153,6 +1508,7 @@ struct ResultPanelView: View {
         let composerHeight: CGFloat = 58
         let recoveryHeight: CGFloat = recoveryState == nil ? 0 : 96
         let writeConfirmationHeight: CGFloat = pendingLocalFileWriteProposal == nil ? 0 : 136
+        let terminalConfirmationHeight: CGFloat = pendingTerminalCommandProposal == nil ? 0 : 132
         let transcriptHeight = estimatedAskTranscriptHeight
         let height = headerHeight
             + transcriptHeight
@@ -1160,6 +1516,7 @@ struct ResultPanelView: View {
             + composerHeight
             + recoveryHeight
             + writeConfirmationHeight
+            + terminalConfirmationHeight
             + 14
 
         return CGSize(
@@ -1551,6 +1908,51 @@ struct ResultPanelView: View {
             return
         }
 
+        if toolRouter.shouldPlanWriteWithModel(
+            question: question,
+            grants: fileGrants,
+            toolState: assistantToolState
+        ) {
+            planLocalFileWriteWithModel(
+                question: question,
+                grants: fileGrants,
+                toolRouter: toolRouter
+            )
+            return
+        }
+
+        let preModelTerminalProposals: [AssistantTerminalCommandProposal]
+        if let terminalRequest = toolRouter.terminalCommandRequest(
+            question: question,
+            grants: fileGrants,
+            toolState: assistantToolState
+        ) {
+            let proposals: [AssistantTerminalCommandProposal]
+            switch terminalRequest {
+            case .proposal(let proposal):
+                proposals = [proposal]
+            case .proposals(let batch):
+                proposals = batch
+            case .message:
+                proposals = []
+            }
+            if !proposals.isEmpty,
+               proposals.allSatisfy({ $0.intent == .fileSearch && !$0.requiresConfirmation }),
+               Self.shouldUseFileDiscoveryAsModelContext(question) {
+                preModelTerminalProposals = proposals
+            } else {
+                handleAssistantTerminalCommandRequest(
+                    terminalRequest,
+                    question: question,
+                    grants: fileGrants,
+                    toolRouter: toolRouter
+                )
+                return
+            }
+        } else {
+            preModelTerminalProposals = []
+        }
+
         let cloudModeEnabled = routingSettings.effectiveMode == .cloud
         let modelCapabilities = cloudModeEnabled
             ? AssistantModelCapabilities.cloud(from: AIBackendCapabilities(
@@ -1645,26 +2047,55 @@ struct ResultPanelView: View {
         let toolStateBeforeRun = assistantToolState
         Task {
             let toolStateSnapshot = toolStateBeforeRun
+            var updatedToolState = toolStateSnapshot
+            var contextToolResults: [AssistantLocalFileToolResult] = []
+
+            for preModelTerminalProposal in preModelTerminalProposals {
+                let terminalResult = await toolRouter.runTerminalCommand(
+                    preModelTerminalProposal,
+                    grants: fileGrants
+                )
+                updatedToolState.record(terminalResult)
+                contextToolResults.append(terminalResult)
+            }
+
+            let contextualReadResult = toolRouter.contextualFileReadResult(
+                question: question,
+                grants: fileGrants,
+                toolState: updatedToolState
+            )
+            if let contextualReadResult {
+                updatedToolState.record(contextualReadResult)
+                contextToolResults.append(contextualReadResult)
+            }
+
             let shouldSearchFiles = toolRouter.fileSearchDecision(
                 question: question,
                 grants: fileGrants,
-                toolState: toolStateSnapshot
+                toolState: updatedToolState
             ).shouldSearch
             let fileSearchQuestion = Self.enrichedFileSearchQuestion(
                 question: question,
                 previousTurns: previousTurns,
-                toolState: toolStateSnapshot
+                toolState: updatedToolState
             )
-            let searchResult = shouldSearchFiles
+            let searchResult = contextualReadResult == nil && shouldSearchFiles
                 ? await Task.detached {
-                    toolRouter.localFileSearchResult(question: fileSearchQuestion, grants: fileGrants)
+                    toolRouter.localFileSearchResult(
+                        question: fileSearchQuestion,
+                        grants: fileGrants,
+                        toolState: updatedToolState
+                    )
                 }.value
                 : nil
-            let localFileContext = searchResult?.context ?? LocalFileContext(grants: [], snippets: [])
-            var updatedToolState = toolStateSnapshot
             if let searchResult {
                 updatedToolState.record(searchResult)
+                contextToolResults.append(searchResult)
             }
+            let localFileContext = Self.mergedLocalFileContext(
+                grants: fileGrants,
+                results: contextToolResults
+            )
             if let attachedImageContext {
                 updatedToolState.updateVisualContext(
                     AssistantVisualContextState(
@@ -1740,6 +2171,7 @@ struct ResultPanelView: View {
                 assistantToolState.record(toolResult)
             }
             askInput = ""
+            pendingTerminalCommandProposal = nil
             recoveryState = nil
             hiddenReasoning = nil
             outputStatistics = []
@@ -1757,8 +2189,667 @@ struct ResultPanelView: View {
         }
     }
 
+    private func planLocalFileWriteWithModel(
+        question: String,
+        grants: [LocalFileGrant],
+        toolRouter: AssistantToolRouter
+    ) {
+        let cloudModeEnabled = routingSettings.effectiveMode == .cloud
+        let backendLabel = cloudModeEnabled ? Self.cloudBackendLabel : localTextBackendLabel()
+        let priorTurns = assistantContextPriorTurns()
+        var planningToolState = assistantToolState
+        if let readResult = toolRouter.contextualFileReadResult(
+            question: question,
+            grants: grants,
+            toolState: planningToolState
+        ) {
+            planningToolState.record(readResult)
+            assistantToolState = planningToolState
+        }
+        let prompt = AssistantWritePlanningPromptBuilder().prompt(
+            question: question,
+            grants: grants,
+            toolState: planningToolState,
+            priorTurns: priorTurns
+        )
+
+        askInput = ""
+        isChatInputFocused = true
+        pendingLocalFileWriteProposal = nil
+        pendingTerminalCommandProposal = nil
+        recoveryState = nil
+        hiddenReasoning = nil
+        outputStatistics = []
+        actionBackendLabel = backendLabel
+        loadingActions.insert(.ask)
+        askTurns.append(
+            AskConversationTurn(
+                question: question,
+                answer: "",
+                backendLabel: backendLabel
+            )
+        )
+        persistAskSession()
+        setOutputState(askOutputState(), for: .ask)
+        updateExpandedNotchSizeIfNeeded()
+
+        let toolStateBeforeRun = planningToolState
+        Task {
+            do {
+                let generated = try await generatedWriteDraftText(
+                    prompt: prompt
+                )
+                let parser = AssistantGeneratedWriteDraftParser()
+                guard let draft = parser.parse(generated) else {
+                    await MainActor.run {
+                        finishModelPlannedWrite(
+                            question: question,
+                            answer: "The selected model did not return a safe file-write plan. Try again with a filename, folder, or shorter requested content.",
+                            backendLabel: backendLabel,
+                            toolResult: nil
+                        )
+                    }
+                    return
+                }
+
+                let toolResult = toolRouter.generatedWriteProposal(
+                    from: draft,
+                    question: question,
+                    grants: grants,
+                    toolState: toolStateBeforeRun
+                )
+                await MainActor.run {
+                    finishModelPlannedWrite(
+                        question: question,
+                        answer: Self.modelPlannedWriteAnswer(from: toolResult),
+                        backendLabel: "Local Files",
+                        toolResult: toolResult
+                    )
+                }
+            } catch {
+                await MainActor.run {
+                    finishModelPlannedWrite(
+                        question: question,
+                        answer: "I could not ask the selected model to plan that file change: \(error.localizedDescription)",
+                        backendLabel: backendLabel,
+                        toolResult: nil
+                    )
+                }
+            }
+        }
+    }
+
+    private func generatedWriteDraftText(
+        prompt: String
+    ) async throws -> String {
+        var latestText = ""
+        let request = AIBackendRequest(
+            actionKind: .chat,
+            prompt: prompt,
+            maxOutputTokens: AIModelLimits.defaultMaxOutputTokens,
+            cloudOCRText: prompt,
+            cloudQuestion: "Return only the JSON object for this local file-write plan."
+        )
+        for try await event in selectedAIBackend.streamResponse(for: request) {
+            switch event {
+            case .metadata(let statistics):
+                await MainActor.run {
+                    updateLastAskStatistics(statistics)
+                }
+            case .snapshot(let text):
+                latestText = text
+            case .output(let output):
+                latestText = output.finalText
+                await MainActor.run {
+                    updateLastAskStatistics(output.statistics)
+                }
+            case .completed:
+                break
+            }
+        }
+        return latestText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func finishModelPlannedWrite(
+        question: String,
+        answer: String,
+        backendLabel: String,
+        toolResult: AssistantLocalFileToolResult?
+    ) {
+        if let toolResult {
+            assistantToolState.record(toolResult)
+            if case .proposal(let proposal)? = toolResult.writeProposalResult {
+                pendingLocalFileWriteProposal = proposal
+                pendingTerminalCommandProposal = nil
+            }
+        }
+        if let index = askTurns.indices.last {
+            askTurns[index] = AskConversationTurn(
+                question: question,
+                answer: answer,
+                backendLabel: backendLabel,
+                statistics: askTurns[index].statistics
+            )
+        }
+        loadingActions.remove(.ask)
+        actionBackendLabel = backendLabel
+        persistAskSession()
+        setOutputState(askOutputState(), for: .ask)
+        updateExpandedNotchSizeIfNeeded()
+        focusChatInputSoon()
+    }
+
+    private static func modelPlannedWriteAnswer(
+        from toolResult: AssistantLocalFileToolResult
+    ) -> String {
+        switch toolResult.writeProposalResult {
+        case .proposal(let proposal)?:
+            return "I planned this local file change with the selected model. Confirm below before I write anything:\n\n\(proposal.detailText)"
+        case .message(let message)?:
+            return message
+        case .none?, nil:
+            return "The selected model did not produce a local file change to stage."
+        }
+    }
+
+    private func handleAssistantTerminalCommandRequest(
+        _ request: AssistantTerminalCommandRequest,
+        question: String,
+        grants: [LocalFileGrant],
+        toolRouter: AssistantToolRouter
+    ) {
+        switch request {
+        case .message(let message):
+            appendDirectAskAnswer(question: question, answer: message, backendLabel: "Terminal")
+        case .proposals(let proposals):
+            guard !proposals.isEmpty else {
+                appendDirectAskAnswer(question: question, answer: "I could not infer a terminal command to run.", backendLabel: "Terminal")
+                return
+            }
+            if proposals.allSatisfy({ !$0.requiresConfirmation }) {
+                runTerminalCommands(
+                    proposals,
+                    question: question,
+                    grants: grants,
+                    toolRouter: toolRouter
+                )
+            } else if let first = proposals.first(where: { $0.requiresConfirmation }) {
+                askInput = ""
+                pendingLocalFileWriteProposal = nil
+                pendingTerminalCommandProposal = first
+                recoveryState = nil
+                hiddenReasoning = nil
+                outputStatistics = []
+                askTurns.append(
+                    AskConversationTurn(
+                        question: question,
+                        answer: "I need your permission to run a terminal command in `\(URL(fileURLWithPath: first.workingDirectory).lastPathComponent)`.\n\n\(first.reason)",
+                        backendLabel: "Terminal"
+                    )
+                )
+                persistAskSession()
+                setOutputState(askOutputState(), for: .ask)
+                updateExpandedNotchSizeIfNeeded()
+                focusChatInputSoon()
+            }
+        case .proposal(let proposal):
+            if proposal.requiresConfirmation {
+                askInput = ""
+                pendingLocalFileWriteProposal = nil
+                recoveryState = nil
+                hiddenReasoning = nil
+                outputStatistics = []
+                pendingTerminalCommandProposal = proposal
+                askTurns.append(
+                    AskConversationTurn(
+                        question: question,
+                        answer: "I need your permission to run a terminal command in `\(URL(fileURLWithPath: proposal.workingDirectory).lastPathComponent)`.\n\n\(proposal.reason)",
+                        backendLabel: "Terminal"
+                    )
+                )
+                persistAskSession()
+                setOutputState(askOutputState(), for: .ask)
+                updateExpandedNotchSizeIfNeeded()
+                focusChatInputSoon()
+            } else {
+                runTerminalCommand(
+                    proposal,
+                    question: question,
+                    grants: grants,
+                    toolRouter: toolRouter
+                )
+            }
+        }
+    }
+
+    private func runTerminalCommands(
+        _ proposals: [AssistantTerminalCommandProposal],
+        question: String,
+        grants: [LocalFileGrant],
+        toolRouter: AssistantToolRouter
+    ) {
+        askInput = ""
+        isChatInputFocused = true
+        pendingLocalFileWriteProposal = nil
+        recoveryState = nil
+        hiddenReasoning = nil
+        outputStatistics = []
+        actionBackendLabel = "Terminal"
+        loadingActions.insert(.ask)
+        askTurns.append(
+            AskConversationTurn(
+                question: question,
+                answer: "",
+                backendLabel: "Terminal"
+            )
+        )
+        persistAskSession()
+        setOutputState(askOutputState(), for: .ask)
+        updateExpandedNotchSizeIfNeeded()
+
+        Task {
+            var results: [AssistantLocalFileToolResult] = []
+            for proposal in proposals {
+                let result = await toolRouter.runTerminalCommand(proposal, grants: grants)
+                results.append(result)
+            }
+            await MainActor.run {
+                for result in results {
+                    assistantToolState.record(result)
+                }
+                let answer = Self.terminalBatchAnswer(from: results)
+                if let index = askTurns.indices.last {
+                    askTurns[index] = AskConversationTurn(
+                        question: askTurns[index].question,
+                        answer: answer,
+                        backendLabel: "Terminal"
+                    )
+                }
+                loadingActions.remove(.ask)
+                actionBackendLabel = "Terminal"
+                persistAskSession()
+                setOutputState(askOutputState(), for: .ask)
+                updateExpandedNotchSizeIfNeeded()
+                focusChatInputSoon()
+            }
+        }
+    }
+
+    private func runTerminalCommand(
+        _ proposal: AssistantTerminalCommandProposal,
+        question: String,
+        grants: [LocalFileGrant],
+        toolRouter: AssistantToolRouter
+    ) {
+        askInput = ""
+        isChatInputFocused = true
+        pendingLocalFileWriteProposal = nil
+        recoveryState = nil
+        hiddenReasoning = nil
+        outputStatistics = []
+        actionBackendLabel = "Terminal"
+        loadingActions.insert(.ask)
+        askTurns.append(
+            AskConversationTurn(
+                question: question,
+                answer: "",
+                backendLabel: "Terminal"
+            )
+        )
+        persistAskSession()
+        setOutputState(askOutputState(), for: .ask)
+        updateExpandedNotchSizeIfNeeded()
+
+        Task {
+            let toolResult = await toolRouter.runTerminalCommand(proposal, grants: grants)
+            await MainActor.run {
+                assistantToolState.record(toolResult)
+                let answer = Self.terminalAnswer(from: toolResult)
+                if let index = askTurns.indices.last {
+                    askTurns[index] = AskConversationTurn(
+                        question: askTurns[index].question,
+                        answer: answer,
+                        backendLabel: "Terminal"
+                    )
+                }
+                loadingActions.remove(.ask)
+                actionBackendLabel = "Terminal"
+                persistAskSession()
+                setOutputState(askOutputState(), for: .ask)
+                updateExpandedNotchSizeIfNeeded()
+                focusChatInputSoon()
+            }
+        }
+    }
+
+    nonisolated private static func terminalBatchAnswer(from results: [AssistantLocalFileToolResult]) -> String {
+        let fileSources = results.flatMap { $0.sources }.filter { $0.kindLabel == "File" }
+        let uniqueFiles = Array(
+            Dictionary(grouping: fileSources, by: \.path)
+                .compactMap { $0.value.first }
+                .sorted { $0.path.localizedCaseInsensitiveCompare($1.path) == .orderedAscending }
+        )
+        if results.allSatisfy({ $0.terminalResult?.intent == .fileSearch }) {
+            var sections: [String] = []
+            if uniqueFiles.isEmpty {
+                sections.append("I searched the granted folders with the terminal and did not find matching files.")
+            } else {
+                sections.append("I searched the granted folders with the terminal and found:")
+                sections.append(uniqueFiles.prefix(30).map { "- \($0.path)" }.joined(separator: "\n"))
+                if uniqueFiles.count > 30 {
+                    sections.append("- ... \(uniqueFiles.count - 30) more")
+                }
+            }
+            let folders = results.compactMap(\.terminalResult?.workingDirectory)
+            if !folders.isEmpty {
+                sections.append("")
+                sections.append("Folders searched: \(folders.map { "`\($0)`" }.joined(separator: ", "))")
+            }
+            return sections.joined(separator: "\n")
+        }
+        return results.map(Self.terminalAnswer(from:)).joined(separator: "\n\n")
+    }
+
+    private static func shouldUseFileDiscoveryAsModelContext(_ question: String) -> Bool {
+        let normalized = normalizedQuestion(question)
+        let contentSignals = [
+            "what is in",
+            "what's in",
+            "list",
+            "summarize",
+            "tell me",
+            "experience",
+            "background",
+            "work",
+            "roles",
+            "education",
+            "skills",
+            "whole thing",
+            "full thing",
+            "read it"
+        ]
+        let existenceOnlySignals = [
+            "can you see",
+            "do you see",
+            "is there",
+            "where is",
+            "locate"
+        ]
+        if existenceOnlySignals.contains(where: { normalized.contains($0) }),
+           !contentSignals.contains(where: { normalized.contains($0) }) {
+            return false
+        }
+        return contentSignals.contains { normalized.contains($0) }
+    }
+
+    private static func mergedLocalFileContext(
+        grants: [LocalFileGrant],
+        results: [AssistantLocalFileToolResult]
+    ) -> LocalFileContext {
+        var seen: Set<String> = []
+        var snippets: [LocalFileSnippet] = []
+        for result in results {
+            for snippet in result.context?.snippets ?? [] {
+                let key = snippet.id.isEmpty ? snippet.path : snippet.id
+                guard !seen.contains(key) else { continue }
+                seen.insert(key)
+                snippets.append(snippet)
+            }
+        }
+        return LocalFileContext(
+            grants: grants.filter { FileManager.default.fileExists(atPath: $0.path) },
+            snippets: snippets
+        )
+    }
+
+    nonisolated private static func terminalAnswer(from result: AssistantLocalFileToolResult) -> String {
+        guard let terminal = result.terminalResult else {
+            return result.summary
+        }
+        if terminal.intent == .fileSearch {
+            return terminalFileSearchAnswer(from: result, terminal: terminal)
+        }
+        if terminal.intent == .systemInspection {
+            return terminalSystemInspectionAnswer(from: terminal)
+        }
+
+        var sections = [
+            terminal.summary,
+            "",
+            "Command: `\(terminal.command)`",
+            "Directory: `\(terminal.workingDirectory)`",
+            String(format: "Duration: %.1fs", terminal.durationSeconds)
+        ]
+
+        if !terminal.stdout.isEmpty {
+            sections.append(
+                """
+
+                stdout:
+                ```
+                \(terminal.stdout)
+                ```
+                """
+            )
+        }
+        if !terminal.stderr.isEmpty {
+            sections.append(
+                """
+
+                stderr:
+                ```
+                \(terminal.stderr)
+                ```
+                """
+            )
+        }
+        if terminal.wasOutputTruncated {
+            sections.append("\nOutput was truncated to keep the chat responsive.")
+        }
+        return sections.joined(separator: "\n")
+    }
+
+    nonisolated private static func terminalSystemInspectionAnswer(
+        from terminal: AssistantTerminalCommandResult
+    ) -> String {
+        let normalizedCommand = terminal.command.lowercased()
+        if normalizedCommand.hasPrefix("ps aux") {
+            return terminalProcessAnswer(from: terminal)
+        }
+        if normalizedCommand.hasPrefix("lsof -n")
+            || normalizedCommand.contains("-itcp") {
+            return terminalListeningPortAnswer(from: terminal)
+        }
+
+        var sections = [
+            terminal.succeeded ? "I checked locally with the terminal." : terminal.summary,
+            "",
+            "Ran `\(terminal.command)` locally from `\(terminal.workingDirectory)`."
+        ]
+        let output = terminal.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !output.isEmpty {
+            sections.append("")
+            sections.append(output)
+        }
+        if !terminal.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            sections.append("")
+            sections.append("stderr:\n\(terminal.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
+        }
+        return sections.joined(separator: "\n")
+    }
+
+    nonisolated private static func terminalListeningPortAnswer(
+        from terminal: AssistantTerminalCommandResult
+    ) -> String {
+        let output = terminal.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !output.isEmpty else {
+            return terminal.succeeded
+                ? "I checked local listening ports and did not find an obvious development server."
+                : terminal.summary
+        }
+
+        let lines = output
+            .split(separator: "\n")
+            .map(String.init)
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let verifiedURLs = unique(lines.compactMap(verifiedLocalURLLine))
+        let candidates = unique(lines.compactMap(localhostURLLine))
+        var sections: [String] = []
+        if !verifiedURLs.isEmpty {
+            sections.append("The local server reported:")
+            sections.append(verifiedURLs.prefix(8).map { "- \($0)" }.joined(separator: "\n"))
+        } else if candidates.isEmpty {
+            sections.append("I checked local listening ports. I found listeners, but no obvious localhost URL stood out:")
+        } else {
+            sections.append("I checked local listening ports. Possible local URLs:")
+            sections.append(candidates.prefix(8).map { "- \($0)" }.joined(separator: "\n"))
+        }
+        sections.append("")
+        sections.append("Terminal output:")
+        sections.append("```")
+        sections.append(lines.prefix(20).joined(separator: "\n"))
+        sections.append("```")
+        return sections.joined(separator: "\n")
+    }
+
+    nonisolated private static func verifiedLocalURLLine(_ line: String) -> String? {
+        guard let range = line.range(of: #"Verified URL:\s*(https?://[^\s]+)"#, options: .regularExpression) else {
+            return nil
+        }
+        let match = String(line[range])
+        guard let urlRange = match.range(of: #"https?://[^\s]+"#, options: .regularExpression) else {
+            return nil
+        }
+        return String(match[urlRange]).replacingOccurrences(of: "127.0.0.1", with: "localhost")
+    }
+
+    nonisolated private static func localhostURLLine(_ line: String) -> String? {
+        guard let range = line.range(of: #":([0-9]{2,5})\s+\(LISTEN\)"#, options: .regularExpression) else {
+            return nil
+        }
+        let match = String(line[range])
+        guard let portRange = match.range(of: #"[0-9]{2,5}"#, options: .regularExpression) else {
+            return nil
+        }
+        let port = String(match[portRange])
+        let process = line.split(separator: " ").first.map(String.init) ?? "process"
+        return "http://localhost:\(port) (\(process))"
+    }
+
+    nonisolated private static func unique(_ values: [String]) -> [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        for value in values {
+            guard !seen.contains(value) else { continue }
+            seen.insert(value)
+            result.append(value)
+        }
+        return result
+    }
+
+    nonisolated private static func terminalProcessAnswer(
+        from terminal: AssistantTerminalCommandResult
+    ) -> String {
+        let metric = terminal.command.contains("sort -nrk 4") ? "memory" : "CPU"
+        var lines = terminal.stdout
+            .split(separator: "\n")
+            .map(String.init)
+            .compactMap(processSummaryLine)
+        if lines.isEmpty {
+            let output = terminal.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            return output.isEmpty
+                ? terminal.summary
+                : "I checked the top running processes by \(metric).\n\n\(output)"
+        }
+        lines = Array(lines.prefix(10))
+        var sections = ["Top running processes by \(metric):"]
+        sections.append(lines.map { "- \($0)" }.joined(separator: "\n"))
+        sections.append("")
+        sections.append("Ran `\(terminal.command)` locally.")
+        return sections.joined(separator: "\n")
+    }
+
+    nonisolated private static func processSummaryLine(_ line: String) -> String? {
+        let parts = line.split(
+            maxSplits: 10,
+            omittingEmptySubsequences: true,
+            whereSeparator: { $0 == " " || $0 == "\t" }
+        ).map(String.init)
+        guard parts.count >= 11,
+              let cpu = Double(parts[2]),
+              let memory = Double(parts[3]) else {
+            return nil
+        }
+        let user = parts[0]
+        let pid = parts[1]
+        let command = readableProcessName(from: parts[10])
+        return "\(command) (PID \(pid), \(user)): \(String(format: "%.1f", cpu))% CPU, \(String(format: "%.1f", memory))% MEM"
+    }
+
+    nonisolated private static func readableProcessName(from command: String) -> String {
+        if let range = command.range(of: "/Contents/MacOS/") {
+            let rawName = String(command[range.upperBound...])
+            return firstCommandSegment(rawName)
+        }
+        let firstToken = command.split(separator: " ").first.map(String.init) ?? command
+        let name = URL(fileURLWithPath: firstToken).lastPathComponent
+        return name.isEmpty ? firstCommandSegment(command) : name
+    }
+
+    nonisolated private static func firstCommandSegment(_ value: String) -> String {
+        let separators = [" --", " -"]
+        var endIndex = value.endIndex
+        for separator in separators {
+            if let range = value.range(of: separator) {
+                endIndex = min(endIndex, range.lowerBound)
+            }
+        }
+        return String(value[..<endIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    nonisolated private static func terminalFileSearchAnswer(
+        from result: AssistantLocalFileToolResult,
+        terminal: AssistantTerminalCommandResult
+    ) -> String {
+        let files = result.sources.filter { $0.kindLabel == "File" }
+        var sections: [String] = []
+        if files.isEmpty {
+            sections.append("I searched the granted folder with the terminal and did not find matching files.")
+        } else {
+            sections.append("I searched the granted folder with the terminal and found:")
+            sections.append(
+                files.prefix(20)
+                    .map { "- \($0.path)" }
+                    .joined(separator: "\n")
+            )
+            if files.count > 20 {
+                sections.append("- ... \(files.count - 20) more")
+            }
+        }
+        sections.append("")
+        sections.append("Folder: `\(terminal.workingDirectory)`")
+        sections.append(String(format: "Terminal search completed in %.1fs.", terminal.durationSeconds))
+        if !terminal.stderr.isEmpty {
+            sections.append(
+                """
+
+                stderr:
+                ```
+                \(terminal.stderr)
+                ```
+                """
+            )
+        }
+        if terminal.wasOutputTruncated {
+            sections.append("\nOutput was truncated to keep the chat responsive.")
+        }
+        return sections.joined(separator: "\n")
+    }
+
     private func appendDirectAskAnswer(question: String, answer: String, backendLabel: String) {
         askInput = ""
+        pendingLocalFileWriteProposal = nil
+        pendingTerminalCommandProposal = nil
         recoveryState = nil
         hiddenReasoning = nil
         outputStatistics = []
@@ -1817,6 +2908,33 @@ struct ResultPanelView: View {
         )
         persistAskSession()
         setOutputState(askOutputState(), for: .ask)
+        focusChatInputSoon()
+    }
+
+    private func confirmTerminalCommand() {
+        guard let proposal = pendingTerminalCommandProposal else { return }
+        pendingTerminalCommandProposal = nil
+        runTerminalCommand(
+            proposal,
+            question: "Allow terminal in \(URL(fileURLWithPath: proposal.workingDirectory).lastPathComponent): \(proposal.reason)",
+            grants: localFileAccess.grants,
+            toolRouter: AssistantToolRouter()
+        )
+    }
+
+    private func cancelTerminalCommand() {
+        guard let proposal = pendingTerminalCommandProposal else { return }
+        pendingTerminalCommandProposal = nil
+        askTurns.append(
+            AskConversationTurn(
+                question: "Cancel terminal command",
+                answer: "Cancelled. No terminal command was run.\n\n`\(proposal.command)`",
+                backendLabel: "Terminal"
+            )
+        )
+        persistAskSession()
+        setOutputState(askOutputState(), for: .ask)
+        updateExpandedNotchSizeIfNeeded()
         focusChatInputSoon()
     }
 
@@ -2135,6 +3253,8 @@ struct ResultPanelView: View {
         guard loadingActions.isEmpty else { return }
         assistantImageContext = nil
         isPreparingAssistantImage = false
+        pendingLocalFileWriteProposal = nil
+        pendingTerminalCommandProposal = nil
         assistantToolState = session.toolState ?? AssistantToolState()
         chatContextID = session.contextID
         chatContextKind = session.contextKind
@@ -2150,6 +3270,8 @@ struct ResultPanelView: View {
         suppressNextNotchHoverCollapseBriefly()
         assistantImageContext = nil
         isPreparingAssistantImage = false
+        pendingLocalFileWriteProposal = nil
+        pendingTerminalCommandProposal = nil
         assistantToolState = AssistantToolState()
         chatContextID = Self.defaultChatContextID(
             for: CaptureResult(
@@ -3540,7 +4662,14 @@ private struct TypingStatusView: View {
 
 private struct AskTranscriptView: View {
     let turns: [AskConversationTurn]
+    let toolState: AssistantToolState
     let emptyText: String
+    private let bottomAnchorID = "ask-transcript-bottom"
+
+    private var latestTurnSignature: String {
+        guard let lastTurn = turns.last else { return "empty" }
+        return "\(turns.count)-\(lastTurn.question.count)-\(lastTurn.answer.count)"
+    }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -3554,7 +4683,7 @@ private struct AskTranscriptView: View {
                             .padding(.top, 8)
                     } else {
                         ForEach(Array(turns.enumerated()), id: \.offset) { index, turn in
-                            AskTurnView(index: index + 1, turn: turn)
+                            AskTurnView(index: index + 1, turn: turn, toolState: toolState)
                                 .id(index)
                         }
                     }
@@ -3562,14 +4691,83 @@ private struct AskTranscriptView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.trailing, 4)
                 .padding(.bottom, 2)
+                .id(bottomAnchorID)
             }
-            .scrollIndicators(.hidden)
+            .scrollIndicators(.automatic)
+            .onAppear {
+                scrollToBottom(proxy, animated: false)
+            }
             .onChange(of: turns.count) { _, newCount in
                 guard newCount > 0 else { return }
-                withAnimation(.easeOut(duration: 0.18)) {
-                    proxy.scrollTo(newCount - 1, anchor: .bottom)
+                scrollToBottom(proxy)
+            }
+            .onChange(of: latestTurnSignature) { _, _ in
+                scrollToBottom(proxy)
+            }
+        }
+    }
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool = true) {
+        guard !turns.isEmpty else { return }
+        if animated {
+            withAnimation(.easeOut(duration: 0.18)) {
+                proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+            }
+        } else {
+            proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+        }
+    }
+}
+
+private struct AssistantThinkingIndicator: View {
+    @State private var phase = false
+    private let accent = Color(red: 0.72, green: 0.82, blue: 1.0)
+
+    var body: some View {
+        HStack(spacing: 9) {
+            ZStack {
+                Circle()
+                    .stroke(accent.opacity(phase ? 0.18 : 0.34), lineWidth: 1.2)
+                    .frame(width: 18, height: 18)
+                    .scaleEffect(phase ? 1.22 : 0.78)
+                    .blur(radius: phase ? 0.6 : 0)
+
+                Circle()
+                    .fill(accent.opacity(0.24))
+                    .frame(width: 16, height: 16)
+                    .blur(radius: 5)
+                    .scaleEffect(phase ? 1.15 : 0.85)
+
+                Circle()
+                    .fill(accent.opacity(0.82))
+                    .frame(width: 4.5, height: 4.5)
+                    .shadow(color: accent.opacity(0.7), radius: phase ? 5 : 2)
+            }
+            .frame(width: 22, height: 22)
+
+            HStack(spacing: 3) {
+                ForEach(0..<3, id: \.self) { index in
+                    Capsule(style: .continuous)
+                        .fill(accent.opacity(phase ? 0.95 : 0.38))
+                        .frame(width: 4, height: phase ? 15 : 7)
+                        .shadow(color: accent.opacity(0.35), radius: phase ? 4 : 1)
+                        .animation(
+                            .easeInOut(duration: 0.64)
+                                .repeatForever(autoreverses: true)
+                                .delay(Double(index) * 0.13),
+                            value: phase
+                        )
                 }
             }
+            .frame(width: 23, height: 18)
+
+            Text("Thinking")
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 2)
+        .onAppear {
+            phase = true
         }
     }
 }
@@ -3577,6 +4775,7 @@ private struct AskTranscriptView: View {
 private struct AskTurnView: View {
     let index: Int
     let turn: AskConversationTurn
+    let toolState: AssistantToolState
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -3600,11 +4799,17 @@ private struct AskTurnView: View {
             VStack(alignment: .leading, spacing: 9) {
                 metadataLine
 
-                Text(turn.answer.isEmpty ? "Thinking..." : turn.answer)
-                    .font(.system(size: 13.5))
-                    .lineSpacing(4)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                if turn.answer.isEmpty {
+                    AssistantThinkingIndicator()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityLabel("Thinking")
+                } else {
+                    FileLinkedAnswerText(
+                        text: turn.answer,
+                        baseDirectoryPaths: Self.baseDirectoryPaths(from: toolState)
+                    )
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 12)
@@ -3694,6 +4899,149 @@ private struct AskTurnView: View {
 
     private var shouldShowPeakMemory: Bool {
         compactBackendLabel == "MLX Text" || compactBackendLabel == "MLX Vision"
+    }
+
+    private static func baseDirectoryPaths(from toolState: AssistantToolState) -> [String] {
+        var paths: [String] = []
+        if let lastListedFolder = toolState.lastListedFolder {
+            paths.append(lastListedFolder.path)
+        }
+        paths.append(contentsOf: toolState.grantedSourcesUsed.filter { $0.kindLabel == "Folder" }.map(\.path))
+        paths.append(contentsOf: toolState.lastFileSources.map { URL(fileURLWithPath: $0.path).deletingLastPathComponent().path })
+
+        var seen: Set<String> = []
+        return paths.filter { path in
+            guard !path.isEmpty, !seen.contains(path) else { return false }
+            seen.insert(path)
+            return true
+        }
+    }
+}
+
+private struct FileLinkedAnswerText: View {
+    private enum Segment: Identifiable {
+        case text(String, UUID)
+        case path(display: String, path: String, UUID)
+
+        var id: UUID {
+            switch self {
+            case .text(_, let id), .path(_, _, let id):
+                return id
+            }
+        }
+    }
+
+    let text: String
+    let baseDirectoryPaths: [String]
+
+    var body: some View {
+        let lineSegments = Self.lineSegments(in: text, baseDirectoryPaths: baseDirectoryPaths)
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(lineSegments.indices, id: \.self) { index in
+                HStack(alignment: .firstTextBaseline, spacing: 3) {
+                    ForEach(lineSegments[index]) { segment in
+                        switch segment {
+                        case .text(let value, _):
+                            Text(value)
+                                .font(.system(size: 13.5))
+                                .lineSpacing(4)
+                                .textSelection(.enabled)
+
+                        case .path(let display, let path, _):
+                            Button {
+                                Self.revealInFinder(path)
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "folder")
+                                        .font(.system(size: 10, weight: .semibold))
+
+                                    Text(display)
+                                        .font(.system(size: 12.5, weight: .medium, design: .monospaced))
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                                .foregroundStyle(Color(red: 0.72, green: 0.82, blue: 1.0))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .background(.white.opacity(0.065), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .stroke(.white.opacity(0.10), lineWidth: 1)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .help("Show in Finder")
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private static func lineSegments(in text: String, baseDirectoryPaths: [String]) -> [[Segment]] {
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+            .map { segments(in: String($0), baseDirectoryPaths: baseDirectoryPaths) }
+    }
+
+    private static func segments(in line: String, baseDirectoryPaths: [String]) -> [Segment] {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"(/Users/[^\s,.;:)\]\}]+)"#,
+            options: []
+        ) else {
+            return [.text(line, UUID())]
+        }
+
+        let nsLine = line as NSString
+        let matches = regex.matches(
+            in: line,
+            range: NSRange(location: 0, length: nsLine.length)
+        )
+        guard !matches.isEmpty else {
+            return relativeListingSegments(in: line, baseDirectoryPaths: baseDirectoryPaths)
+        }
+
+        var result: [Segment] = []
+        var cursor = 0
+        for match in matches {
+            let range = match.range(at: 1)
+            if range.location > cursor {
+                result.append(.text(nsLine.substring(with: NSRange(location: cursor, length: range.location - cursor)), UUID()))
+            }
+            let path = nsLine.substring(with: range)
+            result.append(.path(display: path, path: path, UUID()))
+            cursor = range.location + range.length
+        }
+
+        if cursor < nsLine.length {
+            result.append(.text(nsLine.substring(from: cursor), UUID()))
+        }
+
+        return result
+    }
+
+    private static func relativeListingSegments(in line: String, baseDirectoryPaths: [String]) -> [Segment] {
+        guard !baseDirectoryPaths.isEmpty else { return [.text(line, UUID())] }
+        let prefixes = ["- File: ", "- Folder: "]
+        guard let prefix = prefixes.first(where: { line.hasPrefix($0) }) else {
+            return [.text(line, UUID())]
+        }
+        let name = String(line.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !name.contains("/") else { return [.text(line, UUID())] }
+
+        let resolvedPath = baseDirectoryPaths
+            .map { URL(fileURLWithPath: $0).appendingPathComponent(name).path }
+            .first { FileManager.default.fileExists(atPath: $0) }
+            ?? URL(fileURLWithPath: baseDirectoryPaths[0]).appendingPathComponent(name).path
+
+        return [
+            .text(prefix, UUID()),
+            .path(display: name, path: resolvedPath, UUID())
+        ]
+    }
+
+    private static func revealInFinder(_ path: String) {
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
     }
 }
 
