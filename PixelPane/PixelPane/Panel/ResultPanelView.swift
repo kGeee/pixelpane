@@ -26,6 +26,8 @@ struct ResultPanelView: View {
     private let mlxDetector = MLXVisionRuntimeDetector()
     private let mlxModelStore = MLXVisionModelStore()
     private let displayTextNormalizer = ModelDisplayTextNormalizer()
+    private let agentKernelRuntime = AgentKernelChatRuntimeV2()
+    private let agentKernelExportProjection = AgentKernelExportProjectionV2()
     @State private var selectedAction: PanelActionKind = .extractText
     @State private var loadingActions: Set<PanelActionKind> = []
     @State private var activeText: String
@@ -42,6 +44,9 @@ struct ResultPanelView: View {
     @State private var askTurns: [AskConversationTurn] = []
     @State private var pendingLocalFileWriteProposal: LocalFileWriteProposal?
     @State private var pendingTerminalCommandProposal: AssistantTerminalCommandProposal?
+    @State private var pendingAgentKernelApproval: AgentKernelPendingApprovalV2?
+    @State private var agentKernelLedger: AgentKernelSessionLedgerV2
+    @State private var askTask: Task<Void, Never>?
     @State private var assistantImageContext: AssistantImageContext?
     @State private var assistantToolState: AssistantToolState
     @State private var isPreparingAssistantImage = false
@@ -128,6 +133,7 @@ struct ResultPanelView: View {
             initialToolState.updateVisualContext(Self.captureVisualState(for: result, imageWillBeSent: false))
         }
         _askTurns = State(initialValue: restoredTurns)
+        _agentKernelLedger = State(initialValue: Self.agentKernelLedger(for: restoredTurns))
         _assistantToolState = State(initialValue: initialToolState)
         _chatContextID = State(initialValue: restoredSession?.contextID ?? Self.defaultChatContextID(for: result))
         _chatContextKind = State(initialValue: restoredSession?.contextKind ?? Self.defaultChatContextKind(for: result))
@@ -165,6 +171,9 @@ struct ResultPanelView: View {
             .onChange(of: loadingActions) { _, newValue in
                 updateNotchNotificationState(isProcessing: !newValue.isEmpty)
             }
+            .onChange(of: askInput) { _, _ in
+                updateExpandedNotchSizeIfNeeded()
+            }
     }
 
     private static func restoredChatSession(
@@ -193,6 +202,21 @@ struct ResultPanelView: View {
 
     private static func defaultChatContextKind(for result: CaptureResult) -> ChatSessionContextKind {
         result.sourceType == .assistant ? .assistant : .capture
+    }
+
+    private static func agentKernelLedger(for turns: [AskConversationTurn]) -> AgentKernelSessionLedgerV2 {
+        var ledger = AgentKernelSessionLedgerV2()
+        for turn in turns {
+            let question = turn.question.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !question.isEmpty {
+                ledger.append(.userMessage(ledger.boundedText(question)))
+            }
+            let answer = turn.answer.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !answer.isEmpty {
+                ledger.append(.assistantMessage(ledger.boundedText(answer)))
+            }
+        }
+        return ledger
     }
 
     private static func initialAssistantToolState(for result: CaptureResult) -> AssistantToolState {
@@ -294,7 +318,7 @@ struct ResultPanelView: View {
         if isNotchExpanded {
             onPresentationSizeChange?(targetSize)
             isNotchContentVisible = true
-            focusChatInputSoon()
+            focusChatInputImmediately()
             return
         }
         isNotchContentVisible = false
@@ -303,7 +327,7 @@ struct ResultPanelView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.10) {
             guard isNotchExpanded else { return }
             isNotchContentVisible = true
-            focusChatInputSoon()
+            focusChatInputImmediately()
         }
     }
 
@@ -377,10 +401,14 @@ struct ResultPanelView: View {
     private func focusChatInputSoon() {
         guard selectedAction == .ask else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) {
-            guard selectedAction == .ask else { return }
-            guard presentationStyle != .notchAttached || isNotchExpanded else { return }
-            isChatInputFocused = true
+            focusChatInputImmediately()
         }
+    }
+
+    private func focusChatInputImmediately() {
+        guard selectedAction == .ask else { return }
+        guard presentationStyle != .notchAttached || isNotchExpanded else { return }
+        isChatInputFocused = true
     }
 
     private var headerSection: some View {
@@ -395,7 +423,7 @@ struct ResultPanelView: View {
             NotchHeaderStatusDot()
 
             Text("Pixel Pane")
-                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
                 .foregroundStyle(.secondary)
 
             Spacer()
@@ -406,23 +434,25 @@ struct ResultPanelView: View {
                     .tint(.secondary)
             }
         }
-        .padding(.horizontal, 24)
-        .padding(.bottom, isBlankAssistantChat ? 6 : 12)
+        .padding(.horizontal, 22)
+        .padding(.bottom, isBlankAssistantChat ? 4 : 10)
     }
 
     private var emptyAssistantWelcomeSection: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             Text("Ready")
-                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .foregroundStyle(.secondary)
 
             Circle()
                 .fill(.secondary.opacity(0.45))
                 .frame(width: 3, height: 3)
 
-            Text(routingSettings.effectiveMode == .cloud ? "Cloud Mode" : "Local Mode")
-                .font(.system(size: 12, weight: .medium, design: .rounded))
+            Text(assistantModelStatusText)
+                .font(.system(size: 11, weight: .medium, design: .rounded))
                 .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .truncationMode(.middle)
 
             Spacer(minLength: 10)
 
@@ -434,8 +464,36 @@ struct ResultPanelView: View {
                 )
             }
         }
-        .padding(.horizontal, 24)
-        .padding(.bottom, 8)
+        .padding(.horizontal, 22)
+        .padding(.bottom, 6)
+    }
+
+    private var assistantModelStatusText: String {
+        switch routingSettings.effectiveMode {
+        case .cloud:
+            return "Cloud Mode"
+        case .local:
+            if let selectedModelName {
+                return "Local - \(selectedModelName)"
+            }
+            return localAICapabilities.text.isAvailable ? "Local - MLX" : "Local"
+        }
+    }
+
+    private var selectedModelName: String? {
+        guard let selection = mlxModelStore.selectedModel else { return nil }
+        return Self.compactModelName(selection.repositoryID)
+    }
+
+    private static func compactModelName(_ repositoryID: String) -> String {
+        let name = repositoryID
+            .split(separator: "/")
+            .last
+            .map(String.init) ?? repositoryID
+        return name
+            .replacingOccurrences(of: "-Instruct", with: "")
+            .replacingOccurrences(of: "-4bit", with: "")
+            .replacingOccurrences(of: "-6bit", with: "")
     }
 
     private var workspaceSection: some View {
@@ -525,6 +583,7 @@ struct ResultPanelView: View {
                         style: .secondary,
                         action: cancelLocalFileWrite
                     )
+
                 }
             }
             .padding(.horizontal, 12)
@@ -590,6 +649,7 @@ struct ResultPanelView: View {
                         style: .secondary,
                         action: cancelTerminalCommand
                     )
+
                 }
             }
             .padding(.horizontal, 12)
@@ -995,63 +1055,81 @@ struct ResultPanelView: View {
     @ViewBuilder
     private var askInputBar: some View {
         if selectedAction == .ask {
-            HStack(spacing: 8) {
-                OverlayPillButton(
-                    title: "New",
-                    systemImage: "square.and.pencil",
-                    style: .secondary,
-                    displayStyle: .iconOnly,
-                    action: startNewAssistantChat
-                )
-                .disabled(!canStartNewChat)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    OverlayPillButton(
+                        title: "New",
+                        systemImage: "square.and.pencil",
+                        style: .secondary,
+                        displayStyle: .iconOnly,
+                        action: startNewAssistantChat
+                    )
+                    .disabled(!canStartNewChat)
 
-                FileSourceMenuButton(
-                    grants: localFileAccess.grants,
-                    isDisabled: !loadingActions.isEmpty,
-                    onGrantFolder: localFileAccess.grantFolder,
-                    onGrantFile: localFileAccess.grantFile,
-                    onRemove: localFileAccess.removeGrant,
-                    onClear: localFileAccess.clearGrants
-                )
+                    FileSourceMenuButton(
+                        grants: localFileAccess.grants,
+                        isDisabled: !loadingActions.isEmpty,
+                        onGrantFolder: localFileAccess.grantFolder,
+                        onGrantFile: localFileAccess.grantFile,
+                        onRemove: localFileAccess.removeGrant,
+                        onClear: localFileAccess.clearGrants
+                    )
 
-                ChatHistoryMenuButton(
-                    sessions: chatHistory.recentSessions(),
-                    isDisabled: !loadingActions.isEmpty,
-                    onSelect: loadChatSession
-                )
+                    ChatHistoryMenuButton(
+                        sessions: chatHistory.recentSessions(),
+                        isDisabled: !loadingActions.isEmpty,
+                        onSelect: loadChatSession,
+                        onClearHistory: clearChatHistory
+                    )
 
-                OverlayPillButton(
-                    title: "Copy Chat",
-                    systemImage: "doc.on.doc",
-                    style: .secondary,
-                    displayStyle: .iconOnly,
-                    action: copyChatTranscript
-                )
-                .disabled(!canCopyChatTranscript)
+                    OverlayPillButton(
+                        title: "Copy Chat",
+                        systemImage: "doc.on.doc",
+                        style: .secondary,
+                        displayStyle: .iconOnly,
+                        action: copyChatTranscript
+                    )
+                    .disabled(!canCopyChatTranscript)
 
-                AssistantImageMenuButton(
-                    context: assistantImageContext,
-                    isPreparing: isPreparingAssistantImage,
-                    isDisabled: !loadingActions.isEmpty,
-                    onChoose: chooseAssistantImage,
-                    onClear: clearAssistantImage
-                )
+                    AssistantImageMenuButton(
+                        context: assistantImageContext,
+                        isPreparing: isPreparingAssistantImage,
+                        isDisabled: !loadingActions.isEmpty,
+                        onChoose: chooseAssistantImage,
+                        onClear: clearAssistantImage
+                    )
 
-                OverlayTextField(
-                    placeholder: hasCaptureContext ? "Ask about this screen" : "Ask Pixel Pane",
-                    text: $askInput,
-                    isFocused: $isChatInputFocused,
-                    onSubmit: sendAskQuestion
-                )
+                    Spacer(minLength: 0)
+                }
 
-                OverlayPillButton(
-                    title: "Send",
-                    systemImage: "paperplane.fill",
-                    style: .accent,
-                    displayStyle: .prominentIconAndTitle,
-                    action: sendAskQuestion
-                )
-                .disabled(!canSendAskQuestion)
+                HStack(alignment: .bottom, spacing: 8) {
+                    OverlayTextField(
+                        placeholder: hasCaptureContext ? "Ask about this screen" : "Ask Pixel Pane",
+                        text: $askInput,
+                        isFocused: $isChatInputFocused,
+                        onSubmit: sendAskQuestion
+                    )
+                    .layoutPriority(1)
+
+                    if loadingActions.contains(.ask) {
+                        OverlayPillButton(
+                            title: "Cancel",
+                            systemImage: "xmark.circle.fill",
+                            style: .accent,
+                            displayStyle: .prominentIconAndTitle,
+                            action: cancelAskQuestion
+                        )
+                    } else {
+                        OverlayPillButton(
+                            title: "Send",
+                            systemImage: "paperplane.fill",
+                            style: .accent,
+                            displayStyle: .prominentIconAndTitle,
+                            action: sendAskQuestion
+                        )
+                        .disabled(!canSendAskQuestion)
+                    }
+                }
             }
         }
     }
@@ -1064,6 +1142,7 @@ struct ResultPanelView: View {
 
     private var canCopyChatTranscript: Bool {
         !askTurns.isEmpty
+            || !agentKernelLedger.transcriptMessages.isEmpty
             || pendingTerminalCommandProposal != nil
             || pendingLocalFileWriteProposal != nil
             || !assistantToolState.recentToolResults.isEmpty
@@ -1141,8 +1220,9 @@ struct ResultPanelView: View {
             sections.append("## Granted File Access\n\(grantLines.joined(separator: "\n"))")
         }
 
-        if !askTurns.isEmpty {
-            let turnText = askTurns.enumerated().map { index, turn in
+        let exportTurns = agentKernelConversationTurnsForExport()
+        if !exportTurns.isEmpty {
+            let turnText = exportTurns.enumerated().map { index, turn in
                 var lines = [
                     "### Turn \(index + 1)",
                     "User:",
@@ -1165,13 +1245,14 @@ struct ResultPanelView: View {
             sections.append("## Conversation\n\(turnText.joined(separator: "\n\n"))")
         }
 
-        let toolStateText = assistantToolStateExportText()
-        if !toolStateText.isEmpty {
-            sections.append("## Agent Tool State\n\(toolStateText)")
+        let controlEventsText = agentKernelControlEventsExportText()
+        if !controlEventsText.isEmpty {
+            sections.append("## Agent Control Events\n\(controlEventsText)")
         }
 
-        if let toolStateJSON = assistantToolStateJSONExportText() {
-            sections.append("## Raw Assistant Tool State JSON\n```json\n\(toolStateJSON)\n```")
+        let toolStateText = assistantToolStateExportText()
+        if !toolStateText.isEmpty {
+            sections.append("## Agent Tool State Snapshot\n\(toolStateText)")
         }
 
         if let pendingTerminalCommandProposal {
@@ -1222,12 +1303,35 @@ struct ResultPanelView: View {
             })
         }
 
-        if !activeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if selectedAction != .ask,
+           !activeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             lines.append("- Active Text Snapshot:")
             lines.append(Self.truncatedForDebugExport(activeText, limit: 8_000))
         }
 
         return lines.joined(separator: "\n")
+    }
+
+    private func agentKernelConversationTurnsForExport() -> [AskConversationTurn] {
+        let projected = agentKernelExportProjection.conversationTurns(from: agentKernelLedger)
+        guard !projected.isEmpty else { return askTurns }
+        return projected.enumerated().map { index, turn in
+            AskConversationTurn(
+                question: turn.question.text,
+                answer: turn.answer?.text ?? "",
+                backendLabel: askTurns.indices.contains(index)
+                    ? askTurns[index].backendLabel
+                    : (actionBackendLabel ?? askBackendLabelForNextTurn())
+            )
+        }
+    }
+
+    private func agentKernelControlEventsExportText() -> String {
+        let records = agentKernelExportProjection.controlEventRecords(from: agentKernelLedger)
+        guard !records.isEmpty else { return "" }
+        return records.map { record in
+            "- \(record.kind): \(record.summary.text)"
+        }.joined(separator: "\n")
     }
 
     private func assistantToolStateExportText() -> String {
@@ -1303,14 +1407,6 @@ struct ResultPanelView: View {
         }
 
         return lines.joined(separator: "\n")
-    }
-
-    private func assistantToolStateJSONExportText() -> String? {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        guard let data = try? encoder.encode(assistantToolState) else { return nil }
-        return String(data: data, encoding: .utf8)
     }
 
     private func exportText() {
@@ -1502,10 +1598,10 @@ struct ResultPanelView: View {
     }
 
     private var preferredAskNotchSize: CGSize {
-        let width: CGFloat = hasCaptureContext ? 780 : 720
+        let width: CGFloat = hasCaptureContext ? 820 : 760
         let headerHeight: CGFloat = 82
         let chipHeight: CGFloat = assistantContextBadges.isEmpty ? 0 : 34
-        let composerHeight: CGFloat = 58
+        let composerHeight = estimatedAskComposerHeight
         let recoveryHeight: CGFloat = recoveryState == nil ? 0 : 96
         let writeConfirmationHeight: CGFloat = pendingLocalFileWriteProposal == nil ? 0 : 136
         let terminalConfirmationHeight: CGFloat = pendingTerminalCommandProposal == nil ? 0 : 132
@@ -1521,8 +1617,17 @@ struct ResultPanelView: View {
 
         return CGSize(
             width: width,
-            height: min(ResultPanelPresentationStyle.notchExpandedSize.height, max(250, height))
+            height: min(ResultPanelPresentationStyle.notchExpandedSize.height, max(280, height))
         )
+    }
+
+    private var estimatedAskComposerHeight: CGFloat {
+        let trimmed = askInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return 76 }
+        let explicitLines = CGFloat(trimmed.filter { $0 == "\n" }.count + 1)
+        let wrappedLines = ceil(CGFloat(trimmed.count) / 72)
+        let lines = min(5, max(1, max(explicitLines, wrappedLines)))
+        return 66 + (lines - 1) * 16
     }
 
     private var estimatedAskTranscriptHeight: CGFloat {
@@ -1532,15 +1637,15 @@ struct ResultPanelView: View {
 
         let visibleTurns = askTurns.suffix(3)
         let estimated = visibleTurns.reduce(CGFloat(0)) { total, turn in
-            let questionLines = max(1, ceil(CGFloat(turn.question.count) / 56))
+            let questionLines = max(1, ceil(CGFloat(turn.question.count) / 64))
             let answerText = turn.answer.isEmpty ? "Thinking..." : turn.answer
-            let answerLines = max(1, ceil(CGFloat(answerText.count) / 82))
-            let questionHeight = 32 + questionLines * 17
-            let answerHeight = 50 + answerLines * 19
-            return total + questionHeight + answerHeight + 22
+            let answerLines = max(1, ceil(CGFloat(answerText.count) / 92))
+            let questionHeight = 26 + questionLines * 15
+            let answerHeight = 42 + answerLines * 17
+            return total + questionHeight + answerHeight + 18
         }
 
-        return min(340, max(112, estimated))
+        return min(460, max(132, estimated))
     }
 
     private func startSmartDefaultActionIfNeeded() {
@@ -1676,7 +1781,18 @@ struct ResultPanelView: View {
     }
 
     private func localTextBackendLabel() -> String {
-        localAICapabilities.text.isAvailable ? Self.mlxTextBackendLabel : Self.appleTextBackendLabel
+        switch localAICapabilities.text {
+        case .available(.mlxText):
+            return Self.mlxTextBackendLabel
+        case .available(.appleFoundationModels):
+            return Self.appleTextBackendLabel
+        case .available(.mlxVision):
+            return Self.mlxVisionBackendLabel
+        case .available(.pixelPaneCloud):
+            return Self.cloudBackendLabel
+        case .installing, .unavailable:
+            return Self.appleTextBackendLabel
+        }
     }
 
     private var cloudDetectedLanguage: String? {
@@ -1885,363 +2001,15 @@ struct ResultPanelView: View {
     private func sendAskQuestion() {
         let question = askInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty, !loadingActions.contains(.ask) else { return }
-        let fileGrants = localFileAccess.grants
-        let toolRouter = AssistantToolRouter()
-        let toolEnvironment = AssistantToolEnvironment(
-            hasCaptureContext: hasCaptureContext,
-            routingMode: routingSettings.effectiveMode,
-            selectedLocalModelRepositoryID: mlxModelStore.selectedModel?.repositoryID,
-            localTextBackendLabel: localTextBackendLabel(),
-            previousTurnReferencedModel: askTurns.last.map {
-                Self.normalizedQuestion($0.question).contains("model")
-                    || Self.normalizedQuestion($0.answer).contains("language model")
-            } == true
-        )
-
-        if handlePendingTerminalCommandTextConfirmation(
-            question: question,
-            grants: fileGrants,
-            toolRouter: toolRouter
-        ) {
-            return
-        }
-
-        if toolRouter.shouldPlanWriteWithModel(
-            question: question,
-            grants: fileGrants,
-            toolState: assistantToolState
-        ) {
-            planLocalFileWriteWithModel(
-                question: question,
-                grants: fileGrants,
-                toolRouter: toolRouter
-            )
-            return
-        }
-
-        if let preflight = toolRouter.preflight(
-            question: question,
-            grants: fileGrants,
-            environment: toolEnvironment,
-            toolState: assistantToolState,
-            scope: .appOwnedOnly
-        ) {
-            handleAssistantToolPreflight(preflight, question: question)
-            return
-        }
-
-        if shouldUseModelPlannedActionLoop(
-            question: question,
-            grants: fileGrants,
-            toolState: assistantToolState
-        ) {
-            planAssistantActionLoopWithModel(
-                question: question,
-                grants: fileGrants,
-                environment: toolEnvironment,
-                toolRouter: toolRouter
-            )
-            return
-        }
-
-        if let terminalRequest = toolRouter.terminalCommandRequest(
-            question: question,
-            grants: fileGrants,
-            toolState: assistantToolState
-        ) {
-            handleAssistantTerminalCommandRequest(
-                terminalRequest,
-                question: question,
-                grants: fileGrants,
-                toolRouter: toolRouter
-            )
-            return
-        }
-
-        if let fallbackPreflight = toolRouter.preflight(
-            question: question,
-            grants: fileGrants,
-            environment: toolEnvironment,
-            toolState: assistantToolState,
-            scope: .full
-        ) {
-            handleAssistantToolPreflight(fallbackPreflight, question: question)
-            return
-        }
-
-        let cloudModeEnabled = routingSettings.effectiveMode == .cloud
-        let modelCapabilities = cloudModeEnabled
-            ? AssistantModelCapabilities.cloud(from: AIBackendCapabilities(
-                text: .available(.pixelPaneCloud),
-                image: .available(.pixelPaneCloud),
-                contextWindowTokens: nil,
-                maxPromptCharacters: AIModelLimits.maxPromptCharacters,
-                maxOutputTokens: AIModelLimits.defaultMaxOutputTokens
-            ))
-            : AssistantModelCapabilities.local(from: localAICapabilities)
-        let hasCaptureContextValue = hasCaptureContext
-        let attachedImageContext = assistantImageContext
-        let hasAssistantImageContext = attachedImageContext != nil
-        let hasAnyVisualContext = hasCaptureContextValue || hasAssistantImageContext
-        let capturedOCRText = result.text
-        let attachedImageOCRText = attachedImageContext?.ocrText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let hasReadableVisualText = !capturedOCRText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || !attachedImageOCRText.isEmpty
-        let preferredVisualImage = attachedImageContext?.image ?? result.image
-        let askUsesMLX = !cloudModeEnabled
-            && hasAnyVisualContext
-            && modelCapabilities.supportsImageInput
-            && preferredVisualImage != nil
-        let cloudImageInput = cloudModeEnabled
-            && hasAnyVisualContext
-            && modelCapabilities.supportsImageInput
-            ? preferredVisualImage
-            : nil
-        let imageInput = cloudModeEnabled
-            ? cloudImageInput
-            : (askUsesMLX ? preferredVisualImage : nil)
-        let preferredProvider: AIBackendProvider? = askUsesMLX ? .mlxVision : nil
-        let backendLabel = cloudModeEnabled
-            ? Self.cloudBackendLabel
-            : (askUsesMLX ? Self.mlxVisionBackendLabel : localTextBackendLabel())
-        let isCaptureImageAttached = hasCaptureContextValue && imageInput != nil && attachedImageContext == nil
-        let isAssistantImageAttached = attachedImageContext != nil && imageInput != nil
-        let previousTurns = assistantContextPriorTurns()
-        let previousTranscript = formattedAskTranscript()
-        let detectedLanguage = cloudDetectedLanguage
-        let conversation = cloudConversationTurns(beforeLastTurn: false)
-        let isSimpleBriefPlainChat = responseDetail == .brief
-            && !hasAnyVisualContext
-            && previousTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !toolRouter.fileSearchDecision(
-                question: question,
-                grants: fileGrants,
-                toolState: assistantToolState
-            ).shouldSearch
-
-        if hasAnyVisualContext,
-           !cloudModeEnabled,
-           imageInput == nil,
-           !hasReadableVisualText,
-           Self.questionReferencesCapture(question) {
-            askInput = ""
-            recoveryState = nil
-            hiddenReasoning = nil
-            outputStatistics = []
-            actionBackendLabel = backendLabel
-            askTurns.append(
-                AskConversationTurn(
-                    question: question,
-                    answer: "I have visual context, but Local text mode did not get readable OCR from it and cannot inspect the pixels directly. Switch to Cloud Mode or set up a local vision model to ask visual questions about it.",
-                    backendLabel: backendLabel
-                )
-            )
-            persistAskSession()
-            setOutputState(askOutputState(), for: .ask)
-            focusChatInputSoon()
-            return
-        }
-
         askInput = ""
-        isChatInputFocused = true
-        loadingActions.insert(.ask)
-        recoveryState = nil
-        outputStatistics = []
-        hiddenReasoning = nil
-        actionBackendLabel = backendLabel
-        askTurns.append(
-            AskConversationTurn(
-                question: question,
-                answer: "",
-                backendLabel: backendLabel
-            )
-        )
-        persistAskSession()
-        setOutputState(askOutputState(), for: .ask)
-        updateExpandedNotchSizeIfNeeded()
-
-        let toolStateBeforeRun = assistantToolState
-        Task {
-            let toolStateSnapshot = toolStateBeforeRun
-            var updatedToolState = toolStateSnapshot
-            var contextToolResults: [AssistantLocalFileToolResult] = []
-
-            let contextualReadResult = toolRouter.contextualFileReadResult(
-                question: question,
-                grants: fileGrants,
-                toolState: updatedToolState
-            )
-            if let contextualReadResult {
-                updatedToolState.record(contextualReadResult)
-                contextToolResults.append(contextualReadResult)
-            }
-
-            let shouldSearchFiles = toolRouter.fileSearchDecision(
-                question: question,
-                grants: fileGrants,
-                toolState: updatedToolState
-            ).shouldSearch
-            let fileSearchQuestion = Self.enrichedFileSearchQuestion(
-                question: question,
-                previousTurns: previousTurns,
-                toolState: updatedToolState
-            )
-            let searchResult = contextualReadResult == nil && shouldSearchFiles
-                ? await Task.detached {
-                    toolRouter.localFileSearchResult(
-                        question: fileSearchQuestion,
-                        grants: fileGrants,
-                        toolState: updatedToolState
-                    )
-                }.value
-                : nil
-            if let searchResult {
-                updatedToolState.record(searchResult)
-                contextToolResults.append(searchResult)
-            }
-            let localFileContext = Self.mergedLocalFileContext(
-                grants: fileGrants,
-                results: contextToolResults
-            )
-            if let attachedImageContext {
-                updatedToolState.updateVisualContext(
-                    AssistantVisualContextState(
-                        imageContext: attachedImageContext,
-                        imageWillBeSent: isAssistantImageAttached
-                    )
-                )
-            } else {
-                updatedToolState.updateVisualContext(
-                    Self.captureVisualState(for: result, imageWillBeSent: isCaptureImageAttached)
-                )
-            }
-            let packedContext = AssistantContextPacker().pack(
-                AssistantContextPackingInput(
-                    question: question,
-                    responseDetail: responseDetail,
-                    responseGuidance: responseDetail.outputGuidance,
-                    modelCapabilities: modelCapabilities,
-                    hasCaptureContext: hasCaptureContextValue,
-                    capturedOCRText: capturedOCRText,
-                    isCaptureImageAttached: isCaptureImageAttached,
-                    assistantImageContext: attachedImageContext,
-                    isAssistantImageAttached: isAssistantImageAttached,
-                    previousTurns: previousTurns,
-                    localFileContext: localFileContext,
-                    toolState: updatedToolState,
-                    usesCloud: cloudModeEnabled
-                )
-            )
-            await MainActor.run {
-                assistantToolState = updatedToolState
-                persistAskSession()
-            }
-            await runAskTurn(
-                request: AIBackendRequest(
-                    actionKind: hasAnyVisualContext ? .ask : .chat,
-                    prompt: packedContext.prompt,
-                    capturedImage: imageInput,
-                    maxOutputTokens: Self.askMaxOutputTokens(
-                        responseDetail: responseDetail,
-                        question: question,
-                        hasCaptureContext: hasAnyVisualContext,
-                        hasFileContext: localFileContext.hasSnippets,
-                        hasPreviousTranscript: !previousTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                        isSimpleBriefPlainChat: isSimpleBriefPlainChat
-                    ),
-                    preferredProvider: preferredProvider,
-                    cloudOCRText: cloudModeEnabled
-                        ? (packedContext.cloudContext.isEmpty ? nil : packedContext.cloudContext)
-                        : (hasAnyVisualContext && !packedContext.cloudContext.isEmpty ? packedContext.cloudContext : nil),
-                    cloudDetectedLanguage: hasCaptureContextValue ? detectedLanguage : nil,
-                    cloudQuestion: question,
-                    cloudConversation: conversation
-                )
-            )
-        }
-    }
-
-    private func handlePendingTerminalCommandTextConfirmation(
-        question: String,
-        grants: [LocalFileGrant],
-        toolRouter: AssistantToolRouter
-    ) -> Bool {
-        guard let proposal = pendingTerminalCommandProposal else { return false }
-        let normalized = Self.normalizedQuestion(question)
-        if Self.isTerminalConfirmation(normalized) {
-            pendingTerminalCommandProposal = nil
-            runTerminalCommand(
-                proposal,
-                question: "Allow terminal in \(URL(fileURLWithPath: proposal.workingDirectory).lastPathComponent): \(proposal.reason)",
-                grants: grants,
-                toolRouter: toolRouter
-            )
-            return true
-        }
-        if Self.isTerminalRejection(normalized) {
-            cancelTerminalCommand()
-            return true
-        }
-        return false
-    }
-
-    private static func isTerminalConfirmation(_ normalized: String) -> Bool {
-        let words = normalized.split(separator: " ").map(String.init)
-        guard (1...6).contains(words.count) else { return false }
-        let confirmations: Set<String> = ["yes", "yeah", "yep", "sure", "ok", "okay", "confirm", "allow", "run", "do", "proceed"]
-        return words.contains { confirmations.contains($0) }
-    }
-
-    private static func isTerminalRejection(_ normalized: String) -> Bool {
-        let words = normalized.split(separator: " ").map(String.init)
-        guard (1...6).contains(words.count) else { return false }
-        let rejections: Set<String> = ["no", "nope", "cancel", "stop", "dont", "don't"]
-        return words.contains { rejections.contains($0) }
-    }
-
-    private func shouldUseModelPlannedActionLoop(
-        question: String,
-        grants: [LocalFileGrant],
-        toolState: AssistantToolState
-    ) -> Bool {
-        let normalized = Self.normalizedQuestion(question)
-        guard !normalized.isEmpty else { return false }
-        let lowValue = Set(["hi", "hello", "thanks", "thank you", "ok", "okay"])
-        if lowValue.contains(normalized) { return false }
-
-        if !grants.isEmpty {
-            return true
-        }
-
-        let hasRecentToolContext = !toolState.recentToolResults.isEmpty
-            || toolState.lastListedFolder != nil
-            || !toolState.lastFileSources.isEmpty
-        if hasRecentToolContext {
-            return true
-        }
-
-        return normalized.contains("`") || normalized.hasPrefix("$ ")
-    }
-
-    private func planAssistantActionLoopWithModel(
-        question: String,
-        grants: [LocalFileGrant],
-        environment: AssistantToolEnvironment,
-        toolRouter: AssistantToolRouter
-    ) {
-        let cloudModeEnabled = routingSettings.effectiveMode == .cloud
-        let backendLabel = cloudModeEnabled ? Self.cloudBackendLabel : localTextBackendLabel()
-        let priorTurns = assistantContextPriorTurns()
-
-        askInput = ""
-        isChatInputFocused = true
         pendingLocalFileWriteProposal = nil
         pendingTerminalCommandProposal = nil
+        pendingAgentKernelApproval = nil
         recoveryState = nil
         hiddenReasoning = nil
         outputStatistics = []
+        let backendLabel = askBackendLabelForNextTurn()
         actionBackendLabel = backendLabel
-        loadingActions.insert(.ask)
         askTurns.append(
             AskConversationTurn(
                 question: question,
@@ -2249,1814 +2017,269 @@ struct ResultPanelView: View {
                 backendLabel: backendLabel
             )
         )
-        persistAskSession()
-        setOutputState(askOutputState(), for: .ask)
+        let turnIndex = askTurns.index(before: askTurns.endIndex)
+        loadingActions.insert(.ask)
+        setOutputState(askOutputState(backendLabel: backendLabel), for: .ask)
         updateExpandedNotchSizeIfNeeded()
 
-        let initialToolState = assistantToolState
-        Task {
-            var loopToolState = initialToolState
-            var observations: [AssistantLocalFileToolResult] = []
-            let builder = AssistantActionPlanningPromptBuilder()
-            let parser = AssistantActionPlanParser()
-
-            for step in 0..<2 {
-                let prompt = builder.prompt(
-                    question: question,
-                    grants: grants,
-                    toolState: loopToolState,
-                    observations: observations,
-                    priorTurns: priorTurns
-                )
-
-                let rawPlan: String
-                do {
-                    rawPlan = try await generatedActionPlanText(prompt: prompt)
-                } catch {
-                    await runDeterministicFallbackAfterActionPlanningFailure(
-                        question: question,
-                        grants: grants,
-                        environment: environment,
-                        toolRouter: toolRouter,
-                        backendLabel: backendLabel,
-                        fallbackMessage: "I could not ask the selected model to plan that action: \(error.localizedDescription)"
-                    )
-                    return
-                }
-
-                guard let plan = parser.parse(rawPlan) else {
-                    let fallbackAnswer = rawPlan.trimmingCharacters(in: .whitespacesAndNewlines)
-                    await runDeterministicFallbackAfterActionPlanningFailure(
-                        question: question,
-                        grants: grants,
-                        environment: environment,
-                        toolRouter: toolRouter,
-                        backendLabel: backendLabel,
-                        fallbackMessage: fallbackAnswer.isEmpty
-                            ? "The selected model did not return a safe action plan. Try asking with the target folder, file, or command more explicitly."
-                            : fallbackAnswer
-                    )
-                    return
-                }
-
-                switch plan.action.kind {
-                case .answerDirectly:
-                    await MainActor.run {
-                        finishModelPlannedAction(
-                            question: question,
-                            answer: plan.action.finalAnswer ?? "I do not need a local tool for that.",
-                            backendLabel: backendLabel
-                        )
-                    }
-                    return
-                case .listGrants:
-                    let result = toolRouter.localGrantListResult(grants: grants)
-                    loopToolState.record(result)
-                    observations.append(result)
-                    if step == 1 {
-                        await MainActor.run {
-                            finishModelPlannedAction(
-                                question: question,
-                                answer: result.summary,
-                                backendLabel: "Local Files",
-                                toolResult: result
-                            )
-                        }
-                        return
-                    }
-                case .listFolder:
-                    let result = toolRouter.localFolderListResult(
-                        path: plan.action.arguments["path"],
-                        grants: grants
-                    )
-                    loopToolState.record(result)
-                    observations.append(result)
-                    if step == 1 {
-                        await MainActor.run {
-                            finishModelPlannedAction(
-                                question: question,
-                                answer: result.summary,
-                                backendLabel: "Local Files",
-                                toolResult: result
-                            )
-                        }
-                        return
-                    }
-                case .profileFolder:
-                    let result = toolRouter.localFolderProfileResult(
-                        question: question,
-                        path: plan.action.arguments["path"],
-                        grants: grants,
-                        toolState: loopToolState
-                    )
-                    loopToolState.record(result)
-                    observations.append(result)
-                    await MainActor.run {
-                        finishModelPlannedAction(
-                            question: question,
-                            answer: result.summary,
-                            backendLabel: "Local Files",
-                            toolResult: result
-                        )
-                    }
-                    return
-                case .searchFiles:
-                    let query = plan.action.arguments["query"] ?? question
-                    let result = toolRouter.localFileSearchResult(
-                        question: query,
-                        grants: grants,
-                        toolState: loopToolState
-                    )
-                    loopToolState.record(result)
-                    observations.append(result)
-                    if step == 1 {
-                        await MainActor.run {
-                            finishModelPlannedAction(
-                                question: question,
-                                answer: result.summary,
-                                backendLabel: "Local Files",
-                                toolResult: result
-                            )
-                        }
-                        return
-                    }
-                case .readFile:
-                    guard let path = plan.action.arguments["path"], !path.isEmpty else {
-                        await MainActor.run {
-                            finishModelPlannedAction(
-                                question: question,
-                                answer: "The selected model asked to read a file but did not provide a path.",
-                                backendLabel: backendLabel
-                            )
-                        }
-                        return
-                    }
-                    let result = toolRouter.localFileReadResult(
-                        path: path,
-                        grants: grants,
-                        focusQuestion: question
-                    )
-                    loopToolState.record(result)
-                    observations.append(result)
-                    if step == 1 {
-                        await MainActor.run {
-                            finishModelPlannedAction(
-                                question: question,
-                                answer: Self.localFileReadAnswer(from: result),
-                                backendLabel: "Local Files",
-                                toolResult: result
-                            )
-                        }
-                        return
-                    }
-                case .stageWriteProposal:
-                    let result = modelPlannedWriteResult(
-                        from: plan.action,
-                        question: question,
-                        grants: grants,
-                        toolState: loopToolState,
-                        toolRouter: toolRouter
-                    )
-                    await MainActor.run {
-                        finishModelPlannedWrite(
-                            question: question,
-                            answer: Self.modelPlannedWriteAnswer(from: result),
-                            backendLabel: "Local Files",
-                            toolResult: result
-                        )
-                    }
-                    return
-                case .runTerminalCommand:
-                    await handleModelPlannedTerminalAction(
-                        plan.action,
-                        question: question,
-                        grants: grants,
-                        toolState: loopToolState,
-                        toolRouter: toolRouter,
-                        backendLabel: backendLabel
-                    )
-                    return
-                }
-            }
-
+        let context = agentKernelContext(userMessage: question)
+        askTask?.cancel()
+        askTask = Task {
+            let model = await makeAgentKernelModelAdapter()
+            let output = await agentKernelRuntime.runTurn(context: context, model: model)
             await MainActor.run {
-                finishModelPlannedAction(
-                    question: question,
-                    answer: "The selected model inspected available context but did not produce a final safe action.",
-                    backendLabel: backendLabel
-                )
+                guard !Task.isCancelled else { return }
+                applyAgentKernelOutput(output, toTurnAt: turnIndex)
             }
         }
     }
 
-    private func generatedActionPlanText(prompt: String) async throws -> String {
-        var latestText = ""
-        let request = AIBackendRequest(
-            actionKind: .chat,
-            prompt: prompt,
-            maxOutputTokens: 1_024,
-            cloudOCRText: prompt,
-            cloudQuestion: "Return only the JSON object for this Pixel Pane action plan."
+    private func cancelAskQuestion() {
+        askTask?.cancel()
+        askTask = nil
+        let reason = AgentKernelTerminalReasonV2(
+            code: "user_cancelled",
+            summary: AgentKernelBoundedTextV2("User canceled the task.")
         )
-        for try await event in selectedAIBackend.streamResponse(for: request) {
-            switch event {
-            case .metadata(let statistics):
-                await MainActor.run {
-                    updateLastAskStatistics(statistics)
-                }
-            case .snapshot(let text):
-                latestText = text
-            case .output(let output):
-                latestText = output.finalText
-                await MainActor.run {
-                    updateLastAskStatistics(output.statistics)
-                }
-            case .completed:
-                break
-            }
+        agentKernelLedger.append(.taskCanceled(reason))
+        if let lastIndex = askTurns.indices.last, askTurns[lastIndex].answer.isEmpty {
+            askTurns[lastIndex].answer = "Cancelled. No changes were made."
         }
-        return latestText.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func runDeterministicFallbackAfterActionPlanningFailure(
-        question: String,
-        grants: [LocalFileGrant],
-        environment: AssistantToolEnvironment,
-        toolRouter: AssistantToolRouter,
-        backendLabel: String,
-        fallbackMessage: String
-    ) async {
-        if let preflight = toolRouter.preflight(
-            question: question,
-            grants: grants,
-            environment: environment,
-            toolState: assistantToolState,
-            scope: .full
-        ) {
-            await MainActor.run {
-                finishModelPlannedPreflight(preflight, question: question)
-            }
-            return
-        }
-
-        if let terminalRequest = toolRouter.terminalCommandRequest(
-            question: question,
-            grants: grants,
-            toolState: assistantToolState
-        ) {
-            await finishTerminalRequestInCurrentTurn(
-                terminalRequest,
-                question: question,
-                grants: grants,
-                toolRouter: toolRouter
-            )
-            return
-        }
-
-        await MainActor.run {
-            finishModelPlannedAction(
-                question: question,
-                answer: fallbackMessage,
-                backendLabel: backendLabel
-            )
-        }
-    }
-
-    private func finishModelPlannedPreflight(
-        _ preflight: AssistantToolPreflightResult,
-        question: String
-    ) {
-        switch preflight {
-        case .directAnswer(let answer, let backendLabel, let toolResult):
-            finishModelPlannedAction(
-                question: question,
-                answer: answer,
-                backendLabel: backendLabel,
-                toolResult: toolResult
-            )
-        case .localFileWriteMessage(let message, let toolResult):
-            finishModelPlannedAction(
-                question: question,
-                answer: message,
-                backendLabel: "Local Files",
-                toolResult: toolResult
-            )
-        case .localFileWriteProposal(let proposal, let toolResult):
-            pendingLocalFileWriteProposal = proposal
-            pendingTerminalCommandProposal = nil
-            finishModelPlannedAction(
-                question: question,
-                answer: "I can propose this local file change. Confirm below before I write anything:\n\n\(proposal.detailText)",
-                backendLabel: "Local Files",
-                toolResult: toolResult
-            )
-        }
-    }
-
-    private func modelPlannedWriteResult(
-        from action: AssistantPlannedAction,
-        question: String,
-        grants: [LocalFileGrant],
-        toolState: AssistantToolState,
-        toolRouter: AssistantToolRouter
-    ) -> AssistantLocalFileToolResult {
-        if let targetPath = action.arguments["target_path"] ?? action.arguments["targetPath"] ?? action.arguments["path"],
-           let content = action.arguments["content"],
-           !targetPath.isEmpty,
-           !content.isEmpty {
-            let rawOperation = (action.arguments["operation"] ?? "create").lowercased()
-            let operation: AssistantGeneratedWriteDraft.Operation
-            if rawOperation.contains("append") {
-                operation = .append
-            } else if rawOperation.contains("replace")
-                || rawOperation.contains("update")
-                || rawOperation.contains("edit") {
-                operation = .replace
-            } else {
-                operation = .create
-            }
-            return toolRouter.generatedWriteProposal(
-                from: AssistantGeneratedWriteDraft(
-                    operation: operation,
-                    targetPath: targetPath,
-                    content: content
-                ),
-                question: question,
-                grants: grants,
-                toolState: toolState
-            )
-        }
-        return toolRouter.localFileWriteProposalResult(
-            question: question,
-            grants: grants,
-            toolState: toolState
-        )
-    }
-
-    private func handleModelPlannedTerminalAction(
-        _ action: AssistantPlannedAction,
-        question: String,
-        grants: [LocalFileGrant],
-        toolState: AssistantToolState,
-        toolRouter: AssistantToolRouter,
-        backendLabel: String
-    ) async {
-        guard let command = action.arguments["command"]?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !command.isEmpty else {
-            await MainActor.run {
-                finishModelPlannedAction(
-                    question: question,
-                    answer: "The selected model asked to run a terminal command but did not provide a command.",
-                    backendLabel: backendLabel
-                )
-            }
-            return
-        }
-
-        let intent = Self.plannedTerminalIntent(from: action.arguments)
-        let workingDirectory = modelPlannedWorkingDirectory(
-            from: action.arguments["working_directory"] ?? action.arguments["workingDirectory"],
-            intent: intent,
-            grants: grants,
-            toolState: toolState
-        )
-        let timeoutSeconds = Self.plannedTerminalTimeout(from: action.arguments["timeout_seconds"])
-        let reason = action.arguments["reason"] ?? action.reason ?? "The selected model planned this terminal action."
-        let request = toolRouter.terminalCommandRequest(
-            command: Self.sanitizedModelPlannedTerminalCommand(command, intent: intent),
-            workingDirectory: workingDirectory,
-            reason: reason,
-            timeoutSeconds: timeoutSeconds,
-            intent: intent
-        )
-        await finishTerminalRequestInCurrentTurn(
-            request,
-            question: question,
-            grants: grants,
-            toolRouter: toolRouter
-        )
-    }
-
-    private func finishTerminalRequestInCurrentTurn(
-        _ request: AssistantTerminalCommandRequest,
-        question: String,
-        grants: [LocalFileGrant],
-        toolRouter: AssistantToolRouter
-    ) async {
-        switch request {
-        case .message(let message):
-            await MainActor.run {
-                finishModelPlannedAction(
-                    question: question,
-                    answer: message,
-                    backendLabel: "Terminal"
-                )
-            }
-        case .proposal(let proposal):
-            if proposal.requiresConfirmation {
-                await MainActor.run {
-                    finishModelPlannedTerminalConfirmation(
-                        question: question,
-                        proposal: proposal
-                    )
-                }
-            } else {
-                let result = await toolRouter.runTerminalCommand(proposal, grants: grants)
-                await MainActor.run {
-                    finishModelPlannedAction(
-                        question: question,
-                        answer: Self.terminalAnswer(from: result),
-                        backendLabel: "Terminal",
-                        toolResult: result
-                    )
-                }
-            }
-        case .proposals(let proposals):
-            guard let proposal = proposals.first else {
-                await MainActor.run {
-                    finishModelPlannedAction(
-                        question: question,
-                        answer: "The selected model did not produce a terminal command to run.",
-                        backendLabel: "Terminal"
-                    )
-                }
-                return
-            }
-            if proposal.requiresConfirmation {
-                await MainActor.run {
-                    finishModelPlannedTerminalConfirmation(
-                        question: question,
-                        proposal: proposal
-                    )
-                }
-            } else {
-                let result = await toolRouter.runTerminalCommand(proposal, grants: grants)
-                await MainActor.run {
-                    finishModelPlannedAction(
-                        question: question,
-                        answer: Self.terminalAnswer(from: result),
-                        backendLabel: "Terminal",
-                        toolResult: result
-                    )
-                }
-            }
-        }
-    }
-
-    private func modelPlannedWorkingDirectory(
-        from proposedPath: String?,
-        intent: AssistantTerminalCommandIntent,
-        grants: [LocalFileGrant],
-        toolState: AssistantToolState
-    ) -> String {
-        let activeFolders = grants.filter { $0.isDirectory && FileManager.default.fileExists(atPath: $0.path) }
-        if let proposedPath,
-           !proposedPath.isEmpty {
-            let standardized = URL(fileURLWithPath: proposedPath).standardizedFileURL.path
-            var isDirectory: ObjCBool = false
-            if FileManager.default.fileExists(atPath: standardized, isDirectory: &isDirectory),
-               isDirectory.boolValue {
-                if intent == .systemInspection
-                    || activeFolders.isEmpty
-                    || activeFolders.contains(where: { Self.isPath(standardized, inside: $0.path) }) {
-                    return standardized
-                }
-            }
-        }
-
-        if let recentTerminalDirectory = toolState.recentToolResults.compactMap(\.terminalWorkingDirectory).first,
-           FileManager.default.fileExists(atPath: recentTerminalDirectory) {
-            return recentTerminalDirectory
-        }
-        if let listedFolder = toolState.lastListedFolder?.path,
-           FileManager.default.fileExists(atPath: listedFolder) {
-            return listedFolder
-        }
-        if let folder = activeFolders.first {
-            return folder.path
-        }
-        return FileManager.default.homeDirectoryForCurrentUser.path
-    }
-
-    private static func plannedTerminalIntent(from arguments: [String: String]) -> AssistantTerminalCommandIntent {
-        let raw = (arguments["intent"] ?? "").lowercased()
-        if raw.contains("file") || raw.contains("search") {
-            return .fileSearch
-        }
-        if raw.contains("system") || raw.contains("inspection") || raw.contains("port") {
-            return .systemInspection
-        }
-        return .generic
-    }
-
-    private static func plannedTerminalTimeout(from value: String?) -> TimeInterval {
-        guard let value,
-              let seconds = Double(value) else {
-            return 120
-        }
-        return min(600, max(15, seconds))
-    }
-
-    private static func sanitizedModelPlannedTerminalCommand(
-        _ command: String,
-        intent: AssistantTerminalCommandIntent
-    ) -> String {
-        guard intent == .systemInspection else { return command }
-        let normalized = normalizedQuestion(command)
-        if normalized.contains("ps aux --sort") || normalized.contains("ps -aux --sort") {
-            if normalized.contains("%mem") || normalized.contains("memory") {
-                return "ps aux | sort -nrk 4 | head -n 15"
-            }
-            return "ps aux | sort -nrk 3 | head -n 15"
-        }
-        return command
-    }
-
-    private func finishModelPlannedTerminalConfirmation(
-        question: String,
-        proposal: AssistantTerminalCommandProposal
-    ) {
         pendingLocalFileWriteProposal = nil
-        pendingTerminalCommandProposal = proposal
-        finishModelPlannedAction(
-            question: question,
-            answer: "I need your permission to run a terminal command in `\(URL(fileURLWithPath: proposal.workingDirectory).lastPathComponent)`.\n\n\(proposal.reason)",
-            backendLabel: "Terminal"
-        )
-    }
-
-    private func finishModelPlannedAction(
-        question: String,
-        answer: String,
-        backendLabel: String,
-        toolResult: AssistantLocalFileToolResult? = nil
-    ) {
-        if let toolResult {
-            assistantToolState.record(toolResult)
-        }
-        if backendLabel != "Terminal" {
-            pendingTerminalCommandProposal = nil
-        }
-        if backendLabel != "Local Files" {
-            pendingLocalFileWriteProposal = nil
-        }
-        if let index = askTurns.indices.last {
-            askTurns[index] = AskConversationTurn(
-                question: question,
-                answer: answer,
-                backendLabel: backendLabel,
-                statistics: askTurns[index].statistics
-            )
-        } else {
-            askTurns.append(
-                AskConversationTurn(
-                    question: question,
-                    answer: answer,
-                    backendLabel: backendLabel
-                )
-            )
-        }
-        loadingActions.remove(.ask)
-        actionBackendLabel = backendLabel
+        pendingTerminalCommandProposal = nil
+        pendingAgentKernelApproval = nil
+        _ = loadingActions.remove(.ask)
         persistAskSession()
         setOutputState(askOutputState(), for: .ask)
         updateExpandedNotchSizeIfNeeded()
         focusChatInputSoon()
     }
 
-    private static func isPath(_ path: String, inside rootPath: String) -> Bool {
-        let candidate = URL(fileURLWithPath: path).standardizedFileURL.path
-        let root = URL(fileURLWithPath: rootPath).standardizedFileURL.path
-        if candidate == root { return true }
-        let prefix = root.hasSuffix("/") ? root : root + "/"
-        return candidate.hasPrefix(prefix)
-    }
-
-    private func handleAssistantToolPreflight(_ preflight: AssistantToolPreflightResult, question: String) {
-        switch preflight {
-        case .directAnswer(let answer, let backendLabel, let toolResult):
-            if let toolResult {
-                assistantToolState.record(toolResult)
-            }
-            appendDirectAskAnswer(question: question, answer: answer, backendLabel: backendLabel)
-        case .localFileWriteMessage(let message, let toolResult):
-            if let toolResult {
-                assistantToolState.record(toolResult)
-            }
-            appendDirectAskAnswer(question: question, answer: message, backendLabel: "Local Files")
-        case .localFileWriteProposal(let proposal, let toolResult):
-            if let toolResult {
-                assistantToolState.record(toolResult)
-            }
-            askInput = ""
-            pendingTerminalCommandProposal = nil
-            recoveryState = nil
-            hiddenReasoning = nil
-            outputStatistics = []
-            pendingLocalFileWriteProposal = proposal
-            askTurns.append(
-                AskConversationTurn(
-                    question: question,
-                    answer: "I can propose this local file change. Confirm below before I write anything:\n\n\(proposal.detailText)",
-                    backendLabel: "Local Files"
-                )
-            )
-            persistAskSession()
-            setOutputState(askOutputState(), for: .ask)
-            focusChatInputSoon()
-        }
-    }
-
-    private func planLocalFileWriteWithModel(
-        question: String,
-        grants: [LocalFileGrant],
-        toolRouter: AssistantToolRouter
-    ) {
-        let cloudModeEnabled = routingSettings.effectiveMode == .cloud
-        let backendLabel = cloudModeEnabled ? Self.cloudBackendLabel : localTextBackendLabel()
-        let priorTurns = assistantContextPriorTurns()
-        var planningToolState = assistantToolState
-        if let readResult = toolRouter.contextualFileReadResult(
-            question: question,
-            grants: grants,
-            toolState: planningToolState
-        ) {
-            planningToolState.record(readResult)
-            assistantToolState = planningToolState
-        }
-        let prompt = AssistantWritePlanningPromptBuilder().prompt(
-            question: question,
-            grants: grants,
-            toolState: planningToolState,
-            priorTurns: priorTurns
+    private func makeAgentKernelModelAdapter() async -> AgentKernelAIBackendAdapterV2 {
+        let backend = selectedAIBackend
+        let capabilities = await backend.capabilities()
+        let modeID: String = routingSettings.effectiveMode == .cloud ? "cloud" : "local"
+        let descriptor = AgentKernelModelDescriptorV2(
+            id: "\(modeID).\(backend.id).chat",
+            providerKind: routingSettings.effectiveMode == .cloud ? .pixelPaneCloud : .custom,
+            route: routingSettings.effectiveMode == .cloud ? .cloud : .local,
+            displayName: askBackendLabelForNextTurn()
         )
-
-        askInput = ""
-        isChatInputFocused = true
-        pendingLocalFileWriteProposal = nil
-        pendingTerminalCommandProposal = nil
-        recoveryState = nil
-        hiddenReasoning = nil
-        outputStatistics = []
-        actionBackendLabel = backendLabel
-        loadingActions.insert(.ask)
-        askTurns.append(
-            AskConversationTurn(
-                question: question,
-                answer: "",
-                backendLabel: backendLabel
+        return AgentKernelAIBackendAdapterV2(
+            descriptor: descriptor,
+            backend: backend,
+            capabilities: .aiBackendBridge(
+                descriptor: descriptor,
+                backendCapabilities: capabilities
             )
         )
-        persistAskSession()
-        setOutputState(askOutputState(), for: .ask)
-        updateExpandedNotchSizeIfNeeded()
-
-        let toolStateBeforeRun = planningToolState
-        Task {
-            do {
-                let generated = try await generatedWriteDraftText(
-                    prompt: prompt
-                )
-                let parser = AssistantGeneratedWriteDraftParser()
-                guard let draft = parser.parse(generated) else {
-                    await MainActor.run {
-                        finishModelPlannedWrite(
-                            question: question,
-                            answer: "The selected model did not return a safe file-write plan. Try again with a filename, folder, or shorter requested content.",
-                            backendLabel: backendLabel,
-                            toolResult: nil
-                        )
-                    }
-                    return
-                }
-
-                let toolResult = toolRouter.generatedWriteProposal(
-                    from: draft,
-                    question: question,
-                    grants: grants,
-                    toolState: toolStateBeforeRun
-                )
-                await MainActor.run {
-                    finishModelPlannedWrite(
-                        question: question,
-                        answer: Self.modelPlannedWriteAnswer(from: toolResult),
-                        backendLabel: "Local Files",
-                        toolResult: toolResult
-                    )
-                }
-            } catch {
-                await MainActor.run {
-                    finishModelPlannedWrite(
-                        question: question,
-                        answer: "I could not ask the selected model to plan that file change: \(error.localizedDescription)",
-                        backendLabel: backendLabel,
-                        toolResult: nil
-                    )
-                }
-            }
-        }
     }
 
-    private func generatedWriteDraftText(
-        prompt: String
-    ) async throws -> String {
-        var latestText = ""
-        let request = AIBackendRequest(
-            actionKind: .chat,
-            prompt: prompt,
-            maxOutputTokens: AIModelLimits.defaultMaxOutputTokens,
-            cloudOCRText: prompt,
-            cloudQuestion: "Return only the JSON object for this local file-write plan."
+    private func agentKernelContext(userMessage: String? = nil) -> AgentKernelChatContextV2 {
+        AgentKernelChatContextV2(
+            ledger: agentKernelLedger,
+            userMessage: userMessage,
+            grants: localFileAccess.grants,
+            visualContext: assistantToolState.activeVisualContext,
+            allowedWorkingDirectories: agentKernelAllowedWorkingDirectories(),
+            recentWriteTargetPaths: agentKernelRecentWriteTargetPaths(),
+            maxOutputTokens: responseDetail.maxOutputTokens(for: .ask)
         )
-        for try await event in selectedAIBackend.streamResponse(for: request) {
-            switch event {
-            case .metadata(let statistics):
-                await MainActor.run {
-                    updateLastAskStatistics(statistics)
-                }
-            case .snapshot(let text):
-                latestText = text
-            case .output(let output):
-                latestText = output.finalText
-                await MainActor.run {
-                    updateLastAskStatistics(output.statistics)
-                }
-            case .completed:
-                break
-            }
-        }
-        return latestText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func finishModelPlannedWrite(
-        question: String,
-        answer: String,
-        backendLabel: String,
-        toolResult: AssistantLocalFileToolResult?
-    ) {
-        if let toolResult {
-            assistantToolState.record(toolResult)
-            if case .proposal(let proposal)? = toolResult.writeProposalResult {
-                pendingLocalFileWriteProposal = proposal
-                pendingTerminalCommandProposal = nil
-            }
+    private func agentKernelRecentWriteTargetPaths() -> [String] {
+        var paths: [String] = []
+        if let pendingLocalFileWriteProposal {
+            paths.append(pendingLocalFileWriteProposal.targetPath)
         }
-        if let index = askTurns.indices.last {
-            askTurns[index] = AskConversationTurn(
-                question: question,
-                answer: answer,
-                backendLabel: backendLabel,
-                statistics: askTurns[index].statistics
-            )
+        for result in assistantToolState.recentToolResults where result.toolName == .stageWriteProposal {
+            paths.append(contentsOf: result.sources?.map(\.path) ?? [])
         }
-        loadingActions.remove(.ask)
-        actionBackendLabel = backendLabel
-        persistAskSession()
-        setOutputState(askOutputState(), for: .ask)
-        updateExpandedNotchSizeIfNeeded()
-        focusChatInputSoon()
-    }
-
-    private static func modelPlannedWriteAnswer(
-        from toolResult: AssistantLocalFileToolResult
-    ) -> String {
-        switch toolResult.writeProposalResult {
-        case .proposal(let proposal)?:
-            return "I planned this local file change with the selected model. Confirm below before I write anything:\n\n\(proposal.detailText)"
-        case .message(let message)?:
-            return message
-        case .none?, nil:
-            return "The selected model did not produce a local file change to stage."
-        }
-    }
-
-    private func handleAssistantTerminalCommandRequest(
-        _ request: AssistantTerminalCommandRequest,
-        question: String,
-        grants: [LocalFileGrant],
-        toolRouter: AssistantToolRouter
-    ) {
-        switch request {
-        case .message(let message):
-            appendDirectAskAnswer(question: question, answer: message, backendLabel: "Terminal")
-        case .proposals(let proposals):
-            guard !proposals.isEmpty else {
-                appendDirectAskAnswer(question: question, answer: "I could not infer a terminal command to run.", backendLabel: "Terminal")
-                return
-            }
-            if proposals.allSatisfy({ !$0.requiresConfirmation }) {
-                runTerminalCommands(
-                    proposals,
-                    question: question,
-                    grants: grants,
-                    toolRouter: toolRouter
-                )
-            } else if let first = proposals.first(where: { $0.requiresConfirmation }) {
-                askInput = ""
-                pendingLocalFileWriteProposal = nil
-                pendingTerminalCommandProposal = first
-                recoveryState = nil
-                hiddenReasoning = nil
-                outputStatistics = []
-                askTurns.append(
-                    AskConversationTurn(
-                        question: question,
-                        answer: "I need your permission to run a terminal command in `\(URL(fileURLWithPath: first.workingDirectory).lastPathComponent)`.\n\n\(first.reason)",
-                        backendLabel: "Terminal"
-                    )
-                )
-                persistAskSession()
-                setOutputState(askOutputState(), for: .ask)
-                updateExpandedNotchSizeIfNeeded()
-                focusChatInputSoon()
-            }
-        case .proposal(let proposal):
-            if proposal.requiresConfirmation {
-                askInput = ""
-                pendingLocalFileWriteProposal = nil
-                recoveryState = nil
-                hiddenReasoning = nil
-                outputStatistics = []
-                pendingTerminalCommandProposal = proposal
-                askTurns.append(
-                    AskConversationTurn(
-                        question: question,
-                        answer: "I need your permission to run a terminal command in `\(URL(fileURLWithPath: proposal.workingDirectory).lastPathComponent)`.\n\n\(proposal.reason)",
-                        backendLabel: "Terminal"
-                    )
-                )
-                persistAskSession()
-                setOutputState(askOutputState(), for: .ask)
-                updateExpandedNotchSizeIfNeeded()
-                focusChatInputSoon()
-            } else {
-                runTerminalCommand(
-                    proposal,
-                    question: question,
-                    grants: grants,
-                    toolRouter: toolRouter
-                )
-            }
-        }
-    }
-
-    private func runTerminalCommands(
-        _ proposals: [AssistantTerminalCommandProposal],
-        question: String,
-        grants: [LocalFileGrant],
-        toolRouter: AssistantToolRouter
-    ) {
-        askInput = ""
-        isChatInputFocused = true
-        pendingLocalFileWriteProposal = nil
-        recoveryState = nil
-        hiddenReasoning = nil
-        outputStatistics = []
-        actionBackendLabel = "Terminal"
-        loadingActions.insert(.ask)
-        askTurns.append(
-            AskConversationTurn(
-                question: question,
-                answer: "",
-                backendLabel: "Terminal"
-            )
-        )
-        persistAskSession()
-        setOutputState(askOutputState(), for: .ask)
-        updateExpandedNotchSizeIfNeeded()
-
-        Task {
-            var results: [AssistantLocalFileToolResult] = []
-            for proposal in proposals {
-                let result = await toolRouter.runTerminalCommand(proposal, grants: grants)
-                results.append(result)
-            }
-            await MainActor.run {
-                for result in results {
-                    assistantToolState.record(result)
-                }
-                let answer = Self.terminalBatchAnswer(from: results)
-                if let index = askTurns.indices.last {
-                    askTurns[index] = AskConversationTurn(
-                        question: askTurns[index].question,
-                        answer: answer,
-                        backendLabel: "Terminal"
-                    )
-                }
-                loadingActions.remove(.ask)
-                actionBackendLabel = "Terminal"
-                persistAskSession()
-                setOutputState(askOutputState(), for: .ask)
-                updateExpandedNotchSizeIfNeeded()
-                focusChatInputSoon()
-            }
-        }
-    }
-
-    private func runTerminalCommand(
-        _ proposal: AssistantTerminalCommandProposal,
-        question: String,
-        grants: [LocalFileGrant],
-        toolRouter: AssistantToolRouter
-    ) {
-        askInput = ""
-        isChatInputFocused = true
-        pendingLocalFileWriteProposal = nil
-        recoveryState = nil
-        hiddenReasoning = nil
-        outputStatistics = []
-        actionBackendLabel = "Terminal"
-        loadingActions.insert(.ask)
-        askTurns.append(
-            AskConversationTurn(
-                question: question,
-                answer: "",
-                backendLabel: "Terminal"
-            )
-        )
-        persistAskSession()
-        setOutputState(askOutputState(), for: .ask)
-        updateExpandedNotchSizeIfNeeded()
-
-        let toolStateSnapshot = assistantToolState
-        Task {
-            let toolResult = await toolRouter.runTerminalCommand(proposal, grants: grants)
-            let continuation = await Self.processTerminationContinuation(
-                after: toolResult,
-                question: question,
-                grants: grants,
-                toolState: toolStateSnapshot,
-                toolRouter: toolRouter
-            )
-            await MainActor.run {
-                assistantToolState.record(toolResult)
-                if let inspection = continuation?.inspection {
-                    assistantToolState.record(inspection)
-                }
-                if let pendingProposal = continuation?.pendingProposal {
-                    pendingTerminalCommandProposal = pendingProposal
-                }
-                let answer = continuation?.answer ?? Self.terminalAnswer(from: toolResult)
-                if let index = askTurns.indices.last {
-                    askTurns[index] = AskConversationTurn(
-                        question: askTurns[index].question,
-                        answer: answer,
-                        backendLabel: "Terminal"
-                    )
-                }
-                loadingActions.remove(.ask)
-                actionBackendLabel = "Terminal"
-                persistAskSession()
-                setOutputState(askOutputState(), for: .ask)
-                updateExpandedNotchSizeIfNeeded()
-                focusChatInputSoon()
-            }
-        }
-    }
-
-    private struct TerminalContinuation {
-        let answer: String
-        let inspection: AssistantLocalFileToolResult?
-        let pendingProposal: AssistantTerminalCommandProposal?
-    }
-
-    private static func processTerminationContinuation(
-        after result: AssistantLocalFileToolResult,
-        question: String,
-        grants: [LocalFileGrant],
-        toolState: AssistantToolState,
-        toolRouter: AssistantToolRouter
-    ) async -> TerminalContinuation? {
-        guard let terminal = result.terminalResult,
-              isFailedProcessTermination(terminal) else {
-            return nil
-        }
-        guard let port = referencedLocalhostPort(question: question, toolState: toolState, currentResult: result) else {
-            return nil
-        }
-
-        let inspectionRequest = toolRouter.terminalCommandRequest(
-            command: "lsof -nP -iTCP:\(port) -sTCP:LISTEN",
-            workingDirectory: terminal.workingDirectory,
-            reason: "Check which process is currently listening on port \(port) after the previous process ID was not running.",
-            timeoutSeconds: 15,
-            intent: .systemInspection
-        )
-        guard case .proposal(let inspectionProposal) = inspectionRequest,
-              !inspectionProposal.requiresConfirmation else {
-            return nil
-        }
-
-        let inspection = await toolRouter.runTerminalCommand(inspectionProposal, grants: grants)
-        let pids = listenerPIDs(from: inspection.terminalResult?.stdout ?? "")
-        guard !pids.isEmpty else {
-            let answer = """
-            The previous process ID was not running, so I checked port \(port) next.
-
-            I did not find any current listener on `localhost:\(port)`.
-
-            Previous error:
-            ```
-            \(terminal.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
-            ```
-            """
-            return TerminalContinuation(answer: answer, inspection: inspection, pendingProposal: nil)
-        }
-
-        let killCommand = "kill \(pids.joined(separator: " "))"
-        let killRequest = toolRouter.terminalCommandRequest(
-            command: killCommand,
-            workingDirectory: terminal.workingDirectory,
-            reason: "Kill the process currently listening on port \(port) after the previous PID was stale.",
-            timeoutSeconds: 15,
-            intent: .generic
-        )
-        guard case .proposal(let killProposal) = killRequest else {
-            return nil
-        }
-
-        let answer = """
-        The previous PID was not running, so I checked port \(port) and found current listener PID\(pids.count == 1 ? "" : "s") \(pids.joined(separator: ", ")).
-
-        I need your permission to kill the process\(pids.count == 1 ? "" : "es") currently listening on `localhost:\(port)`.
-
-        Inspection output:
-        ```
-        \((inspection.terminalResult?.stdout ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
-        ```
-        """
-        return TerminalContinuation(answer: answer, inspection: inspection, pendingProposal: killProposal)
-    }
-
-    private static func isFailedProcessTermination(_ terminal: AssistantTerminalCommandResult) -> Bool {
-        let normalizedCommand = terminal.command.lowercased()
-        let normalizedError = terminal.stderr.lowercased()
-        guard terminal.exitCode != 0 else { return false }
-        return (normalizedCommand.hasPrefix("kill ")
-            || normalizedCommand.contains(" kill ")
-            || normalizedCommand.contains("xargs kill")
-            || normalizedCommand.hasPrefix("pkill ")
-            || normalizedCommand.hasPrefix("killall "))
-            && (normalizedError.contains("no such process") || normalizedError.contains("illegal pid"))
-    }
-
-    private static func referencedLocalhostPort(
-        question: String,
-        toolState: AssistantToolState,
-        currentResult: AssistantLocalFileToolResult
-    ) -> String? {
-        let texts = [question, currentResult.terminalResult?.stdout, currentResult.terminalResult?.stderr]
-            .compactMap { $0 } + toolState.recentToolResults.flatMap { result in
-                [result.terminalStdout, result.terminalStderr, result.terminalCommand].compactMap { $0 }
-            }
-        for text in texts {
-            if let port = firstPort(in: text) {
-                return port
-            }
-        }
-        return nil
-    }
-
-    private static func firstPort(in text: String) -> String? {
-        let patterns = [
-            #"(?i)\bport\s+([0-9]{2,5})\b"#,
-            #"(?i)(?:localhost|127\.0\.0\.1|\*):([0-9]{2,5})\b"#
-        ]
-        for pattern in patterns {
-            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
-            let range = NSRange(text.startIndex..<text.endIndex, in: text)
-            guard let match = regex.firstMatch(in: text, range: range),
-                  match.numberOfRanges > 1,
-                  let portRange = Range(match.range(at: 1), in: text) else {
-                continue
-            }
-            let port = String(text[portRange])
-            guard let value = Int(port), (1...65_535).contains(value) else { continue }
-            return port
-        }
-        return nil
-    }
-
-    private static func listenerPIDs(from lsofOutput: String) -> [String] {
         var seen: Set<String> = []
-        var pids: [String] = []
-        for line in lsofOutput.split(separator: "\n").map(String.init) {
-            let fields = line.split { $0 == " " || $0 == "\t" }.map(String.init)
-            guard fields.count >= 2, fields[0] != "COMMAND", Int(fields[1]) != nil else { continue }
-            if !seen.contains(fields[1]) {
-                seen.insert(fields[1])
-                pids.append(fields[1])
-            }
+        return paths.filter { path in
+            guard !path.isEmpty, !seen.contains(path) else { return false }
+            seen.insert(path)
+            return true
         }
-        return pids
     }
 
-    nonisolated private static func terminalBatchAnswer(from results: [AssistantLocalFileToolResult]) -> String {
-        let fileSources = results.flatMap { $0.sources }.filter { $0.kindLabel == "File" }
-        let uniqueFiles = Array(
-            Dictionary(grouping: fileSources, by: \.path)
-                .compactMap { $0.value.first }
-                .sorted { $0.path.localizedCaseInsensitiveCompare($1.path) == .orderedAscending }
-        )
-        if results.allSatisfy({ $0.terminalResult?.intent == .fileSearch }) {
-            var sections: [String] = []
-            if uniqueFiles.isEmpty {
-                sections.append("I searched the granted folders with the terminal and did not find matching files.")
-            } else {
-                sections.append("I searched the granted folders with the terminal and found:")
-                sections.append(uniqueFiles.prefix(30).map { "- \($0.path)" }.joined(separator: "\n"))
-                if uniqueFiles.count > 30 {
-                    sections.append("- ... \(uniqueFiles.count - 30) more")
-                }
+    private func agentKernelAllowedWorkingDirectories() -> [String] {
+        let paths = localFileAccess.grants.map { grant in
+            if grant.isDirectory {
+                return grant.path
             }
-            let folders = results.compactMap(\.terminalResult?.workingDirectory)
-            if !folders.isEmpty {
-                sections.append("")
-                sections.append("Folders searched: \(folders.map { "`\($0)`" }.joined(separator: ", "))")
-            }
-            return sections.joined(separator: "\n")
+            return URL(fileURLWithPath: grant.path).deletingLastPathComponent().path
         }
-        return results.map(Self.terminalAnswer(from:)).joined(separator: "\n\n")
-    }
-
-    private static func mergedLocalFileContext(
-        grants: [LocalFileGrant],
-        results: [AssistantLocalFileToolResult]
-    ) -> LocalFileContext {
         var seen: Set<String> = []
-        var snippets: [LocalFileSnippet] = []
-        for result in results {
-            for snippet in result.context?.snippets ?? [] {
-                let key = snippet.id.isEmpty ? snippet.path : snippet.id
-                guard !seen.contains(key) else { continue }
-                seen.insert(key)
-                snippets.append(snippet)
-            }
+        return paths.filter { path in
+            guard !path.isEmpty, !seen.contains(path) else { return false }
+            seen.insert(path)
+            return true
         }
-        return LocalFileContext(
-            grants: grants.filter { FileManager.default.fileExists(atPath: $0.path) },
-            snippets: snippets
-        )
     }
 
-    nonisolated private static func terminalAnswer(from result: AssistantLocalFileToolResult) -> String {
-        guard let terminal = result.terminalResult else {
-            return result.summary
+    private func applyAgentKernelOutput(_ output: AgentKernelChatResultV2, toTurnAt turnIndex: Int?) {
+        agentKernelLedger = output.ledger
+        pendingAgentKernelApproval = output.pendingApproval
+        pendingLocalFileWriteProposal = output.pendingWriteProposal
+        pendingTerminalCommandProposal = output.pendingTerminalCommand
+        output.statePatch.applying(to: &assistantToolState)
+        actionBackendLabel = output.backendLabel
+        if let primaryChatEvent = output.primaryChatEvent,
+           let turnIndex,
+           askTurns.indices.contains(turnIndex) {
+            askTurns[turnIndex].answer = displayTextNormalizer.normalize(primaryChatEvent.summary.text)
+            askTurns[turnIndex].backendLabel = output.backendLabel
+        } else if output.pendingApproval != nil,
+                  let turnIndex,
+                  askTurns.indices.contains(turnIndex) {
+            askTurns[turnIndex].backendLabel = output.backendLabel
         }
-        if terminal.intent == .fileSearch {
-            return terminalFileSearchAnswer(from: result, terminal: terminal)
+        if output.terminalReason != nil {
+            showConfirmation("Task stopped")
         }
-        if terminal.intent == .systemInspection {
-            return terminalSystemInspectionAnswer(from: terminal)
-        }
-
-        var sections = [
-            terminal.summary,
-            "",
-            "Command: `\(terminal.command)`",
-            "Directory: `\(terminal.workingDirectory)`",
-            String(format: "Duration: %.1fs", terminal.durationSeconds)
-        ]
-
-        if !terminal.stdout.isEmpty {
-            sections.append(
-                """
-
-                stdout:
-                ```
-                \(terminal.stdout)
-                ```
-                """
-            )
-        }
-        if !terminal.stderr.isEmpty {
-            sections.append(
-                """
-
-                stderr:
-                ```
-                \(terminal.stderr)
-                ```
-                """
-            )
-        }
-        if terminal.wasOutputTruncated {
-            sections.append("\nOutput was truncated to keep the chat responsive.")
-        }
-        return sections.joined(separator: "\n")
-    }
-
-    nonisolated private static func localFileReadAnswer(from result: AssistantLocalFileToolResult) -> String {
-        guard let snippet = result.context?.snippets.first else {
-            return result.summary
-        }
-        let source = result.sources.first
-        let truncated = source?.isTruncated == true ? "\n\n[Truncated to a safe preview.]" : ""
-        return """
-        \(result.summary)
-
-        \(snippet.path)
-
-        \(snippet.preview)\(truncated)
-        """
-    }
-
-    nonisolated private static func terminalSystemInspectionAnswer(
-        from terminal: AssistantTerminalCommandResult
-    ) -> String {
-        let normalizedCommand = terminal.command.lowercased()
-        if normalizedCommand.hasPrefix("ps aux") {
-            return terminalProcessAnswer(from: terminal)
-        }
-        if normalizedCommand.hasPrefix("lsof -n")
-            || normalizedCommand.contains("-itcp") {
-            return terminalListeningPortAnswer(from: terminal)
-        }
-
-        var sections = [
-            terminal.succeeded ? "I checked locally with the terminal." : terminal.summary,
-            "",
-            "Ran `\(terminal.command)` locally from `\(terminal.workingDirectory)`."
-        ]
-        let output = terminal.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !output.isEmpty {
-            sections.append("")
-            sections.append(output)
-        }
-        if !terminal.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            sections.append("")
-            sections.append("stderr:\n\(terminal.stderr.trimmingCharacters(in: .whitespacesAndNewlines))")
-        }
-        return sections.joined(separator: "\n")
-    }
-
-    nonisolated private static func terminalListeningPortAnswer(
-        from terminal: AssistantTerminalCommandResult
-    ) -> String {
-        let output = terminal.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !output.isEmpty else {
-            return terminal.succeeded
-                ? "I checked local listening ports and did not find an obvious development server."
-                : terminal.summary
-        }
-
-        let lines = output
-            .split(separator: "\n")
-            .map(String.init)
-            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        let verifiedURLs = unique(lines.compactMap(verifiedLocalURLLine))
-        let candidates = unique(lines.compactMap(localhostURLLine))
-        var sections: [String] = []
-        if !verifiedURLs.isEmpty {
-            sections.append("The local server reported:")
-            sections.append(verifiedURLs.prefix(8).map { "- \($0)" }.joined(separator: "\n"))
-        } else if candidates.isEmpty {
-            sections.append("I checked local listening ports. I found listeners, but no obvious localhost URL stood out:")
-        } else {
-            sections.append("I checked local listening ports. Possible local URLs:")
-            sections.append(candidates.prefix(8).map { "- \($0)" }.joined(separator: "\n"))
-        }
-        sections.append("")
-        sections.append("Terminal output:")
-        sections.append("```")
-        sections.append(lines.prefix(20).joined(separator: "\n"))
-        sections.append("```")
-        return sections.joined(separator: "\n")
-    }
-
-    nonisolated private static func verifiedLocalURLLine(_ line: String) -> String? {
-        guard let range = line.range(of: #"Verified URL:\s*(https?://[^\s]+)"#, options: .regularExpression) else {
-            return nil
-        }
-        let match = String(line[range])
-        guard let urlRange = match.range(of: #"https?://[^\s]+"#, options: .regularExpression) else {
-            return nil
-        }
-        return String(match[urlRange]).replacingOccurrences(of: "127.0.0.1", with: "localhost")
-    }
-
-    nonisolated private static func localhostURLLine(_ line: String) -> String? {
-        guard let range = line.range(of: #":([0-9]{2,5})\s+\(LISTEN\)"#, options: .regularExpression) else {
-            return nil
-        }
-        let match = String(line[range])
-        guard let portRange = match.range(of: #"[0-9]{2,5}"#, options: .regularExpression) else {
-            return nil
-        }
-        let port = String(match[portRange])
-        let process = line.split(separator: " ").first.map(String.init) ?? "process"
-        return "http://localhost:\(port) (\(process))"
-    }
-
-    nonisolated private static func unique(_ values: [String]) -> [String] {
-        var seen: Set<String> = []
-        var result: [String] = []
-        for value in values {
-            guard !seen.contains(value) else { continue }
-            seen.insert(value)
-            result.append(value)
-        }
-        return result
-    }
-
-    nonisolated private static func terminalProcessAnswer(
-        from terminal: AssistantTerminalCommandResult
-    ) -> String {
-        let metric = terminal.command.contains("sort -nrk 4") ? "memory" : "CPU"
-        var lines = terminal.stdout
-            .split(separator: "\n")
-            .map(String.init)
-            .compactMap(processSummaryLine)
-        if lines.isEmpty {
-            let output = terminal.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-            return output.isEmpty
-                ? terminal.summary
-                : "I checked the top running processes by \(metric).\n\n\(output)"
-        }
-        lines = Array(lines.prefix(10))
-        var sections = ["Top running processes by \(metric):"]
-        sections.append(lines.map { "- \($0)" }.joined(separator: "\n"))
-        sections.append("")
-        sections.append("Ran `\(terminal.command)` locally.")
-        return sections.joined(separator: "\n")
-    }
-
-    nonisolated private static func processSummaryLine(_ line: String) -> String? {
-        let parts = line.split(
-            maxSplits: 10,
-            omittingEmptySubsequences: true,
-            whereSeparator: { $0 == " " || $0 == "\t" }
-        ).map(String.init)
-        guard parts.count >= 11,
-              let cpu = Double(parts[2]),
-              let memory = Double(parts[3]) else {
-            return nil
-        }
-        let user = parts[0]
-        let pid = parts[1]
-        let command = readableProcessName(from: parts[10])
-        return "\(command) (PID \(pid), \(user)): \(String(format: "%.1f", cpu))% CPU, \(String(format: "%.1f", memory))% MEM"
-    }
-
-    nonisolated private static func readableProcessName(from command: String) -> String {
-        if let range = command.range(of: "/Contents/MacOS/") {
-            let rawName = String(command[range.upperBound...])
-            return firstCommandSegment(rawName)
-        }
-        let firstToken = command.split(separator: " ").first.map(String.init) ?? command
-        let name = URL(fileURLWithPath: firstToken).lastPathComponent
-        return name.isEmpty ? firstCommandSegment(command) : name
-    }
-
-    nonisolated private static func firstCommandSegment(_ value: String) -> String {
-        let separators = [" --", " -"]
-        var endIndex = value.endIndex
-        for separator in separators {
-            if let range = value.range(of: separator) {
-                endIndex = min(endIndex, range.lowerBound)
-            }
-        }
-        return String(value[..<endIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    nonisolated private static func terminalFileSearchAnswer(
-        from result: AssistantLocalFileToolResult,
-        terminal: AssistantTerminalCommandResult
-    ) -> String {
-        let files = result.sources.filter { $0.kindLabel == "File" }
-        var sections: [String] = []
-        if files.isEmpty {
-            sections.append("I searched the granted folder with the terminal and did not find matching files.")
-        } else {
-            sections.append("I searched the granted folder with the terminal and found:")
-            sections.append(
-                files.prefix(20)
-                    .map { "- \($0.path)" }
-                    .joined(separator: "\n")
-            )
-            if files.count > 20 {
-                sections.append("- ... \(files.count - 20) more")
-            }
-        }
-        sections.append("")
-        sections.append("Folder: `\(terminal.workingDirectory)`")
-        sections.append(String(format: "Terminal search completed in %.1fs.", terminal.durationSeconds))
-        if !terminal.stderr.isEmpty {
-            sections.append(
-                """
-
-                stderr:
-                ```
-                \(terminal.stderr)
-                ```
-                """
-            )
-        }
-        if terminal.wasOutputTruncated {
-            sections.append("\nOutput was truncated to keep the chat responsive.")
-        }
-        return sections.joined(separator: "\n")
-    }
-
-    private func appendDirectAskAnswer(question: String, answer: String, backendLabel: String) {
-        askInput = ""
-        pendingLocalFileWriteProposal = nil
-        pendingTerminalCommandProposal = nil
-        recoveryState = nil
-        hiddenReasoning = nil
-        outputStatistics = []
-        actionBackendLabel = backendLabel
-        askTurns.append(
-            AskConversationTurn(
-                question: question,
-                answer: answer,
-                backendLabel: backendLabel
-            )
-        )
+        _ = loadingActions.remove(.ask)
+        askTask = nil
         persistAskSession()
-        setOutputState(askOutputState(), for: .ask)
+        setOutputState(askOutputState(backendLabel: output.backendLabel), for: .ask)
+        updateExpandedNotchSizeIfNeeded()
         focusChatInputSoon()
     }
 
     private func confirmLocalFileWrite() {
         guard let proposal = pendingLocalFileWriteProposal else { return }
-
-        do {
-            try LocalFileWriteExecutor.execute(proposal)
+        guard let approval = pendingAgentKernelApproval else {
             pendingLocalFileWriteProposal = nil
-            askTurns.append(
-                AskConversationTurn(
-                    question: "Confirm \(proposal.actionLabel.lowercased())",
-                    answer: "Done. \(proposal.detailText)",
-                    backendLabel: "Local Files"
-                )
-            )
-            showConfirmation("File updated")
-        } catch {
-            askTurns.append(
-                AskConversationTurn(
-                    question: "Confirm \(proposal.actionLabel.lowercased())",
-                    answer: "I could not apply that file change: \(error.localizedDescription)",
-                    backendLabel: "Local Files"
-                )
-            )
-            showConfirmation("Write failed")
+            updateLastAskAnswer("No pending write approval was available.", backendLabel: "Local Files")
+            _ = loadingActions.remove(.ask)
+            askTask = nil
+            persistAskSession()
+            setOutputState(askOutputState(), for: .ask)
+            updateExpandedNotchSizeIfNeeded()
+            focusChatInputSoon()
+            return
         }
-
-        persistAskSession()
-        setOutputState(askOutputState(), for: .ask)
+        let context = agentKernelContext()
+        pendingLocalFileWriteProposal = nil
+        pendingAgentKernelApproval = nil
+        updateLastAskAnswer("Applying \(proposal.actionLabel.lowercased())...", backendLabel: "Local Files")
+        loadingActions.insert(.ask)
+        askTask?.cancel()
+        askTask = Task {
+            let model = await makeAgentKernelModelAdapter()
+            let output = await agentKernelRuntime.resolveApproval(
+                context: context,
+                approval: approval,
+                decision: .approved,
+                model: model
+            )
+            await MainActor.run {
+                guard !Task.isCancelled else { return }
+                applyAgentKernelOutput(output, toTurnAt: askTurns.indices.last)
+            }
+        }
+        showConfirmation("File approved")
+        setOutputState(askOutputState(backendLabel: "Local Files"), for: .ask)
+        updateExpandedNotchSizeIfNeeded()
         focusChatInputSoon()
     }
 
     private func cancelLocalFileWrite() {
         guard let proposal = pendingLocalFileWriteProposal else { return }
         pendingLocalFileWriteProposal = nil
-        askTurns.append(
-            AskConversationTurn(
-                question: "Cancel \(proposal.actionLabel.lowercased())",
-                answer: "Cancelled. No file was changed.",
-                backendLabel: "Local Files"
+        if let approval = pendingAgentKernelApproval {
+            agentKernelLedger.append(
+                .approvalResolved(
+                    AgentKernelApprovalResolutionV2(
+                        approvalID: approval.request.id,
+                        decision: .canceled,
+                        reason: AgentKernelBoundedTextV2("User canceled \(proposal.actionLabel.lowercased()).")
+                    )
+                )
             )
-        )
-        persistAskSession()
-        setOutputState(askOutputState(), for: .ask)
-        focusChatInputSoon()
-    }
-
-    private func confirmTerminalCommand() {
-        guard let proposal = pendingTerminalCommandProposal else { return }
-        pendingTerminalCommandProposal = nil
-        runTerminalCommand(
-            proposal,
-            question: "Allow terminal in \(URL(fileURLWithPath: proposal.workingDirectory).lastPathComponent): \(proposal.reason)",
-            grants: localFileAccess.grants,
-            toolRouter: AssistantToolRouter()
-        )
-    }
-
-    private func cancelTerminalCommand() {
-        guard let proposal = pendingTerminalCommandProposal else { return }
-        pendingTerminalCommandProposal = nil
-        askTurns.append(
-            AskConversationTurn(
-                question: "Cancel terminal command",
-                answer: "Cancelled. No terminal command was run.\n\n`\(proposal.command)`",
-                backendLabel: "Terminal"
-            )
-        )
+        }
+        pendingAgentKernelApproval = nil
+        _ = loadingActions.remove(.ask)
+        askTask = nil
+        updateLastAskAnswer("Cancelled. No file was changed.", backendLabel: "Local Files")
         persistAskSession()
         setOutputState(askOutputState(), for: .ask)
         updateExpandedNotchSizeIfNeeded()
         focusChatInputSoon()
     }
 
-    private static func askPrompt(
-        question: String,
-        hasCaptureContext: Bool,
-        capturedOCRText: String,
-        isCaptureImageAttached: Bool,
-        assistantImageContext: AssistantImageContext?,
-        isAssistantImageAttached: Bool,
-        previousTranscript: String,
-        localFileContext: LocalFileContext,
-        usesCloud: Bool,
-        responseDetail: ResponseDetailLevel,
-        responseGuidance: String
-    ) -> String {
-        let trimmedQuestion = question.trimmingCharacters(in: .whitespacesAndNewlines)
-        let transcript = truncate(previousTranscript.trimmingCharacters(in: .whitespacesAndNewlines), limit: 1_600)
-        let ocr = truncate(
-            capturedOCRText.trimmingCharacters(in: .whitespacesAndNewlines),
-            limit: 1_400
-        )
-        let fileContext = compactFileContext(localFileContext, usesCloud: usesCloud)
-        var sections: [String] = []
-
-        if responseDetail == .brief {
-            sections.append("Answer directly in one short sentence when practical. Do not show reasoning.")
-        } else {
-            sections.append(responseGuidance)
-        }
-
-        if hasCaptureContext {
-            if isCaptureImageAttached {
-                sections.append(
-                    ocr.isEmpty
-                        ? "Use the attached screen image as context."
-                        : "Use the attached screen image as context. OCR:\n\(ocr)"
-                )
-            } else if !ocr.isEmpty {
-                sections.append("Use this screen OCR as context:\n\(ocr)")
-            } else {
-                sections.append("A screen region was selected, but no readable OCR or image input is available.")
-            }
-        }
-
-        if let assistantImageContext {
-            let imageOCR = truncate(
-                assistantImageContext.ocrText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-                limit: 1_400
-            )
-            if isAssistantImageAttached {
-                sections.append(
-                    imageOCR.isEmpty
-                        ? "Use the attached user image \"\(assistantImageContext.label)\" as context."
-                        : "Use the attached user image \"\(assistantImageContext.label)\" as context. Image OCR:\n\(imageOCR)"
-                )
-            } else if !imageOCR.isEmpty {
-                sections.append("Use this OCR from attached user image \"\(assistantImageContext.label)\" as context:\n\(imageOCR)")
-            } else {
-                sections.append("A user image \"\(assistantImageContext.label)\" is attached, but no readable OCR or image input is available.")
-            }
-        }
-
-        if fileContext != "none granted", fileContext != "none relevant" {
-            sections.append("Use these file snippets only when relevant:\n\(fileContext)")
-        }
-
-        if !transcript.isEmpty {
-            sections.append("Prior chat:\n\(transcript)")
-        }
-
-        sections.append("User: \(trimmedQuestion)")
-        return sections.joined(separator: "\n\n")
-    }
-
-    private static func askMaxOutputTokens(
-        responseDetail: ResponseDetailLevel,
-        question: String,
-        hasCaptureContext: Bool,
-        hasFileContext: Bool,
-        hasPreviousTranscript: Bool,
-        isSimpleBriefPlainChat: Bool
-    ) -> Int {
-        guard responseDetail == .brief else {
-            return responseDetail.maxOutputTokens(for: .ask)
-        }
-        if isSimpleBriefPlainChat {
-            return 128
-        }
-        if asksForLongAnswer(question) || hasCaptureContext || hasFileContext {
-            return 1_024
-        }
-        return hasPreviousTranscript ? 512 : 256
-    }
-
-    private static func compactFileContext(_ context: LocalFileContext, usesCloud: Bool) -> String {
-        guard context.hasGrantedFiles else { return "none granted" }
-        guard context.hasSnippets else { return "none relevant" }
-        let mode = usesCloud ? "cloud-routed snippets" : "local snippets"
-        let snippets = context.snippets.enumerated().map { index, snippet in
-            "[\(index + 1)] \(snippet.path)\n\(truncate(snippet.preview, limit: 700))"
-        }.joined(separator: "\n")
-        return "\(mode)\n\(snippets)"
-    }
-
-    private static func cloudAskContext(
-        hasCaptureContext: Bool,
-        capturedOCRText: String,
-        isCaptureImageAttached: Bool,
-        assistantImageContext: AssistantImageContext?,
-        isAssistantImageAttached: Bool,
-        localFileContext: LocalFileContext,
-        usesCloud: Bool
-    ) -> String {
-        var sections: [String] = []
-        let ocr = truncate(
-            capturedOCRText.trimmingCharacters(in: .whitespacesAndNewlines),
-            limit: 1_400
-        )
-        if hasCaptureContext {
-            if !ocr.isEmpty {
-                sections.append("Selected screen OCR:\n\(ocr)")
-            } else if isCaptureImageAttached {
-                sections.append("Selected screen region image is attached.")
-            } else {
-                sections.append("Selected screen region selected, but no readable OCR.")
-            }
-        }
-
-        if let assistantImageContext {
-            let imageOCR = truncate(
-                assistantImageContext.ocrText?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-                limit: 1_400
-            )
-            if !imageOCR.isEmpty {
-                sections.append("Attached image OCR (\(assistantImageContext.label)):\n\(imageOCR)")
-            } else if isAssistantImageAttached {
-                sections.append("Attached image is included: \(assistantImageContext.label).")
-            } else {
-                sections.append("Attached image has no readable OCR: \(assistantImageContext.label).")
-            }
-        }
-
-        let fileContext = compactFileContext(localFileContext, usesCloud: usesCloud)
-        if fileContext != "none granted", fileContext != "none relevant" {
-            sections.append("Files:\n\(fileContext)")
-        }
-        return sections.joined(separator: "\n\n")
-    }
-
-    private static func truncate(_ value: String, limit: Int) -> String {
-        guard value.count > limit else { return value }
-        let end = value.index(value.startIndex, offsetBy: limit)
-        return String(value[..<end]).trimmingCharacters(in: .whitespacesAndNewlines) + "..."
-    }
-
-    private static func asksForLongAnswer(_ question: String) -> Bool {
-        let normalized = normalizedQuestion(question)
-        return [
-            "explain",
-            "steps",
-            "list",
-            "compare",
-            "summarize",
-            "write",
-            "draft",
-            "code",
-            "why",
-            "how"
-        ].contains { normalized.contains($0) }
-    }
-
-    private static func normalizedQuestion(_ value: String) -> String {
-        value
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-            .lowercased()
-    }
-
-    private static func questionReferencesCapture(_ question: String) -> Bool {
-        let lowercased = question.lowercased()
-        return [
-            "screen",
-            "screenshot",
-            "capture",
-            "captured",
-            "selected",
-            "region",
-            "image",
-            "picture",
-            "see",
-            "shown",
-            "visible",
-            "this"
-        ].contains { lowercased.contains($0) }
-    }
-
-    private func runAskTurn(request: AIBackendRequest) async {
-        do {
-            for try await event in selectedAIBackend.streamResponse(for: request) {
-                switch event {
-                case .metadata(let statistics):
-                    await MainActor.run {
-                        updateLastAskStatistics(statistics)
-                        setOutputState(askOutputState(reasoning: nil), for: .ask)
-                    }
-                case .snapshot(let text):
-                    await MainActor.run {
-                        let displayText = displayTextNormalizer.normalize(text)
-                        updateLastAskAnswer(
-                            cleanAskAnswer(
-                                displayText,
-                                question: askTurns.last?.question ?? "",
-                                prompt: request.prompt
-                            )
-                        )
-                        setOutputState(askOutputState(reasoning: nil), for: .ask)
-                    }
-                case .output(let output):
-                    await MainActor.run {
-                        let displayText = displayTextNormalizer.normalize(output.finalText)
-                        updateLastAskAnswer(
-                            cleanAskAnswer(
-                                displayText,
-                                question: askTurns.last?.question ?? "",
-                                prompt: request.prompt
-                            )
-                        )
-                        updateLastAskStatistics(output.statistics)
-                        setOutputState(
-                            askOutputState(
-                                reasoning: responseDetail == .brief
-                                    ? nil
-                                    : output.reasoningText.map(displayTextNormalizer.normalize)
-                            ),
-                            for: .ask
-                        )
-                    }
-                case .completed:
-                    await MainActor.run {
-                        _ = loadingActions.remove(.ask)
-                        persistAskSession()
-                        updateExpandedNotchSizeIfNeeded()
-                        focusChatInputSoon()
-                    }
-                }
-            }
-        } catch {
-            if routingSettings.effectiveMode == .cloud {
-                await showAskCloudFailure(error)
-                return
-            }
-            await MainActor.run {
-                let recovery = ActionRecoveryState(error: error)
-                updateLastAskAnswer("Chat unavailable. \(recovery.detail)")
-                updateLastAskStatistics([])
-                setOutputState(
-                    askOutputState(
-                        backendLabel: "Unavailable",
-                        recovery: recovery
-                    ),
-                    for: .ask
-                )
-                loadingActions.remove(.ask)
-                persistAskSession()
-                updateExpandedNotchSizeIfNeeded()
-                focusChatInputSoon()
-            }
-        }
-    }
-
-    private func showAskCloudFailure(_ error: Error) async {
-        await MainActor.run {
-            let recovery = ActionRecoveryState(cloudError: error)
-            updateLastAskAnswer("Cloud action failed. \(recovery.detail)")
-            updateLastAskStatistics([])
-            if let lastIndex = askTurns.indices.last {
-                askTurns[lastIndex].backendLabel = Self.cloudBackendLabel
-            }
+    private func confirmTerminalCommand() {
+        guard let proposal = pendingTerminalCommandProposal else { return }
+        guard let approval = pendingAgentKernelApproval else {
+            pendingTerminalCommandProposal = nil
+            updateLastAskAnswer("No pending terminal approval was available.", backendLabel: "Terminal")
             persistAskSession()
-            setOutputState(
-                askOutputState(
-                    backendLabel: Self.cloudBackendLabel,
-                    recovery: recovery
-                ),
-                for: .ask
-            )
-            loadingActions.remove(.ask)
-            updateExpandedNotchSizeIfNeeded()
-            focusChatInputSoon()
+            setOutputState(askOutputState(), for: .ask)
+            return
         }
+        pendingTerminalCommandProposal = nil
+        pendingAgentKernelApproval = nil
+        updateLastAskAnswer("Running `\(proposal.command)`...", backendLabel: "Terminal")
+        loadingActions.insert(.ask)
+        let context = agentKernelContext()
+        askTask?.cancel()
+        askTask = Task {
+            let model = await makeAgentKernelModelAdapter()
+            let output = await agentKernelRuntime.resolveApproval(
+                context: context,
+                approval: approval,
+                decision: .approved,
+                model: model
+            )
+            await MainActor.run {
+                guard !Task.isCancelled else { return }
+                applyAgentKernelOutput(output, toTurnAt: askTurns.indices.last)
+            }
+        }
+        updateExpandedNotchSizeIfNeeded()
+        focusChatInputSoon()
     }
 
-    private func updateLastAskAnswer(_ answer: String) {
-        guard let lastIndex = askTurns.indices.last else { return }
-        askTurns[lastIndex].answer = answer
+    private func cancelTerminalCommand() {
+        guard let proposal = pendingTerminalCommandProposal else { return }
+        pendingTerminalCommandProposal = nil
+        if let approval = pendingAgentKernelApproval {
+            agentKernelLedger.append(
+                .approvalResolved(
+                    AgentKernelApprovalResolutionV2(
+                        approvalID: approval.request.id,
+                        decision: .canceled,
+                        reason: AgentKernelBoundedTextV2("User canceled terminal command.")
+                    )
+                )
+            )
+        }
+        pendingAgentKernelApproval = nil
+        updateLastAskAnswer("Cancelled. No terminal command was run.\n\n`\(proposal.command)`", backendLabel: "Terminal")
+        persistAskSession()
+        setOutputState(askOutputState(), for: .ask)
+        updateExpandedNotchSizeIfNeeded()
+        focusChatInputSoon()
     }
 
-    private func updateLastAskStatistics(_ statistics: [AIModelOutputStatistic]) {
-        guard let lastIndex = askTurns.indices.last else { return }
-        askTurns[lastIndex].statistics = statistics
+    private func updateLastAskAnswer(_ answer: String, backendLabel: String) {
+        if let index = askTurns.indices.last {
+            askTurns[index].answer = answer
+            askTurns[index].backendLabel = backendLabel
+        } else {
+            askTurns.append(AskConversationTurn(question: "Continue", answer: answer, backendLabel: backendLabel))
+        }
+        actionBackendLabel = backendLabel
     }
 
     private func persistAskSession() {
-        guard !askTurns.isEmpty else { return }
+        let persistedTurns = agentKernelConversationTurnsForExport()
+        guard !persistedTurns.isEmpty else { return }
         chatHistory.upsertSession(
             contextID: chatContextID,
             kind: chatContextKind,
             title: chatContextKind.displayName,
-            turns: askTurns.map { $0.storedTurn() },
+            turns: persistedTurns.map { $0.storedTurn() },
             toolState: assistantToolState
         )
     }
@@ -4071,6 +2294,8 @@ struct ResultPanelView: View {
         chatContextID = session.contextID
         chatContextKind = session.contextKind
         askTurns = session.turns.map { AskConversationTurn(storedTurn: $0) }
+        agentKernelLedger = Self.agentKernelLedger(for: askTurns)
+        pendingAgentKernelApproval = nil
         selectedAction = .ask
         setOutputState(askOutputState(backendLabel: askTurns.last?.backendLabel), for: .ask)
         updateExpandedNotchSizeIfNeeded()
@@ -4085,6 +2310,8 @@ struct ResultPanelView: View {
         pendingLocalFileWriteProposal = nil
         pendingTerminalCommandProposal = nil
         assistantToolState = AssistantToolState()
+        agentKernelLedger = AgentKernelSessionLedgerV2()
+        pendingAgentKernelApproval = nil
         chatContextID = Self.defaultChatContextID(
             for: CaptureResult(
                 image: nil,
@@ -4116,163 +2343,10 @@ struct ResultPanelView: View {
         focusChatInputSoon()
     }
 
-    private func cleanAskAnswer(_ answer: String, question: String, prompt: String) -> String {
-        var cleaned = answer.trimmingCharacters(in: .whitespacesAndNewlines)
-        cleaned = stripPromptEcho(from: cleaned, prompt: prompt)
-        cleaned = stripLeadingPromptScaffold(from: cleaned, question: question)
-
-        let markers = [
-            "user question:",
-            "previous turns:",
-            "captured ocr text:",
-            "answer concisely.",
-            "screen:",
-            "ocr:",
-            "files:",
-            "prior:",
-            "q:"
-        ]
-        if let markerRange = markers
-            .compactMap({ marker -> Range<String.Index>? in
-                guard cleaned.lowercased().hasPrefix(marker) else { return nil }
-                return cleaned.range(of: marker, options: .caseInsensitive)
-            })
-            .min(by: { $0.lowerBound < $1.lowerBound }),
-            !markerRange.isEmpty {
-            cleaned = String(cleaned[..<markerRange.lowerBound])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-
-        let questionLine = question.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !questionLine.isEmpty {
-            cleaned = cleaned
-                .components(separatedBy: .newlines)
-                .filter { line in
-                    line.trimmingCharacters(in: .whitespacesAndNewlines)
-                        .caseInsensitiveCompare(questionLine) != .orderedSame
-                }
-                .joined(separator: "\n")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-
-        return cleaned.isEmpty ? "Thinking..." : cleaned
-    }
-
-    private func stripLeadingPromptScaffold(from answer: String, question: String) -> String {
-        let questionLine = question.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalizedAnswer = normalizedPromptLine(answer)
-        let scaffoldPrefixes = [
-            "answer concisely.",
-            "screen:",
-            "ocr:",
-            "files:",
-            "prior:",
-            "q:",
-            "context:",
-            "ocr text:",
-            "question:"
-        ]
-        guard scaffoldPrefixes.contains(where: { normalizedAnswer.hasPrefix($0) }) else {
-            return stripAnswerLeadIn(from: answer)
-        }
-
-        if !questionLine.isEmpty,
-           let questionRange = answer.range(of: questionLine, options: [.caseInsensitive, .diacriticInsensitive]) {
-            let remainder = answer[questionRange.upperBound...]
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            return stripAnswerLeadIn(from: String(remainder))
-        }
-
-        let lines = answer.components(separatedBy: .newlines)
-        guard let firstContentIndex = lines.firstIndex(where: {
-            !normalizedPromptLine($0).isEmpty
-        }) else {
-            return ""
-        }
-
-        var questionIndex: Int?
-        let normalizedQuestion = normalizedPromptLine(questionLine)
-        for index in firstContentIndex..<lines.count {
-            let normalizedLine = normalizedPromptLine(lines[index])
-            if normalizedLine.hasPrefix("q:")
-                || normalizedLine.hasPrefix("question:")
-                || (!normalizedQuestion.isEmpty && normalizedLine == normalizedQuestion) {
-                questionIndex = index
-                break
-            }
-        }
-
-        guard let questionIndex else {
-            return ""
-        }
-
-        let remainder = lines
-            .dropFirst(questionIndex + 1)
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return stripAnswerLeadIn(from: remainder)
-    }
-
-    private func stripAnswerLeadIn(from answer: String) -> String {
-        let leadIns = [
-            "answer:",
-            "a:",
-            "assistant:"
-        ]
-        var cleaned = answer.trimmingCharacters(in: .whitespacesAndNewlines)
-        for leadIn in leadIns {
-            if cleaned.lowercased().hasPrefix(leadIn) {
-                cleaned = String(cleaned.dropFirst(leadIn.count))
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                break
-            }
-        }
-        return cleaned
-    }
-
-    private func stripPromptEcho(from answer: String, prompt: String) -> String {
-        let promptLines = prompt
-            .components(separatedBy: .newlines)
-            .map(normalizedPromptLine)
-            .filter { !$0.isEmpty }
-        guard !promptLines.isEmpty else { return answer }
-
-        var answerLines = answer.components(separatedBy: .newlines)
-        var answerIndex = 0
-        var promptIndex = 0
-        while answerIndex < answerLines.count, promptIndex < promptLines.count {
-            let normalizedAnswer = normalizedPromptLine(answerLines[answerIndex])
-            guard !normalizedAnswer.isEmpty else {
-                answerIndex += 1
-                continue
-            }
-            let normalizedPrompt = promptLines[promptIndex]
-            guard normalizedAnswer == normalizedPrompt || normalizedPrompt.hasPrefix(normalizedAnswer) else {
-                break
-            }
-            answerIndex += 1
-            promptIndex += 1
-        }
-
-        if answerIndex > 0 {
-            answerLines.removeFirst(answerIndex)
-            return answerLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-
-        let normalizedAnswer = normalizedPromptLine(answer)
-        let normalizedPrompt = normalizedPromptLine(prompt)
-        if normalizedPrompt.hasPrefix(normalizedAnswer) || normalizedAnswer.hasPrefix(normalizedPrompt) {
-            return normalizedAnswer == normalizedPrompt ? "" : answer.replacingOccurrences(of: prompt, with: "")
-        }
-
-        return answer
-    }
-
-    private func normalizedPromptLine(_ value: String) -> String {
-        value
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-            .lowercased()
+    private func clearChatHistory() {
+        guard loadingActions.isEmpty else { return }
+        chatHistory.clearAll()
+        showConfirmation("History cleared")
     }
 
     private func formattedAskTranscript() -> String {
@@ -4287,44 +2361,6 @@ struct ResultPanelView: View {
                 """
             }
             .joined(separator: "\n\n")
-    }
-
-    private func assistantContextPriorTurns() -> [AssistantContextPriorTurn] {
-        askTurns.map { turn in
-            AssistantContextPriorTurn(
-                question: turn.question,
-                answer: turn.answer.isEmpty ? "" : turn.answer
-            )
-        }
-    }
-
-    private static func enrichedFileSearchQuestion(
-        question: String,
-        previousTurns: [AssistantContextPriorTurn],
-        toolState: AssistantToolState
-    ) -> String {
-        let normalized = normalizedQuestion(question)
-        let contextDependentSignals = [
-            "his", "her", "their", "they", "them", "he ", "she ",
-            "that", "this", "it", "experience", "background", "work"
-        ]
-        let shouldCarryContext = contextDependentSignals.contains { normalized.contains($0) }
-            || toolState.lastListedFolder != nil
-            || !toolState.lastFileSources.isEmpty
-        guard shouldCarryContext else { return question }
-
-        let recentContext = previousTurns
-            .suffix(2)
-            .flatMap { [$0.question, $0.answer] }
-            .joined(separator: " ")
-        let sourceContext = (toolState.lastFileSources + toolState.grantedSourcesUsed)
-            .map { "\($0.displayName) \($0.path)" }
-            .joined(separator: " ")
-
-        return [question, recentContext, sourceContext]
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: " ")
     }
 
     private func cloudConversationTurns(beforeLastTurn: Bool) -> [AIBackendConversationTurn] {
@@ -5032,12 +3068,12 @@ private struct EmptyAssistantStatusChip: View {
 
     var body: some View {
         Label(title, systemImage: systemImage)
-            .font(.system(size: 11, weight: .semibold, design: .rounded))
+            .font(.system(size: 10.5, weight: .semibold, design: .rounded))
             .labelStyle(.titleAndIcon)
             .foregroundStyle(.secondary)
             .lineLimit(1)
-            .padding(.horizontal, 9)
-            .frame(height: 26)
+            .padding(.horizontal, 8)
+            .frame(height: 24)
             .background(.white.opacity(0.055), in: Capsule())
             .overlay {
                 Capsule().stroke(.white.opacity(0.08), lineWidth: 1)
@@ -5066,17 +3102,17 @@ private struct OverlayPillButton: View {
         Button(action: action) {
             HStack(spacing: displayStyle == .iconOnly ? 0 : 6) {
                 Image(systemName: systemImage)
-                    .font(.system(size: displayStyle == .prominentIconAndTitle ? 13 : 12, weight: .semibold))
+                    .font(.system(size: displayStyle == .prominentIconAndTitle ? 12 : 11.5, weight: .semibold))
 
                 if displayStyle != .iconOnly {
                     Text(title)
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
                 }
             }
             .foregroundStyle(foreground)
-            .frame(width: displayStyle == .iconOnly ? 40 : nil)
-            .padding(.horizontal, displayStyle == .iconOnly ? 0 : 14)
-            .frame(minHeight: displayStyle == .prominentIconAndTitle ? 40 : 40)
+            .frame(width: displayStyle == .iconOnly ? 36 : nil)
+            .padding(.horizontal, displayStyle == .iconOnly ? 0 : 12)
+            .frame(minHeight: 36)
             .background {
                 RoundedRectangle(cornerRadius: 13, style: .continuous)
                     .fill(fill)
@@ -5097,7 +3133,7 @@ private struct OverlayPillButton: View {
     private var foreground: Color {
         switch style {
         case .accent:
-            return .white
+            return .black
         case .primary, .secondary:
             return .primary
         }
@@ -5106,16 +3142,7 @@ private struct OverlayPillButton: View {
     private var fill: AnyShapeStyle {
         switch style {
         case .accent:
-            return AnyShapeStyle(
-                LinearGradient(
-                    colors: [
-                        Color(red: 0.96, green: 0.36, blue: 0.38).opacity(hovered ? 1.0 : 0.92),
-                        Color(red: 0.55, green: 0.13, blue: 0.16).opacity(hovered ? 0.90 : 0.78)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            )
+            return AnyShapeStyle(Color.white.opacity(hovered ? 1.0 : 0.92))
         case .primary:
             return AnyShapeStyle(.white.opacity(hovered ? 0.14 : 0.09))
         case .secondary:
@@ -5126,7 +3153,7 @@ private struct OverlayPillButton: View {
     private var stroke: Color {
         switch style {
         case .accent:
-            return .white.opacity(0.22)
+            return .white.opacity(0.0)
         case .primary:
             return .white.opacity(0.10)
         case .secondary:
@@ -5137,7 +3164,7 @@ private struct OverlayPillButton: View {
     private var shadow: Color {
         switch style {
         case .accent:
-            return Color.accentColor.opacity(0.35)
+            return .black.opacity(0.18)
         case .primary, .secondary:
             return .black.opacity(0.10)
         }
@@ -5150,6 +3177,7 @@ private struct ChatHistoryMenuButton: View {
     let sessions: [StoredChatSession]
     let isDisabled: Bool
     let onSelect: (StoredChatSession) -> Void
+    let onClearHistory: () -> Void
 
     var body: some View {
         Menu {
@@ -5161,18 +3189,23 @@ private struct ChatHistoryMenuButton: View {
                     Button {
                         onSelect(session)
                     } label: {
-                        Label {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(session.displayTitle)
-                                Text(session.updatedAt, style: .relative)
-                                    .foregroundStyle(.secondary)
-                            }
-                        } icon: {
-                            Image(systemName: session.contextKind == .capture ? "viewfinder" : "bubble.left.and.bubble.right")
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(session.displayTitle)
+                            Text(session.updatedAt, style: .relative)
+                                .foregroundStyle(.secondary)
                         }
                     }
                     .disabled(isDisabled)
                 }
+
+                Divider()
+
+                Button(role: .destructive) {
+                    onClearHistory()
+                } label: {
+                    Label("Clear Chat History", systemImage: "trash")
+                }
+                .disabled(isDisabled)
             }
         } label: {
             HStack(spacing: 0) {
@@ -5334,37 +3367,25 @@ private struct OverlayTextField: View {
     let onSubmit: () -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "questionmark.bubble")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Color(red: 0.62, green: 0.80, blue: 1.0).opacity(0.72))
-
-            TextField(placeholder, text: $text)
-                .textFieldStyle(.plain)
-                .font(.system(size: 14))
-                .foregroundStyle(.primary)
-                .focused(isFocused)
-                .onSubmit(onSubmit)
-        }
-        .padding(.horizontal, 14)
-        .frame(minHeight: 40)
-        .background {
-            RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color.white.opacity(0.075),
-                            Color.white.opacity(0.035)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .stroke(.white.opacity(0.12), lineWidth: 1)
-        }
+        TextField(placeholder, text: $text, axis: .vertical)
+            .textFieldStyle(.plain)
+            .font(.system(size: 12.5))
+            .foregroundStyle(.primary)
+            .lineLimit(1...5)
+            .frame(maxWidth: .infinity, minHeight: 20, alignment: .topLeading)
+            .focused(isFocused)
+            .onSubmit(onSubmit)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, minHeight: 36, alignment: .topLeading)
+            .background {
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .fill(Color.white.opacity(0.05))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .stroke(.white.opacity(0.10), lineWidth: 1)
+            }
     }
 }
 
@@ -5486,13 +3507,13 @@ private struct AskTranscriptView: View {
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 12) {
                     if turns.isEmpty, !emptyText.isEmpty {
                         Text(emptyText)
-                            .font(.system(size: 13))
+                            .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.top, 8)
+                            .padding(.top, 6)
                     } else {
                         ForEach(Array(turns.enumerated()), id: \.offset) { index, turn in
                             AskTurnView(index: index + 1, turn: turn, toolState: toolState)
@@ -5584,37 +3605,210 @@ private struct AssistantThinkingIndicator: View {
     }
 }
 
+private struct RunningTerminalBanner: View {
+    let command: String
+    let continuation: String?
+
+    @State private var pulse = false
+
+    private static let pattern = try? NSRegularExpression(
+        pattern: #"^Running `([^`]+)`\.\.\.(?:\n+(.+))?$"#,
+        options: [.dotMatchesLineSeparators]
+    )
+
+    static func parse(from text: String) -> (command: String, continuation: String?)? {
+        guard let regex = pattern else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let range = NSRange(trimmed.startIndex..., in: trimmed)
+        guard let match = regex.firstMatch(in: trimmed, options: [], range: range),
+              match.numberOfRanges >= 2,
+              let commandRange = Range(match.range(at: 1), in: trimmed) else {
+            return nil
+        }
+        let command = String(trimmed[commandRange])
+
+        var continuation: String? = nil
+        if match.numberOfRanges >= 3,
+           let contRange = Range(match.range(at: 2), in: trimmed) {
+            let candidate = String(trimmed[contRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !candidate.isEmpty { continuation = candidate }
+        }
+
+        return (command, continuation)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                ZStack {
+                    Circle()
+                        .stroke(Color.white.opacity(pulse ? 0.10 : 0.22), lineWidth: 1)
+                        .frame(width: 16, height: 16)
+                        .scaleEffect(pulse ? 1.35 : 0.85)
+                        .opacity(pulse ? 0 : 1)
+                    Circle()
+                        .fill(Color.white.opacity(0.85))
+                        .frame(width: 5, height: 5)
+                }
+                .frame(width: 18, height: 18)
+                .animation(
+                    .easeInOut(duration: 1.0).repeatForever(autoreverses: false),
+                    value: pulse
+                )
+
+                Text("Running")
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .tracking(0.4)
+                    .textCase(.uppercase)
+                    .foregroundStyle(.secondary)
+
+                Spacer(minLength: 0)
+            }
+
+            Text(command)
+                .font(.system(size: 12.5, weight: .medium, design: .monospaced))
+                .foregroundStyle(.primary.opacity(0.92))
+                .textSelection(.enabled)
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(Color.white.opacity(0.04))
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                }
+
+            if let continuation {
+                Text(continuation)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .onAppear { pulse = true }
+    }
+}
+
+private struct FileWriteContinuationBanner: View {
+    let detail: String
+    let baseDirectoryPaths: [String]
+
+    @State private var pulse = false
+
+    private static let pattern = try? NSRegularExpression(
+        pattern: #"^Done\. (.+?)(?:\n+)Continuing the task\.\.\.$"#,
+        options: [.dotMatchesLineSeparators]
+    )
+
+    static func parse(from text: String) -> String? {
+        guard let regex = pattern else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let range = NSRange(trimmed.startIndex..., in: trimmed)
+        guard let match = regex.firstMatch(in: trimmed, options: [], range: range),
+              match.numberOfRanges >= 2,
+              let detailRange = Range(match.range(at: 1), in: trimmed) else {
+            return nil
+        }
+        let detail = String(trimmed[detailRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return detail.isEmpty ? nil : detail
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 9) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.green.opacity(0.82))
+
+                Text("File updated")
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .tracking(0.4)
+                    .textCase(.uppercase)
+                    .foregroundStyle(.secondary)
+
+                Spacer(minLength: 0)
+            }
+
+            FileLinkedAnswerText(text: detail, baseDirectoryPaths: baseDirectoryPaths)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(Color.white.opacity(0.04))
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                }
+
+            HStack(spacing: 8) {
+                ZStack {
+                    Circle()
+                        .stroke(Color.white.opacity(pulse ? 0.08 : 0.20), lineWidth: 1)
+                        .frame(width: 14, height: 14)
+                        .scaleEffect(pulse ? 1.35 : 0.85)
+                        .opacity(pulse ? 0 : 1)
+                    Circle()
+                        .fill(Color.white.opacity(0.70))
+                        .frame(width: 4.5, height: 4.5)
+                }
+                .frame(width: 16, height: 16)
+                .animation(.easeInOut(duration: 1.0).repeatForever(autoreverses: false), value: pulse)
+
+                Text("Continuing")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .onAppear { pulse = true }
+    }
+}
+
 private struct AskTurnView: View {
     let index: Int
     let turn: AskConversationTurn
     let toolState: AssistantToolState
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top) {
                 Spacer(minLength: 80)
 
                 Text(turn.question)
-                    .font(.system(size: 13.5, weight: .medium))
-                    .lineSpacing(2)
+                    .font(.system(size: 12.5, weight: .medium))
+                    .lineSpacing(1)
                     .textSelection(.enabled)
-                    .padding(.horizontal, 13)
-                    .padding(.vertical, 10)
-                    .background(.white.opacity(0.075), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 7)
+                    .background(.white.opacity(0.075), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .overlay {
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
                             .stroke(.white.opacity(0.07), lineWidth: 1)
                     }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            VStack(alignment: .leading, spacing: 9) {
+            VStack(alignment: .leading, spacing: 6) {
                 metadataLine
 
                 if turn.answer.isEmpty {
                     AssistantThinkingIndicator()
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .accessibilityLabel("Thinking")
+                } else if let fileWriteDetail = FileWriteContinuationBanner.parse(from: turn.answer) {
+                    FileWriteContinuationBanner(
+                        detail: fileWriteDetail,
+                        baseDirectoryPaths: Self.baseDirectoryPaths(from: toolState)
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else if let running = RunningTerminalBanner.parse(from: turn.answer) {
+                    RunningTerminalBanner(command: running.command, continuation: running.continuation)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
                     FileLinkedAnswerText(
                         text: turn.answer,
@@ -5623,46 +3817,20 @@ private struct AskTurnView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+            .padding(.horizontal, 2)
+            .padding(.top, 2)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .stroke(.white.opacity(0.065), lineWidth: 1)
-            }
         }
     }
 
     @ViewBuilder
     private var metadataLine: some View {
-        HStack(spacing: 6) {
-            Image(systemName: backendIcon)
-                .font(.system(size: 10, weight: .semibold))
-
-            Text(metadataText)
-                .font(.system(size: 11, weight: .medium))
-                .lineLimit(1)
-                .truncationMode(.tail)
-
-            Spacer(minLength: 0)
-        }
-        .foregroundStyle(.tertiary)
-    }
-
-    private var backendIcon: String {
-        switch turn.backendLabel {
-        case "Pixel Pane Cloud":
-            return "cloud"
-        case "MLX Text":
-            return "text.bubble"
-        case "MLX Vision":
-            return "eye"
-        case "Local Files":
-            return "folder"
-        default:
-            return "lock.laptopcomputer"
-        }
+        Text(metadataText)
+            .font(.system(size: 11, weight: .regular))
+            .foregroundStyle(.tertiary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var compactBackendLabel: String {
@@ -5750,13 +3918,13 @@ private struct FileLinkedAnswerText: View {
         let lineSegments = Self.lineSegments(in: text, baseDirectoryPaths: baseDirectoryPaths)
         VStack(alignment: .leading, spacing: 4) {
             ForEach(lineSegments.indices, id: \.self) { index in
-                HStack(alignment: .firstTextBaseline, spacing: 3) {
-                    ForEach(lineSegments[index]) { segment in
+                InlineFlowLayout(horizontalSpacing: 3, verticalSpacing: 4) {
+                    ForEach(Self.inlineSegments(from: lineSegments[index])) { segment in
                         switch segment {
                         case .text(let value, _):
                             Text(value)
-                                .font(.system(size: 13.5))
-                                .lineSpacing(4)
+                                .font(.system(size: 12.5))
+                                .lineLimit(1)
                                 .textSelection(.enabled)
 
                         case .path(let display, let path, _):
@@ -5767,6 +3935,44 @@ private struct FileLinkedAnswerText: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+    }
+
+    private static func inlineSegments(from segments: [Segment]) -> [Segment] {
+        segments.flatMap { segment -> [Segment] in
+            switch segment {
+            case .path:
+                return [segment]
+            case .text(let value, _):
+                return textTokens(from: value).map { .text($0, UUID()) }
+            }
+        }
+    }
+
+    private static func textTokens(from value: String) -> [String] {
+        guard !value.isEmpty else { return [] }
+
+        var tokens: [String] = []
+        var cursor = value.startIndex
+        while cursor < value.endIndex {
+            let tokenStart = cursor
+
+            if value[cursor].isWhitespace {
+                while cursor < value.endIndex, value[cursor].isWhitespace {
+                    cursor = value.index(after: cursor)
+                }
+            } else {
+                while cursor < value.endIndex, !value[cursor].isWhitespace {
+                    cursor = value.index(after: cursor)
+                }
+                while cursor < value.endIndex, value[cursor].isWhitespace {
+                    cursor = value.index(after: cursor)
+                }
+            }
+
+            tokens.append(String(value[tokenStart..<cursor]))
+        }
+
+        return tokens
     }
 
     private static func lineSegments(in text: String, baseDirectoryPaths: [String]) -> [[Segment]] {
@@ -5869,16 +4075,17 @@ private struct FilePathChip: View {
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: iconName)
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.system(size: 9.5, weight: .semibold))
 
                 Text(display)
-                    .font(.system(size: 12.5, weight: .medium, design: .monospaced))
+                    .font(.system(size: 11.5, weight: .medium, design: .monospaced))
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
             .foregroundStyle(Color(red: 0.72, green: 0.82, blue: 1.0))
-            .padding(.horizontal, 6)
-            .padding(.vertical, 3)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .frame(height: 20)
             .frame(maxWidth: 220, alignment: .leading)
             .background(.white.opacity(0.065), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             .overlay {
@@ -5896,6 +4103,68 @@ private struct FilePathChip: View {
             return isDirectory.boolValue ? "folder" : "doc.text"
         }
         return URL(fileURLWithPath: path).pathExtension.isEmpty ? "folder" : "doc.text"
+    }
+}
+
+private struct InlineFlowLayout: Layout {
+    let horizontalSpacing: CGFloat
+    let verticalSpacing: CGFloat
+
+    init(horizontalSpacing: CGFloat, verticalSpacing: CGFloat) {
+        self.horizontalSpacing = horizontalSpacing
+        self.verticalSpacing = verticalSpacing
+    }
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) -> CGSize {
+        layout(subviews: subviews, maxWidth: proposal.width ?? .greatestFiniteMagnitude).size
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) {
+        let result = layout(subviews: subviews, maxWidth: bounds.width)
+        for item in result.items {
+            subviews[item.index].place(
+                at: CGPoint(x: bounds.minX + item.origin.x, y: bounds.minY + item.origin.y),
+                proposal: ProposedViewSize(item.size)
+            )
+        }
+    }
+
+    private func layout(subviews: Subviews, maxWidth: CGFloat) -> (items: [Item], size: CGSize) {
+        var items: [Item] = []
+        var cursor = CGPoint.zero
+        var lineHeight: CGFloat = 0
+        var width: CGFloat = 0
+
+        for index in subviews.indices {
+            let size = subviews[index].sizeThatFits(.unspecified)
+            if cursor.x > 0, cursor.x + size.width > maxWidth {
+                cursor.x = 0
+                cursor.y += lineHeight + verticalSpacing
+                lineHeight = 0
+            }
+
+            items.append(Item(index: index, origin: cursor, size: size))
+            cursor.x += size.width + horizontalSpacing
+            lineHeight = max(lineHeight, size.height)
+            width = max(width, cursor.x - horizontalSpacing)
+        }
+
+        return (items, CGSize(width: width, height: cursor.y + lineHeight))
+    }
+
+    private struct Item {
+        let index: Int
+        let origin: CGPoint
+        let size: CGSize
     }
 }
 

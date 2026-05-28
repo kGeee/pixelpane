@@ -1,16 +1,20 @@
 # Pixel Pane Backend Proxy API Contract
 
-Status: accepted for implementation.
+Last updated: 2026-05-27
 
-This contract defines the first cloud-upgrade API for Pixel Pane. Local Mode remains the default. The macOS app may call this proxy only when Cloud Mode is enabled and the user has granted any required per-action image consent.
+Status: accepted for current Cloud Mode implementation.
+
+This contract defines the Pixel Pane Cloud Mode proxy. Local Mode remains the default. The macOS app may call this proxy only when Cloud Mode is enabled and the user has granted any required image consent.
+
+The future AGENTV2 runtime stays app-owned. The backend is a model route, not the authority for local permissions, file access, terminal execution, write approval, or source tracking.
 
 ## Hosting And Ownership
 
 - Runtime: Cloudflare Workers.
 - Provider: Anthropic Messages API through a server-side API key.
-- Client secrets: the macOS app never stores Anthropic, Stripe, RevenueCat, or Worker secrets.
+- Client secrets: the macOS app never stores Anthropic, Stripe, RevenueCat, Worker, signing, or update-signing secrets.
 - Streaming: the proxy returns `text/event-stream` responses using Server-Sent Events.
-- Logging default: prompt content, screenshots, OCR text, user questions, glossary matches, and model output are not logged by default.
+- Logging default: prompt content, screenshots, OCR text, user questions, filenames, file contents, and model output are not logged by default.
 
 ## Base URL And Versioning
 
@@ -40,7 +44,9 @@ X-PixelPane-Request-ID: <uuid>
 
 ## Endpoints
 
-All action endpoints use `POST` and stream a response.
+All action endpoints use `POST` and stream a response. These endpoints are retained for compatibility with app-side action routing and the Worker contract. In the assistant-first product, they should be understood as cloud model routes for assistant turns and capture-derived tasks, not as the primary product navigation model.
+
+The current macOS app `AIActionKind` calls `translate`, `explain`, `simplify`, `ask`, `chat`, and `debug`. The Worker also accepts `study` and `menu` for contract compatibility, but those are not active top-level app routes in the current assistant-first product.
 
 | Endpoint | Purpose | Supports image payload |
 |---|---|---|
@@ -48,6 +54,7 @@ All action endpoints use `POST` and stream a response.
 | `/explain` | Explain captured text or screenshot context | Yes, only with per-action image consent |
 | `/simplify` | Rewrite captured text in simpler language | No |
 | `/ask` | Answer a follow-up question about a capture | First turn only, only with per-action image consent |
+| `/chat` | Cloud text route for plain assistant chat | No |
 | `/study` | Study-mode explanation with terms and learning help | Yes, only with per-action image consent |
 | `/menu` | Menu translation with cultural context | Yes, only with per-action image consent |
 | `/debug` | Technical/code/log/error help | Yes, only with per-action image consent |
@@ -85,6 +92,30 @@ Response:
 
 The device ID is stored in Keychain by the app and is used for anonymous free-tier quota. Sign in with Apple remains deferred until upgrade/account work.
 
+## Assistant Harness Boundary
+
+The macOS app owns:
+
+- local/cloud routing choice;
+- prompt/context packing;
+- local file grants;
+- terminal risk classification;
+- side-effect confirmations;
+- tool execution;
+- source/tool receipts;
+- prompt-injection boundaries for retrieved local data.
+
+The proxy owns:
+
+- provider authentication;
+- server-side provider prompt construction for Cloud Mode;
+- streaming response normalization;
+- quota and rate limiting;
+- provider error normalization;
+- no-content logging rules.
+
+Cloud requests must not include hidden local context. The app sends only context it has explicitly packed for the current assistant turn.
+
 ## Shared Request Schema
 
 All endpoints accept this envelope. Fields that do not apply to an action are omitted, not sent as `null`.
@@ -92,7 +123,7 @@ All endpoints accept this envelope. Fields that do not apply to an action are om
 ```json
 {
   "schema_version": "2026-04-29",
-  "action": "translate",
+  "action": "ask",
   "capture": {
     "source_type": "ocr",
     "ocr_text": "Bonjour",
@@ -132,21 +163,23 @@ All endpoints accept this envelope. Fields that do not apply to an action are om
 ### Field Rules
 
 - `schema_version` is required and must be the date string for this contract until a later version is documented.
-- `action` is required and must match the endpoint: `translate`, `explain`, `simplify`, `ask`, `study`, `menu`, or `debug`.
+- `action` is required and must match the endpoint: `translate`, `explain`, `simplify`, `ask`, `chat`, `debug`, or a Worker-retained compatibility route such as `study` or `menu`.
 - `capture.source_type` is required. Initial value: `ocr`.
-- `capture.ocr_text` is required for all endpoints. Empty or whitespace-only text returns `400 empty_ocr_text`.
+- `capture.ocr_text` is required for capture-derived endpoints. Empty or whitespace-only text returns `400 empty_ocr_text` unless the app route explicitly supports plain chat.
 - `capture.detected_language` uses a BCP 47 language code when known. Omit when unknown.
 - `target_language` is required for `/translate` and optional elsewhere.
-- `question` is required for `/ask`.
-- `conversation` is allowed only for `/ask`; the app sends at most five turns and must not resend image data after the first turn.
+- `question` is required for `/ask` and `/chat`.
+- `conversation` is allowed for `/ask` and `/chat`; the app sends bounded current-session turns and must not resend image data after the first capture/image turn.
 - `image` is allowed only for image-capable endpoints. The proxy rejects image payloads unless `image.user_consented` is `true`.
 - `image.data_base64` should be PNG or JPEG, capped at 5 MB after base64 decoding.
 - `client_context` is metadata only. It must not include OCR text, prompt text, result text, filenames, or window/app names captured from the user's screen.
 - `limits.max_output_tokens` is optional. The server clamps it to the plan and action maximum. Client response style should guide verbosity, not deliberately truncate a response before completion.
 
+Current limitation: the deployed schema is still capture/action shaped plus a plain `/chat` route. Agent tool observations are primarily handled locally today. If Cloud Mode becomes a full assistant planner/synthesizer route, add a versioned `/assistant` endpoint instead of overloading this contract silently.
+
 ## Action-Specific Prompt Inputs
 
-The client sends structured fields, not final provider prompts. The proxy owns provider prompt construction so model upgrades do not require a client release.
+The client sends structured fields, not provider API keys or raw provider requests. The proxy owns provider prompt construction so model upgrades do not require a client release.
 
 `/translate`:
 
@@ -293,6 +326,8 @@ Error codes:
 - Rate limit response includes `retry_after_seconds` when available.
 - Local OCR and local AI actions are not rate limited by the proxy.
 
+For assistant-first Cloud Mode, quota should count cloud model turns, not local tool calls. Local file reads, local terminal observations, local OCR, and local model work remain outside proxy quota.
+
 ## Auth Contract
 
 Initial implementation uses a bearer app token:
@@ -332,7 +367,9 @@ Default logs must not include:
 - prompt text
 - user questions
 - model output/result text
-- glossary entries
-- filenames, window titles, or source application names
+- filenames
+- file contents
+- window titles
+- source application names
 
 Debug logging that includes user content is not allowed in production. Any future opt-in diagnostic bundle must require explicit user action and must be documented separately.

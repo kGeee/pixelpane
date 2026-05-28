@@ -1,12 +1,12 @@
 import Foundation
 
-struct MLXVisionRuntimeDetector: Sendable {
+nonisolated struct MLXVisionRuntimeDetector: @unchecked Sendable {
     private let fileManager: FileManager
     private let environment: [String: String]
     private let homeDirectory: URL
     private let store: MLXVisionModelStore
 
-    init(
+    nonisolated init(
         fileManager: FileManager = .default,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -18,15 +18,15 @@ struct MLXVisionRuntimeDetector: Sendable {
         self.store = store
     }
 
-    func imageCapabilityStatus() -> AIBackendCapabilityStatus {
+    nonisolated func imageCapabilityStatus() -> AIBackendCapabilityStatus {
         setupSnapshot().imageCapabilityStatus
     }
 
-    func textCapabilityStatus() -> AIBackendCapabilityStatus {
+    nonisolated func textCapabilityStatus() -> AIBackendCapabilityStatus {
         setupSnapshot().textCapabilityStatus
     }
 
-    func setupSnapshot() -> MLXVisionSetupSnapshot {
+    nonisolated func setupSnapshot() -> MLXVisionSetupSnapshot {
         let runtimeURL = mlxGenerateExecutableURL()
         let textRuntimeURL = mlxTextGenerateExecutableURL()
         let installedModels = cachedModels()
@@ -70,7 +70,7 @@ struct MLXVisionRuntimeDetector: Sendable {
         )
     }
 
-    func mlxGenerateExecutableURL() -> URL? {
+    nonisolated func mlxGenerateExecutableURL() -> URL? {
         let candidates = pathCandidates(named: "mlx_vlm.generate") + userPythonBinCandidates(named: "mlx_vlm.generate") + [
             "/opt/homebrew/bin/mlx_vlm.generate",
             "/usr/local/bin/mlx_vlm.generate"
@@ -81,7 +81,7 @@ struct MLXVisionRuntimeDetector: Sendable {
             .first { fileManager.isExecutableFile(atPath: $0.path) }
     }
 
-    func mlxTextGenerateExecutableURL() -> URL? {
+    nonisolated func mlxTextGenerateExecutableURL() -> URL? {
         let candidates = pathCandidates(named: "mlx_lm.generate") + userPythonBinCandidates(named: "mlx_lm.generate") + [
             "/opt/homebrew/bin/mlx_lm.generate",
             "/usr/local/bin/mlx_lm.generate"
@@ -92,7 +92,7 @@ struct MLXVisionRuntimeDetector: Sendable {
             .first { fileManager.isExecutableFile(atPath: $0.path) }
     }
 
-    func mlxTextServerExecutableURL() -> URL? {
+    nonisolated func mlxTextServerExecutableURL() -> URL? {
         let candidates = pathCandidates(named: "mlx_lm.server") + userPythonBinCandidates(named: "mlx_lm.server") + [
             "/opt/homebrew/bin/mlx_lm.server",
             "/usr/local/bin/mlx_lm.server"
@@ -103,11 +103,11 @@ struct MLXVisionRuntimeDetector: Sendable {
             .first { fileManager.isExecutableFile(atPath: $0.path) }
     }
 
-    func compatibleCachedModelURL() -> URL? {
+    nonisolated func compatibleCachedModelURL() -> URL? {
         cachedModels().first { $0.isVisionCompatible }?.localURL
     }
 
-    func cachedModels() -> [MLXVisionModel] {
+    nonisolated func cachedModels() -> [MLXVisionModel] {
         let preferredURL = MLXVisionModelStore.defaultCacheURL(
             for: MLXVisionSetupConstants.preferredModelRepositoryID,
             homeDirectory: homeDirectory
@@ -136,11 +136,11 @@ struct MLXVisionRuntimeDetector: Sendable {
             }
     }
 
-    func hasUsableVisionSnapshot(in modelURL: URL) -> Bool {
+    nonisolated func hasUsableVisionSnapshot(in modelURL: URL) -> Bool {
         usableVisionSnapshotURL(in: modelURL) != nil
     }
 
-    func modelCapability(in modelURL: URL) -> MLXModelCapability {
+    nonisolated func modelCapability(in modelURL: URL) -> MLXModelCapability {
         let hasText = usableTextSnapshotURL(in: modelURL) != nil
         let hasVision = usableVisionSnapshotURL(in: modelURL) != nil
 
@@ -156,7 +156,7 @@ struct MLXVisionRuntimeDetector: Sendable {
         }
     }
 
-    func usableTextSnapshotURL(in modelURL: URL) -> URL? {
+    nonisolated func usableTextSnapshotURL(in modelURL: URL) -> URL? {
         if isUsableTextModelDirectory(modelURL) {
             return modelURL
         }
@@ -175,7 +175,7 @@ struct MLXVisionRuntimeDetector: Sendable {
         }
     }
 
-    func usableVisionSnapshotURL(in modelURL: URL) -> URL? {
+    nonisolated func usableVisionSnapshotURL(in modelURL: URL) -> URL? {
         if isUsableVisionModelDirectory(modelURL) {
             return modelURL
         }
@@ -194,7 +194,7 @@ struct MLXVisionRuntimeDetector: Sendable {
         }
     }
 
-    private func recommendedModel(installedModels: [MLXVisionModel]) -> MLXVisionModel {
+    private nonisolated func recommendedModel(installedModels: [MLXVisionModel]) -> MLXVisionModel {
         installedModels.first { $0.repositoryID == MLXVisionSetupConstants.preferredModelRepositoryID }
             ?? MLXVisionModel(
                 repositoryID: MLXVisionSetupConstants.preferredModelRepositoryID,
@@ -216,7 +216,7 @@ struct MLXVisionRuntimeDetector: Sendable {
             )
     }
 
-    private func selectedModel(from installedModels: [MLXVisionModel]) -> MLXVisionModel? {
+    private nonisolated func selectedModel(from installedModels: [MLXVisionModel]) -> MLXVisionModel? {
         guard let selection = store.selectedModel else { return nil }
         let selectedURL = URL(fileURLWithPath: selection.localPath)
         guard fileManager.fileExists(atPath: selectedURL.path) else { return nil }
@@ -232,7 +232,7 @@ struct MLXVisionRuntimeDetector: Sendable {
             )
     }
 
-    private func model(forCachedDirectory url: URL) -> MLXVisionModel {
+    private nonisolated func model(forCachedDirectory url: URL) -> MLXVisionModel {
         let repositoryID = repositoryID(forCacheDirectoryName: url.lastPathComponent)
         let capability = modelCapability(in: url)
         return MLXVisionModel(
@@ -249,11 +249,11 @@ struct MLXVisionRuntimeDetector: Sendable {
         )
     }
 
-    private func isCacheModelDirectory(_ url: URL) -> Bool {
+    private nonisolated func isCacheModelDirectory(_ url: URL) -> Bool {
         isDirectory(url) && url.lastPathComponent.hasPrefix("models--")
     }
 
-    private func isUsableVisionModelDirectory(_ url: URL) -> Bool {
+    private nonisolated func isUsableVisionModelDirectory(_ url: URL) -> Bool {
         guard isUsableTextModelDirectory(url) else { return false }
 
         let configURL = url.appendingPathComponent("config.json")
@@ -287,7 +287,7 @@ struct MLXVisionRuntimeDetector: Sendable {
         return visionMarkers.contains { metadata.contains($0) }
     }
 
-    private func isUsableTextModelDirectory(_ url: URL) -> Bool {
+    private nonisolated func isUsableTextModelDirectory(_ url: URL) -> Bool {
         guard isDirectory(url) else { return false }
 
         let configURL = url.appendingPathComponent("config.json")
@@ -309,24 +309,24 @@ struct MLXVisionRuntimeDetector: Sendable {
         return hasTokenizer && (hasIndexedWeights || hasSafetensors)
     }
 
-    private func contentsOfTextFile(at url: URL) -> String? {
+    private nonisolated func contentsOfTextFile(at url: URL) -> String? {
         guard fileManager.fileExists(atPath: url.path) else { return nil }
         return try? String(contentsOf: url, encoding: .utf8)
     }
 
-    private func repositoryID(forCacheDirectoryName name: String) -> String {
+    private nonisolated func repositoryID(forCacheDirectoryName name: String) -> String {
         let trimmed = name.replacingOccurrences(of: "models--", with: "")
         let parts = trimmed.components(separatedBy: "--")
         guard parts.count >= 2 else { return trimmed }
         return parts[0] + "/" + parts.dropFirst().joined(separator: "--")
     }
 
-    private func isDirectory(_ url: URL) -> Bool {
+    private nonisolated func isDirectory(_ url: URL) -> Bool {
         var isDirectory: ObjCBool = false
         return fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
     }
 
-    private func pathCandidates(named executableName: String) -> [String] {
+    private nonisolated func pathCandidates(named executableName: String) -> [String] {
         let path = environment["PATH"] ?? ""
         return path
             .split(separator: ":")
@@ -334,7 +334,7 @@ struct MLXVisionRuntimeDetector: Sendable {
             .map { URL(fileURLWithPath: $0).appendingPathComponent(executableName).path }
     }
 
-    private func userPythonBinCandidates(named executableName: String) -> [String] {
+    private nonisolated func userPythonBinCandidates(named executableName: String) -> [String] {
         let pythonDirectory = homeDirectory
             .appendingPathComponent("Library")
             .appendingPathComponent("Python")

@@ -226,6 +226,11 @@ final class AppState: ObservableObject {
                 self.localAICapabilities = capabilities
                 self.isRunningMLXSetupCheck = false
                 Task { await MLXTextServerManager.shared.stop() }
+                if snapshot.selectedModel != nil {
+                    self.setUseCloudModels(false)
+                } else {
+                    self.refreshPresentedPanel()
+                }
             }
         }
     }
@@ -251,6 +256,11 @@ final class AppState: ObservableObject {
                 self.localAICapabilities = capabilities
                 self.isRunningMLXSetupCheck = false
                 Task { await MLXTextServerManager.shared.stop() }
+                if snapshot.selectedModel != nil {
+                    self.setUseCloudModels(false)
+                } else {
+                    self.refreshPresentedPanel()
+                }
             }
         }
     }
@@ -424,5 +434,15 @@ final class AppState: ObservableObject {
     private func persistAIRoutingSettings() {
         userDefaults.set(aiRoutingSettings.useCloudModels, forKey: AIRoutingDefaults.useCloudModelsKey)
         userDefaults.set(aiRoutingSettings.allowCloudImageContext, forKey: AIRoutingDefaults.allowCloudImageContextKey)
+    }
+
+    private func refreshPresentedPanel() {
+        panelController.refreshRoutingSettings(
+            aiRoutingSettings,
+            responseDetail: responseDetailLevel,
+            localAICapabilities: localAICapabilities,
+            localFileAccess: localFileAccess,
+            chatHistory: chatHistory
+        )
     }
 }

@@ -7,8 +7,9 @@ final class MLXTextBackend: AIBackend, @unchecked Sendable {
     private let detector: MLXVisionRuntimeDetector
     private let store: MLXVisionModelStore
     private let timeoutSeconds: TimeInterval
+    private let runtimeCache = MLXTextRuntimeCache()
 
-    init(
+    nonisolated init(
         detector: MLXVisionRuntimeDetector = MLXVisionRuntimeDetector(),
         store: MLXVisionModelStore = MLXVisionModelStore(),
         timeoutSeconds: TimeInterval = 120
@@ -18,7 +19,7 @@ final class MLXTextBackend: AIBackend, @unchecked Sendable {
         self.timeoutSeconds = timeoutSeconds
     }
 
-    func capabilities() async -> AIBackendCapabilities {
+    nonisolated func capabilities() async -> AIBackendCapabilities {
         AIBackendCapabilities(
             text: detector.textCapabilityStatus(),
             image: .unavailable(.imageInputUnsupported),
@@ -28,84 +29,196 @@ final class MLXTextBackend: AIBackend, @unchecked Sendable {
         )
     }
 
-    func streamResponse(for request: AIBackendRequest) -> AsyncThrowingStream<AIBackendStreamEvent, Error> {
+    nonisolated func streamResponse(for request: AIBackendRequest) -> AsyncThrowingStream<AIBackendStreamEvent, Error> {
         AsyncThrowingStream { continuation in
             let state = MLXProcessStreamState(continuation: continuation)
+            let task = Task.detached(priority: .userInitiated) { [self] in
+                guard request.prompt.count <= AIModelLimits.maxPromptCharacters else {
+                    state.fail(error: AIBackendError.promptTooLarge(maxCharacters: AIModelLimits.maxPromptCharacters))
+                    return
+                }
 
-            guard request.prompt.count <= AIModelLimits.maxPromptCharacters else {
-                continuation.finish(throwing: AIBackendError.promptTooLarge(maxCharacters: AIModelLimits.maxPromptCharacters))
-                return
-            }
+                let runtime: MLXTextResolvedRuntime
+                do {
+                    runtime = try self.resolveRuntime()
+                } catch {
+                    state.fail(error: error)
+                    return
+                }
 
-            guard let executableURL = detector.mlxTextGenerateExecutableURL() else {
-                continuation.finish(throwing: AIBackendError.unavailable(.mlxRuntimeMissing))
-                return
-            }
-
-            guard let selection = store.selectedModel else {
-                continuation.finish(throwing: AIBackendError.unavailable(.mlxModelMissing))
-                return
-            }
-
-            let modelURL = URL(fileURLWithPath: selection.localPath)
-            guard let snapshotURL = detector.usableTextSnapshotURL(in: modelURL) else {
-                continuation.finish(throwing: AIBackendError.unavailable(.mlxSmokeTestMissing))
-                return
-            }
-
-            if let serverExecutableURL = detector.mlxTextServerExecutableURL() {
-                let warmTask = Task {
-                    do {
-                        if let output = try await MLXTextServerManager.shared.responseIfReady(
-                            prompt: request.prompt,
-                            maxOutputTokens: request.maxOutputTokens,
-                            modelURL: snapshotURL,
-                            executableURL: serverExecutableURL
-                        ) {
-                            state.finish(output: output)
-                            return
-                        }
-                    } catch {
-                        state.fail(error: error)
-                        return
-                    }
-
-                    runOneShot(
-                        executableURL: executableURL,
-                        snapshotURL: snapshotURL,
+                if let serverExecutableURL = runtime.serverExecutableURL {
+                    await self.runServerResponse(
                         request: request,
-                        state: state,
-                        continuation: continuation,
-                        onSuccessfulCompletion: {
-                            Task {
-                                try? await Task.sleep(for: .seconds(2))
-                                await MLXTextServerManager.shared.warmIfNeeded(
-                                    modelURL: snapshotURL,
-                                    executableURL: serverExecutableURL
-                                )
-                            }
-                        }
+                        runtime: runtime,
+                        serverExecutableURL: serverExecutableURL,
+                        state: state
                     )
+                    return
                 }
-                continuation.onTermination = { _ in
-                    state.cancel()
-                    warmTask.cancel()
-                }
-                return
+
+                self.runOneShot(
+                    executableURL: runtime.generateExecutableURL,
+                    snapshotURL: runtime.snapshotURL,
+                    request: request,
+                    state: state,
+                    continuation: continuation,
+                    onSuccessfulCompletion: nil
+                )
+            }
+            continuation.onTermination = { _ in
+                state.cancel()
+                task.cancel()
+            }
+        }
+    }
+
+    nonisolated func completeResponse(for request: AIBackendRequest) async throws -> AIModelOutput {
+        guard request.prompt.count <= AIModelLimits.maxPromptCharacters else {
+            throw AIBackendError.promptTooLarge(maxCharacters: AIModelLimits.maxPromptCharacters)
+        }
+
+        let runtime = try resolveRuntime()
+
+        if let serverExecutableURL = runtime.serverExecutableURL {
+            return try await MLXTextServerManager.shared.response(
+                prompt: request.prompt,
+                maxOutputTokens: request.maxOutputTokens,
+                modelURL: runtime.snapshotURL,
+                executableURL: serverExecutableURL
+            )
+        }
+
+        return try await completeOneShot(
+            executableURL: runtime.generateExecutableURL,
+            snapshotURL: runtime.snapshotURL,
+            request: request
+        )
+    }
+
+    private nonisolated func resolveRuntime() throws -> MLXTextResolvedRuntime {
+        guard let selection = store.selectedModel else {
+            throw AIBackendError.unavailable(.mlxModelMissing)
+        }
+
+        let modelURL = URL(fileURLWithPath: selection.localPath)
+        let cacheKey = [
+            selection.repositoryID,
+            selection.localPath,
+            "\(selection.smokeTestedAt.timeIntervalSinceReferenceDate)"
+        ].joined(separator: "|")
+
+        return try runtimeCache.resolved(cacheKey: cacheKey) {
+            guard let generateExecutableURL = detector.mlxTextGenerateExecutableURL() else {
+                throw AIBackendError.unavailable(.mlxRuntimeMissing)
             }
 
-            runOneShot(
-                executableURL: executableURL,
-                snapshotURL: snapshotURL,
-                request: request,
-                state: state,
-                continuation: continuation,
-                onSuccessfulCompletion: nil
+            guard let snapshotURL = detector.usableTextSnapshotURL(in: modelURL) else {
+                throw AIBackendError.unavailable(.mlxSmokeTestMissing)
+            }
+
+            return MLXTextResolvedRuntime(
+                generateExecutableURL: generateExecutableURL,
+                serverExecutableURL: detector.mlxTextServerExecutableURL(),
+                snapshotURL: snapshotURL
             )
         }
     }
 
-    private func runOneShot(
+    private nonisolated func completeOneShot(
+        executableURL: URL,
+        snapshotURL: URL,
+        request: AIBackendRequest
+    ) async throws -> AIModelOutput {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let process = Process()
+                process.executableURL = executableURL
+                process.arguments = [
+                    "--model", snapshotURL.path,
+                    "--prompt", request.prompt,
+                    "--chat-template-config", "{\"enable_thinking\":false}",
+                    "--verbose", "False",
+                    "--max-tokens", "\(min(request.maxOutputTokens, AIModelLimits.defaultMaxOutputTokens))"
+                ]
+
+                let outputPipe = Pipe()
+                let errorPipe = Pipe()
+                process.standardOutput = outputPipe
+                process.standardError = errorPipe
+
+                final class Box: @unchecked Sendable {
+                    var didResume = false
+                    let lock = NSLock()
+                    func resumeOnce(_ body: () -> Void) {
+                        lock.withLock {
+                            guard !didResume else { return }
+                            didResume = true
+                            body()
+                        }
+                    }
+                }
+
+                let box = Box()
+                process.terminationHandler = { finishedProcess in
+                    let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+                    let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                    let output = String(data: outputData, encoding: .utf8) ?? ""
+                    let diagnostics = String(data: errorData, encoding: .utf8) ?? ""
+                    box.resumeOnce {
+                        if finishedProcess.terminationStatus == 0 {
+                            continuation.resume(returning: ModelOutputFormatter().format(output))
+                        } else {
+                            continuation.resume(throwing: AIBackendError.unavailable(self.reason(for: diagnostics)))
+                        }
+                    }
+                }
+
+                do {
+                    try process.run()
+                } catch {
+                    box.resumeOnce {
+                        continuation.resume(throwing: error)
+                    }
+                    return
+                }
+
+                Task.detached { [timeoutSeconds] in
+                    try? await Task.sleep(for: .seconds(timeoutSeconds))
+                    if process.isRunning {
+                        process.terminate()
+                        box.resumeOnce {
+                            continuation.resume(throwing: AIBackendError.unavailable(.mlxGenerationTimeout))
+                        }
+                    }
+                }
+            }
+        } onCancel: {
+            Task {
+                await MLXTextServerManager.shared.stop()
+            }
+        }
+    }
+
+    private nonisolated func runServerResponse(
+        request: AIBackendRequest,
+        runtime: MLXTextResolvedRuntime,
+        serverExecutableURL: URL,
+        state: MLXProcessStreamState
+    ) async {
+        do {
+            let output = try await MLXTextServerManager.shared.response(
+                prompt: request.prompt,
+                maxOutputTokens: request.maxOutputTokens,
+                modelURL: runtime.snapshotURL,
+                executableURL: serverExecutableURL
+            )
+            state.finish(output: output)
+        } catch {
+            state.fail(error: error)
+        }
+    }
+
+    private nonisolated func runOneShot(
         executableURL: URL,
         snapshotURL: URL,
         request: AIBackendRequest,
@@ -177,7 +290,7 @@ final class MLXTextBackend: AIBackend, @unchecked Sendable {
         }
     }
 
-    private func reason(for diagnostics: String) -> AIBackendUnavailableReason {
+    private nonisolated func reason(for diagnostics: String) -> AIBackendUnavailableReason {
         let lowercased = diagnostics.lowercased()
         if lowercased.contains("out of memory") || lowercased.contains("memory") {
             return .mlxModelTooLarge
@@ -186,6 +299,33 @@ final class MLXTextBackend: AIBackend, @unchecked Sendable {
             return .mlxModelMissing
         }
         return .generationFailed
+    }
+}
+
+private struct MLXTextResolvedRuntime: Sendable {
+    let generateExecutableURL: URL
+    let serverExecutableURL: URL?
+    let snapshotURL: URL
+}
+
+private final class MLXTextRuntimeCache: @unchecked Sendable {
+    private let lock = NSLock()
+    nonisolated(unsafe) private var cachedKey: String?
+    nonisolated(unsafe) private var cachedRuntime: MLXTextResolvedRuntime?
+
+    nonisolated func resolved(
+        cacheKey: String,
+        _ build: () throws -> MLXTextResolvedRuntime
+    ) throws -> MLXTextResolvedRuntime {
+        try lock.withLock {
+            if cachedKey == cacheKey, let cachedRuntime {
+                return cachedRuntime
+            }
+            let runtime = try build()
+            cachedKey = cacheKey
+            cachedRuntime = runtime
+            return runtime
+        }
     }
 }
 

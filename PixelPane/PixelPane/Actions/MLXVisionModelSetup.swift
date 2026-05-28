@@ -1,28 +1,28 @@
 import AppKit
 import Foundation
 
-enum MLXVisionSetupConstants {
+nonisolated enum MLXVisionSetupConstants {
     static let preferredModelRepositoryID = "mlx-community/Qwen3.6-35B-A3B-6bit"
     static let preferredModelApproximateDiskSize = "29.1 GB"
     static let preferredModelLicense = "See Hugging Face model card"
     static let preferredModelURL = URL(string: "https://huggingface.co/mlx-community/Qwen3.6-35B-A3B-6bit")!
 }
 
-enum MLXModelCapability: String, Codable, Sendable {
+nonisolated enum MLXModelCapability: String, Codable, Sendable {
     case text
     case vision
     case textAndVision
     case unsupported
 
-    var supportsText: Bool {
+    nonisolated var supportsText: Bool {
         self == .text || self == .textAndVision
     }
 
-    var supportsVision: Bool {
+    nonisolated var supportsVision: Bool {
         self == .vision || self == .textAndVision
     }
 
-    var displayName: String {
+    nonisolated var displayName: String {
         switch self {
         case .text:
             "Text"
@@ -36,7 +36,7 @@ enum MLXModelCapability: String, Codable, Sendable {
     }
 }
 
-struct MLXVisionModel: Identifiable, Hashable, Sendable {
+nonisolated struct MLXVisionModel: Identifiable, Hashable, Sendable {
     let repositoryID: String
     let localURL: URL?
     let approximateDiskSize: String
@@ -44,21 +44,21 @@ struct MLXVisionModel: Identifiable, Hashable, Sendable {
     let isPreferred: Bool
     let capability: MLXModelCapability
 
-    var id: String { repositoryID }
-    var isInstalled: Bool { localURL != nil }
-    var isTextCompatible: Bool { capability.supportsText }
-    var isVisionCompatible: Bool { capability.supportsVision }
-    var displayName: String {
+    nonisolated var id: String { repositoryID }
+    nonisolated var isInstalled: Bool { localURL != nil }
+    nonisolated var isTextCompatible: Bool { capability.supportsText }
+    nonisolated var isVisionCompatible: Bool { capability.supportsVision }
+    nonisolated var displayName: String {
         isInstalled ? "\(repositoryID) (\(capability.displayName))" : repositoryID
     }
-    var destinationPath: String {
+    nonisolated var destinationPath: String {
         localURL?.path ?? MLXVisionModelStore.defaultCacheURL(for: repositoryID).path
     }
-    var installCommand: String {
+    nonisolated var installCommand: String {
         "huggingface-cli download \(repositoryID)"
     }
 
-    static func customDirectory(_ url: URL) -> MLXVisionModel {
+    nonisolated static func customDirectory(_ url: URL) -> MLXVisionModel {
         MLXVisionModel(
             repositoryID: "Local folder: \(url.lastPathComponent)",
             localURL: url,
@@ -70,14 +70,14 @@ struct MLXVisionModel: Identifiable, Hashable, Sendable {
     }
 }
 
-enum MLXVisionSetupState: String, Sendable {
+nonisolated enum MLXVisionSetupState: String, Sendable {
     case notConfigured
     case runtimeMissing
     case modelMissing
     case ready
     case smokeTestFailed
 
-    var capabilityStatus: AIBackendCapabilityStatus {
+    nonisolated var capabilityStatus: AIBackendCapabilityStatus {
         switch self {
         case .ready:
             .available(.mlxVision)
@@ -93,7 +93,7 @@ enum MLXVisionSetupState: String, Sendable {
     }
 }
 
-struct MLXVisionSetupSnapshot: Sendable {
+nonisolated struct MLXVisionSetupSnapshot: Sendable {
     let runtimeURL: URL?
     let textRuntimeURL: URL?
     let installedModels: [MLXVisionModel]
@@ -102,7 +102,7 @@ struct MLXVisionSetupSnapshot: Sendable {
     let setupState: MLXVisionSetupState
     let setupDetail: String
 
-    var textCapabilityStatus: AIBackendCapabilityStatus {
+    nonisolated var textCapabilityStatus: AIBackendCapabilityStatus {
         guard textRuntimeURL != nil else {
             return .unavailable(.mlxRuntimeMissing)
         }
@@ -112,7 +112,7 @@ struct MLXVisionSetupSnapshot: Sendable {
         return .available(.mlxText)
     }
 
-    var imageCapabilityStatus: AIBackendCapabilityStatus {
+    nonisolated var imageCapabilityStatus: AIBackendCapabilityStatus {
         guard runtimeURL != nil else {
             return .unavailable(.mlxRuntimeMissing)
         }
@@ -123,29 +123,29 @@ struct MLXVisionSetupSnapshot: Sendable {
     }
 }
 
-struct MLXVisionModelSelection: Codable, Sendable {
+nonisolated struct MLXVisionModelSelection: Codable, Sendable {
     let repositoryID: String
     let localPath: String
     let smokeTestedAt: Date
 }
 
-struct MLXVisionModelStore: Sendable {
+nonisolated struct MLXVisionModelStore: @unchecked Sendable {
     private static let selectedModelKey = "MLXVisionSelectedModel"
     private static let setupStateKey = "MLXVisionSetupState"
     private static let setupFailureKey = "MLXVisionSetupFailure"
 
     private let defaults: UserDefaults
 
-    init(defaults: UserDefaults = .standard) {
+    nonisolated init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
     }
 
-    var selectedModel: MLXVisionModelSelection? {
+    nonisolated var selectedModel: MLXVisionModelSelection? {
         guard let data = defaults.data(forKey: Self.selectedModelKey) else { return nil }
         return try? JSONDecoder().decode(MLXVisionModelSelection.self, from: data)
     }
 
-    var setupState: MLXVisionSetupState {
+    nonisolated var setupState: MLXVisionSetupState {
         guard let rawValue = defaults.string(forKey: Self.setupStateKey),
               let state = MLXVisionSetupState(rawValue: rawValue) else {
             return .notConfigured
@@ -153,11 +153,11 @@ struct MLXVisionModelStore: Sendable {
         return state
     }
 
-    var setupFailure: String? {
+    nonisolated var setupFailure: String? {
         defaults.string(forKey: Self.setupFailureKey)
     }
 
-    func saveSuccessfulSelection(repositoryID: String, localURL: URL) {
+    nonisolated func saveSuccessfulSelection(repositoryID: String, localURL: URL) {
         let selection = MLXVisionModelSelection(
             repositoryID: repositoryID,
             localPath: localURL.path,
@@ -170,18 +170,18 @@ struct MLXVisionModelStore: Sendable {
         defaults.removeObject(forKey: Self.setupFailureKey)
     }
 
-    func saveFailure(_ message: String) {
+    nonisolated func saveFailure(_ message: String) {
         defaults.set(MLXVisionSetupState.smokeTestFailed.rawValue, forKey: Self.setupStateKey)
         defaults.set(message, forKey: Self.setupFailureKey)
     }
 
-    func clearSelection() {
+    nonisolated func clearSelection() {
         defaults.removeObject(forKey: Self.selectedModelKey)
         defaults.set(MLXVisionSetupState.notConfigured.rawValue, forKey: Self.setupStateKey)
         defaults.removeObject(forKey: Self.setupFailureKey)
     }
 
-    static func defaultCacheURL(
+    nonisolated static func defaultCacheURL(
         for repositoryID: String,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) -> URL {

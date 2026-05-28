@@ -1,19 +1,15 @@
 # Pixel Pane LLM Workflow
 
-This folder is the operating system for building Pixel Pane with Claude, Codex, and other coding agents. Start every long-running session here before touching code.
+This folder is the operating system for building Pixel Pane with coding agents. Start every long-running session here before touching code.
 
 ## Current Project State
 
-- Product docs live in `docs/`.
+- Product docs live in `docs/`, but the current product direction is tracked here in `workflow/`.
 - Swift app lives in `PixelPane/`.
-- The current native foundation includes:
-  - menu bar app
-  - multi-screen region selection overlay
-  - ScreenCaptureKit rectangle capture
-  - Vision OCR
-  - floating result panel with copy
-  - minimal Settings window
-- Current Xcode target is macOS 15.2+ because the foundation uses `SCScreenshotManager.captureImage(in:)`.
+- Pixel Pane is a local-first, notch-native assistant shell for macOS.
+- Assistant execution now routes through Agent Kernel V2.
+- AGENTV2 is app-owned and model-agnostic, with product policy in Swift rather than internal prose prompts.
+- Current Xcode target is macOS 15.2+ because the capture foundation uses `SCScreenshotManager.captureImage(in:)`.
 
 ## Start Here Each Session
 
@@ -21,39 +17,42 @@ This folder is the operating system for building Pixel Pane with Claude, Codex, 
 2. Read `workflow/status.md`.
 3. Read `workflow/backlog.md`.
 4. Pick one story ID from the backlog.
-4. Read the related product docs:
-   - `docs/prd.md`
+5. Read `workflow/decisions.md` when product direction, safety, local/cloud routing, files, terminal, distribution, or privacy matters.
+6. Read the product docs when the story needs product, release, architecture, or backend details:
    - `docs/architecture.md`
-   - `docs/project-brief.md` only if product positioning matters
-5. Read `workflow/references.md` if the story touches platform/service specifics.
-6. Inspect the relevant Swift files before editing.
-7. Keep changes scoped to the story.
-8. Build with:
-
-```bash
-xcodebuild -project PixelPane/PixelPane.xcodeproj -scheme PixelPane -configuration Debug build
-```
-
-Or use the local verification wrapper:
+   - `docs/backend-api.md`
+   - `docs/prd.md`
+   - `docs/project-brief.md`
+   - `docs/release.md`
+7. Read `workflow/references.md` if the story touches macOS APIs, local runtimes, backend, updates, payments, terminal execution, or researched specifics.
+8. Inspect the relevant Swift files before editing.
+9. Keep changes scoped to the story.
+10. Build with the local verification wrapper:
 
 ```bash
 PixelPane/Scripts/verify-debug-build.sh
 ```
 
-9. Update `workflow/status.md` and `workflow/backlog.md` before ending the session.
+Or run the underlying Xcode build directly:
+
+```bash
+xcodebuild -project PixelPane/PixelPane.xcodeproj -scheme PixelPane -configuration Debug build
+```
+
+11. Update `workflow/status.md` and `workflow/backlog.md` before ending the session.
 
 ## How To Use Stories With LLMs
 
 You should be able to say:
 
 ```text
-Complete CORE-006.
+Complete AGENTV2-005.
 ```
 
 or:
 
 ```text
-Complete the next story in Epic 1.
+Complete the next story in the current roadmap.
 ```
 
 The agent should find the story in `workflow/backlog.md`, complete only that story, build, update the backlog/status, and tell you what is next.
@@ -102,7 +101,7 @@ At the end of every meaningful work session, update `workflow/status.md` with:
 - Next best task
 - Notes for the next agent
 
-This avoids losing context when conversations get long or switch between Claude and Codex.
+This avoids losing context when conversations get long or switch between agents.
 
 ## Answering "Where Am I?"
 
@@ -121,7 +120,7 @@ When the user says "start working", "begin", "keep going", or similar without na
 ### Loop
 
 1. Read `workflow/status.md` and `workflow/backlog.md`.
-2. Pick the current recommended story from `workflow/status.md`. If none, pick the next `Not Started` story in the current epic. If the current epic has no remaining work, move to the next epic per the Recommended Build Order; if that is ambiguous, stop and ask.
+2. Pick the current recommended story from `workflow/status.md`. If none, pick the next `Not Started` story in the active roadmap. If that is ambiguous, stop and ask.
 3. Complete the story per the Definition Of Done.
 4. Build the app.
 5. Update `workflow/status.md` and `workflow/backlog.md`.
@@ -146,8 +145,8 @@ If during work you discover something worth tracking that is out of scope for th
 
 Rules:
 
-- Use the appropriate epic's existing ID prefix and the next available number (e.g., `CORE-011`).
-- Add a row to the epic's table and a story section below following `workflow/story-template.md`.
+- Use the appropriate existing ID prefix and the next available number (e.g., `AGENTV2-021`).
+- Add a row to the current story table and a story section below following `workflow/story-template.md`.
 - In the story body, add a line: `Auto-created during <STORY-ID> on YYYY-MM-DD.`
 - Default status `Not Started`. Use `Blocked` if it needs a decision and document the decision under Blockers / Decisions.
 - Do not auto-create stories for trivial cleanups you can do inline within scope, or for speculative future features that the user has not asked for.
@@ -164,12 +163,10 @@ Do not hide major decisions inside chat history.
 
 ## Recommended Build Order
 
-1. Core Capture Loop
-2. Privacy and Permission UX
-3. Extract/Translate/Explain actions
-4. Backend proxy and auth
-5. Settings polish and accessibility
-6. Expansion features
-7. Monetization
+1. Prune to a stable shell
+2. Build the AGENTV2 kernel with fixture models
+3. Define typed capabilities
+4. Add thin model adapters
+5. Integrate, verify, and harden
 
-The goal is to validate the native capture-to-answer loop before building commercial or expansion features.
+The goal is to validate a deterministic local-first runtime before commercial or expansion features.

@@ -52,7 +52,7 @@ final class CloudAIBackend: AIBackend, @unchecked Sendable {
         )
     }
 
-    init(
+    nonisolated init(
         configuration: CloudAIBackendConfiguration,
         tokenProvider: any CloudAuthTokenProviding,
         urlSession: URLSession = .shared
@@ -64,7 +64,7 @@ final class CloudAIBackend: AIBackend, @unchecked Sendable {
         decoder.dateDecodingStrategy = .iso8601
     }
 
-    func capabilities() async -> AIBackendCapabilities {
+    nonisolated func capabilities() async -> AIBackendCapabilities {
         let status: AIBackendCapabilityStatus = configuration.isCloudModeEnabled
             ? .available(.pixelPaneCloud)
             : .unavailable(.cloudModeDisabled)
@@ -78,27 +78,27 @@ final class CloudAIBackend: AIBackend, @unchecked Sendable {
         )
     }
 
-    func streamResponse(for request: AIBackendRequest) -> AsyncThrowingStream<AIBackendStreamEvent, Error> {
+    nonisolated func streamResponse(for request: AIBackendRequest) -> AsyncThrowingStream<AIBackendStreamEvent, Error> {
         AsyncThrowingStream { continuation in
-            let task = Task {
+            let task = Task.detached(priority: .userInitiated) {
                 do {
-                    guard configuration.isCloudModeEnabled else {
+                    guard self.configuration.isCloudModeEnabled else {
                         throw CloudAIBackendError.cloudModeDisabled
                     }
 
-                    let urlRequest = try await makeURLRequest(for: request)
-                    let (bytes, response) = try await urlSession.bytes(for: urlRequest)
-                    try validate(response: response)
+                    let urlRequest = try await self.makeURLRequest(for: request)
+                    let (bytes, response) = try await self.urlSession.bytes(for: urlRequest)
+                    try self.validate(response: response)
 
                     var didReceiveDisplayableText = false
                     for try await event in SSEParser().events(from: bytes) {
                         try Task.checkCancellation()
                         switch event.name {
                         case "meta":
-                            let payload = try decoder.decode(CloudMetaEvent.self, from: event.data)
+                            let payload = try self.decoder.decode(CloudMetaEvent.self, from: event.data)
                             continuation.yield(.metadata(payload.statistics))
                         case "snapshot":
-                            let payload = try decoder.decode(CloudSnapshotEvent.self, from: event.data)
+                            let payload = try self.decoder.decode(CloudSnapshotEvent.self, from: event.data)
                             if !payload.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                                 didReceiveDisplayableText = true
                             }
@@ -111,7 +111,7 @@ final class CloudAIBackend: AIBackend, @unchecked Sendable {
                             continuation.finish()
                             return
                         case "error":
-                            let payload = try decoder.decode(CloudErrorEnvelope.self, from: event.data)
+                            let payload = try self.decoder.decode(CloudErrorEnvelope.self, from: event.data)
                             throw CloudAIBackendError.proxy(payload.error)
                         default:
                             continue
@@ -132,7 +132,7 @@ final class CloudAIBackend: AIBackend, @unchecked Sendable {
         }
     }
 
-    private func makeURLRequest(for request: AIBackendRequest) async throws -> URLRequest {
+    private nonisolated func makeURLRequest(for request: AIBackendRequest) async throws -> URLRequest {
         let requestID = UUID().uuidString
         let token = try await tokenProvider.cloudAuthToken()
         let endpoint = request.actionKind.cloudEndpoint
@@ -152,7 +152,7 @@ final class CloudAIBackend: AIBackend, @unchecked Sendable {
         return urlRequest
     }
 
-    private func validate(response: URLResponse) throws {
+    private nonisolated func validate(response: URLResponse) throws {
         guard let httpResponse = response as? HTTPURLResponse else {
             throw CloudAIBackendError.networkUnavailable
         }
@@ -166,13 +166,13 @@ final class CloudAIBackend: AIBackend, @unchecked Sendable {
         }
     }
 
-    private func retryAfter(from response: HTTPURLResponse) -> Int? {
+    private nonisolated func retryAfter(from response: HTTPURLResponse) -> Int? {
         guard let value = response.value(forHTTPHeaderField: "Retry-After") else { return nil }
         return Int(value)
     }
 }
 
-private struct CloudActionRequest: Encodable {
+private nonisolated struct CloudActionRequest: Encodable {
     let schemaVersion = "2026-04-29"
     let action: String
     let capture: CloudCapture
@@ -195,7 +195,7 @@ private struct CloudActionRequest: Encodable {
         case limits
     }
 
-    init(
+    nonisolated init(
         request: AIBackendRequest,
         configuration: CloudAIBackendConfiguration
     ) throws {
@@ -231,7 +231,7 @@ private struct CloudActionRequest: Encodable {
     }
 }
 
-private struct CloudCapture: Encodable {
+private nonisolated struct CloudCapture: Encodable {
     let sourceType = "ocr"
     let ocrText: String
     let detectedLanguage: String?
@@ -243,7 +243,7 @@ private struct CloudCapture: Encodable {
     }
 }
 
-private struct CloudConversationTurn: Encodable {
+private nonisolated struct CloudConversationTurn: Encodable {
     let role: String
     let content: String
 
@@ -253,7 +253,7 @@ private struct CloudConversationTurn: Encodable {
     }
 }
 
-private struct CloudImage: Encodable {
+private nonisolated struct CloudImage: Encodable {
     let mimeType = "image/png"
     let dataBase64: String
     let userConsented = true
@@ -264,7 +264,7 @@ private struct CloudImage: Encodable {
         case userConsented = "user_consented"
     }
 
-    init(cgImage: CGImage) throws {
+    nonisolated init(cgImage: CGImage) throws {
         let bitmap = NSBitmapImageRep(cgImage: cgImage)
         guard let data = bitmap.representation(using: .png, properties: [:]) else {
             throw CloudAIBackendError.imageEncodingFailed
@@ -273,7 +273,7 @@ private struct CloudImage: Encodable {
     }
 }
 
-private struct CloudClientContext: Encodable {
+private nonisolated struct CloudClientContext: Encodable {
     let appVersion: String
     let platform = "macOS"
     let locale: String
@@ -288,7 +288,7 @@ private struct CloudClientContext: Encodable {
         case cloudMode = "cloud_mode"
     }
 
-    init(appVersion: String, cloudMode: Bool) {
+    nonisolated init(appVersion: String, cloudMode: Bool) {
         self.appVersion = appVersion
         self.cloudMode = cloudMode
         locale = Locale.current.identifier
@@ -296,7 +296,7 @@ private struct CloudClientContext: Encodable {
     }
 }
 
-private struct CloudLimits: Encodable {
+private nonisolated struct CloudLimits: Encodable {
     let maxOutputTokens: Int
 
     enum CodingKeys: String, CodingKey {
@@ -304,11 +304,11 @@ private struct CloudLimits: Encodable {
     }
 }
 
-private struct CloudSnapshotEvent: Decodable {
+private nonisolated struct CloudSnapshotEvent: Decodable {
     let text: String
 }
 
-private struct CloudMetaEvent: Decodable {
+private nonisolated struct CloudMetaEvent: Decodable {
     let model: String?
     let remainingCloudActions: Int?
     let resetAt: String?
@@ -319,7 +319,7 @@ private struct CloudMetaEvent: Decodable {
         case resetAt = "reset_at"
     }
 
-    var statistics: [AIModelOutputStatistic] {
+    nonisolated var statistics: [AIModelOutputStatistic] {
         var values: [AIModelOutputStatistic] = []
         if let model {
             values.append(AIModelOutputStatistic(label: "Cloud model", value: model, detail: nil))
@@ -334,7 +334,7 @@ private struct CloudMetaEvent: Decodable {
         return values
     }
 
-    private static func formattedResetText(from rawValue: String?) -> String? {
+    private nonisolated static func formattedResetText(from rawValue: String?) -> String? {
         guard let rawValue else { return nil }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -359,7 +359,7 @@ private struct CloudMetaEvent: Decodable {
     }
 }
 
-private struct CloudErrorEnvelope: Decodable {
+private nonisolated struct CloudErrorEnvelope: Decodable {
     let error: CloudProxyError
 }
 
@@ -377,7 +377,7 @@ struct CloudProxyError: Decodable, Sendable {
     }
 }
 
-enum CloudAIBackendError: LocalizedError, Sendable {
+nonisolated enum CloudAIBackendError: LocalizedError, Sendable {
     case cloudModeDisabled
     case imageConsentMissing
     case imageEncodingFailed
@@ -390,7 +390,7 @@ enum CloudAIBackendError: LocalizedError, Sendable {
     case emptyResponse
     case streamEndedUnexpectedly
 
-    var errorDescription: String? {
+    nonisolated var errorDescription: String? {
         switch self {
         case .cloudModeDisabled:
             "Cloud Mode is off."
@@ -422,13 +422,15 @@ enum CloudAIBackendError: LocalizedError, Sendable {
     }
 }
 
-private struct ServerSentEvent {
+private nonisolated struct ServerSentEvent {
     let name: String
     let data: Data
 }
 
-private struct SSEParser {
-    func events(from bytes: URLSession.AsyncBytes) -> AsyncThrowingStream<ServerSentEvent, Error> {
+private nonisolated struct SSEParser {
+    nonisolated init() {}
+
+    nonisolated func events(from bytes: URLSession.AsyncBytes) -> AsyncThrowingStream<ServerSentEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -464,10 +466,10 @@ private struct SSEParser {
         }
     }
 
-    private static let lfDelimiter = Data([0x0A, 0x0A])
-    private static let crlfDelimiter = Data([0x0D, 0x0A, 0x0D, 0x0A])
+    private nonisolated static let lfDelimiter = Data([0x0A, 0x0A])
+    private nonisolated static let crlfDelimiter = Data([0x0D, 0x0A, 0x0D, 0x0A])
 
-    private func yieldEvent(
+    private nonisolated func yieldEvent(
         data eventData: Data,
         continuation: AsyncThrowingStream<ServerSentEvent, Error>.Continuation
     ) {
@@ -490,14 +492,14 @@ private struct SSEParser {
 }
 
 private extension Data {
-    func ends(with suffix: Data) -> Bool {
+    nonisolated func ends(with suffix: Data) -> Bool {
         guard count >= suffix.count else { return false }
         return self[index(endIndex, offsetBy: -suffix.count)..<endIndex].elementsEqual(suffix)
     }
 }
 
 private extension AIActionKind {
-    var cloudEndpoint: String {
+    nonisolated var cloudEndpoint: String {
         switch self {
         case .translate:
             "translate"

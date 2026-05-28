@@ -1,11 +1,13 @@
 import Foundation
 import FoundationModels
 
-final class AppleFoundationModelsBackend: AIBackend {
+final class AppleFoundationModelsBackend: AIBackend, @unchecked Sendable {
     let id = "apple-foundation-models"
     let displayName = "Apple Foundation Models"
 
-    func capabilities() async -> AIBackendCapabilities {
+    nonisolated init() {}
+
+    nonisolated func capabilities() async -> AIBackendCapabilities {
         AIBackendCapabilities(
             text: appleTextStatus(),
             image: .unavailable(.imageInputUnsupported),
@@ -15,9 +17,9 @@ final class AppleFoundationModelsBackend: AIBackend {
         )
     }
 
-    func streamResponse(for request: AIBackendRequest) -> AsyncThrowingStream<AIBackendStreamEvent, Error> {
+    nonisolated func streamResponse(for request: AIBackendRequest) -> AsyncThrowingStream<AIBackendStreamEvent, Error> {
         AsyncThrowingStream { continuation in
-            let task = Task {
+            let task = Task.detached(priority: .userInitiated) { [self] in
                 do {
                     try validate(request: request)
                     try await streamAppleResponse(for: request, continuation: continuation)
@@ -34,7 +36,7 @@ final class AppleFoundationModelsBackend: AIBackend {
         }
     }
 
-    private func validate(request: AIBackendRequest) throws {
+    private nonisolated func validate(request: AIBackendRequest) throws {
         if request.prompt.count > AIModelLimits.maxPromptCharacters {
             throw AIBackendError.promptTooLarge(maxCharacters: AIModelLimits.maxPromptCharacters)
         }
@@ -53,7 +55,7 @@ final class AppleFoundationModelsBackend: AIBackend {
         }
     }
 
-    private func streamAppleResponse(
+    private nonisolated func streamAppleResponse(
         for request: AIBackendRequest,
         continuation: AsyncThrowingStream<AIBackendStreamEvent, Error>.Continuation
     ) async throws {
@@ -79,7 +81,7 @@ final class AppleFoundationModelsBackend: AIBackend {
         continuation.finish()
     }
 
-    private func appleTextStatus() -> AIBackendCapabilityStatus {
+    private nonisolated func appleTextStatus() -> AIBackendCapabilityStatus {
         guard #available(macOS 26.0, *) else {
             return .unavailable(.appleFrameworkUnavailable)
         }
@@ -98,7 +100,7 @@ final class AppleFoundationModelsBackend: AIBackend {
         }
     }
 
-    private func appleContextWindowTokens() -> Int? {
+    private nonisolated func appleContextWindowTokens() -> Int? {
         guard #available(macOS 26.0, *) else { return nil }
         return SystemLanguageModel.default.contextSize
     }

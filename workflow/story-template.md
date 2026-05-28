@@ -11,7 +11,7 @@ State the user-visible or architectural outcome.
 
 ## Context
 
-Relevant docs, files, constraints, and prior decisions.
+Relevant workflow docs, files, constraints, and prior decisions. Prefer `workflow/status.md`, `workflow/backlog.md`, and `workflow/decisions.md` for current product direction.
 
 ## Scope
 
@@ -29,6 +29,11 @@ Relevant docs, files, constraints, and prior decisions.
 ## Suggested Files
 
 - `path/to/file.swift`
+
+## Product / Safety Notes
+
+- Confirm whether the work touches local/cloud routing, file grants, writes, terminal execution, privacy, or source transparency.
+- If yes, read `workflow/decisions.md` and `workflow/references.md` before implementation.
 
 ## Implementation Notes
 

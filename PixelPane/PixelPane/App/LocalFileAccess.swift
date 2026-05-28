@@ -149,8 +149,8 @@ struct LocalFileSnippet: Identifiable, Sendable {
     let score: Int
 }
 
-struct LocalFileWriteProposal: Equatable, Identifiable, Sendable {
-    enum Operation: Equatable, Sendable {
+struct LocalFileWriteProposal: Codable, Equatable, Identifiable, Sendable {
+    enum Operation: Codable, Equatable, Sendable {
         case create(content: String)
         case replaceContents(content: String)
         case append(content: String)
@@ -161,7 +161,7 @@ struct LocalFileWriteProposal: Equatable, Identifiable, Sendable {
     let targetPath: String
     let operation: Operation
 
-    var actionLabel: String {
+    nonisolated var actionLabel: String {
         switch operation {
         case .create:
             "Create file"
@@ -174,7 +174,7 @@ struct LocalFileWriteProposal: Equatable, Identifiable, Sendable {
         }
     }
 
-    var detailText: String {
+    nonisolated var detailText: String {
         switch operation {
         case .create(let content):
             "Create \(targetPath) with \(content.count) characters."
@@ -194,69 +194,22 @@ enum LocalFileWriteProposalResult: Sendable {
     case message(String)
 }
 
+struct AssistantGeneratedWriteDraft: Equatable, Sendable {
+    enum Operation: String, Equatable, Sendable {
+        case create
+        case replace
+        case append
+    }
+
+    let operation: Operation
+    let targetPath: String
+    let content: String
+}
+
 struct LocalFileWriteProposalParser: Sendable {
     private let maxContentCharacters = 100_000
 
     nonisolated init() {}
-
-    nonisolated func proposal(
-        for question: String,
-        grants: [LocalFileGrant],
-        preferredDirectoryPath: String? = nil,
-        recentTargetPaths: [String] = []
-    ) -> LocalFileWriteProposalResult {
-        let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalized = trimmed.lowercased()
-        guard isWriteIntent(normalized) else { return .none }
-
-        let activeGrants = grants.filter { FileManager.default.fileExists(atPath: $0.path) }
-        guard !activeGrants.isEmpty else {
-            return .message("Grant a file or folder in Settings -> Files before I can propose local file changes.")
-        }
-
-        if normalized.hasPrefix("replace in ") || normalized.hasPrefix("replace text in ") {
-            return replaceTextProposal(
-                from: trimmed,
-                grants: activeGrants,
-                preferredDirectoryPath: preferredDirectoryPath,
-                recentTargetPaths: recentTargetPaths
-            )
-        }
-
-        if normalized.hasPrefix("append to ") {
-            return contentProposal(
-                from: trimmed,
-                prefix: "append to",
-                operation: .append,
-                grants: activeGrants,
-                preferredDirectoryPath: preferredDirectoryPath,
-                recentTargetPaths: recentTargetPaths
-            )
-        }
-
-        let contentPrefixes = [
-            "create file",
-            "create",
-            "write file",
-            "write",
-            "edit file",
-            "modify file",
-            "update file",
-            "overwrite file"
-        ]
-        if let prefix = contentPrefixes.first(where: { normalized.hasPrefix($0 + " ") }) {
-            return contentProposal(
-                from: trimmed,
-                prefix: prefix,
-                operation: .createOrReplace,
-                grants: activeGrants,
-                preferredDirectoryPath: preferredDirectoryPath,
-                recentTargetPaths: recentTargetPaths
-            )
-        }
-
-        return .message("I can propose file changes with commands like `create file notes.md with content: ...`, `append to notes.md: ...`, or `replace in notes.md \"old\" with \"new\"`.")
-    }
 
     nonisolated func proposal(
         from draft: AssistantGeneratedWriteDraft,
@@ -317,193 +270,58 @@ struct LocalFileWriteProposalParser: Sendable {
         )
     }
 
-    private nonisolated enum ParsedContentOperation {
-        case createOrReplace
-        case append
-    }
-
     private nonisolated func normalizedGeneratedContent(_ content: String) -> String {
-        guard content.contains(" n-") || content.contains(" n\n") || content.contains(" n\r\n") else {
-            return content
+        var normalized = content
+        if content.contains(" n-")
+            || content.contains(" n\n")
+            || content.contains(" n\r\n")
+            || content.hasSuffix(" n") {
+            normalized = normalized
+                .replacingOccurrences(of: " n- ", with: "\n- ")
+                .replacingOccurrences(of: " n-", with: "\n-")
+                .replacingOccurrences(of: " n\r\n", with: "\n\n")
+                .replacingOccurrences(of: " n\n", with: "\n\n")
+                .replacingOccurrences(of: #" n$"#, with: "\n", options: .regularExpression)
         }
-        return content
-            .replacingOccurrences(of: " n- ", with: "\n- ")
-            .replacingOccurrences(of: " n-", with: "\n-")
-            .replacingOccurrences(of: " n\r\n", with: "\n\n")
-            .replacingOccurrences(of: " n\n", with: "\n\n")
+        if looksLikeCodeWithLiteralNewlineArtifact(normalized) {
+            normalized = normalized
+                .replacingOccurrences(
+                    of: #" n(?=\s{2,}\S)"#,
+                    with: "\n",
+                    options: .regularExpression
+                )
+                .replacingOccurrences(
+                    of: #" n(?=[A-Za-z_#])"#,
+                    with: "\n",
+                    options: .regularExpression
+                )
+        }
+        return normalized
     }
 
-    private nonisolated func isWriteIntent(_ normalized: String) -> Bool {
-        normalized.hasPrefix("create file ")
-            || normalized.hasPrefix("create ")
-            || normalized.hasPrefix("write file ")
-            || normalized.hasPrefix("write ")
-            || normalized.hasPrefix("edit file ")
-            || normalized.hasPrefix("modify file ")
-            || normalized.hasPrefix("update file ")
-            || normalized.hasPrefix("overwrite file ")
-            || normalized.hasPrefix("append to ")
-            || normalized.hasPrefix("replace in ")
-            || normalized.hasPrefix("replace text in ")
-    }
-
-    private nonisolated func contentProposal(
-        from command: String,
-        prefix: String,
-        operation: ParsedContentOperation,
-        grants: [LocalFileGrant],
-        preferredDirectoryPath: String?,
-        recentTargetPaths: [String]
-    ) -> LocalFileWriteProposalResult {
-        let body = String(command.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let parsed = parsePathAndContent(from: body) else {
-            return .message("Name the target path and content before I can propose a local file change.")
+    private nonisolated func looksLikeCodeWithLiteralNewlineArtifact(_ content: String) -> Bool {
+        if content.hasPrefix("#!") {
+            return true
         }
-
-        let content = parsed.content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !content.isEmpty else {
-            return .message("The proposed file content is empty.")
-        }
-        guard content.count <= maxContentCharacters else {
-            return .message("That proposed file change is too large. Keep confirmed local writes under \(maxContentCharacters) characters.")
-        }
-
-        guard let targetURL = resolvedURL(
-            for: parsed.path,
-            grants: grants,
-            preferredDirectoryPath: preferredDirectoryPath,
-            recentTargetPaths: recentTargetPaths
-        ) else {
-            return .message("The target path must be inside a granted folder or match a granted file.")
-        }
-
-        let fileExists = FileManager.default.fileExists(atPath: targetURL.path)
-        let writeOperation: LocalFileWriteProposal.Operation
-        switch operation {
-        case .append:
-            guard fileExists else {
-                return .message("I can append only to an existing granted text file. Use create file for a new file.")
-            }
-            writeOperation = .append(content: content)
-        case .createOrReplace:
-            writeOperation = fileExists ? .replaceContents(content: content) : .create(content: content)
-        }
-
-        return .proposal(
-            LocalFileWriteProposal(
-                id: UUID(),
-                targetPath: targetURL.path,
-                operation: writeOperation
-            )
-        )
-    }
-
-    private nonisolated func replaceTextProposal(
-        from command: String,
-        grants: [LocalFileGrant],
-        preferredDirectoryPath: String?,
-        recentTargetPaths: [String]
-    ) -> LocalFileWriteProposalResult {
-        let prefixes = ["replace text in ", "replace in "]
-        guard let prefix = prefixes.first(where: { command.lowercased().hasPrefix($0) }) else {
-            return .none
-        }
-        let body = String(command.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let parsedPath = parsePathPrefix(from: body) else {
-            return .message("Name the file path before the replacement text.")
-        }
-        let remainder = parsedPath.remainder.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let replacement = parseReplacement(from: remainder) else {
-            return .message("Use `replace in path \"old text\" with \"new text\"` so I can propose a precise edit.")
-        }
-        guard !replacement.oldText.isEmpty else {
-            return .message("The text to replace is empty.")
-        }
-        guard replacement.newText.count <= maxContentCharacters else {
-            return .message("That replacement is too large. Keep confirmed local writes under \(maxContentCharacters) characters.")
-        }
-        guard let targetURL = resolvedURL(
-            for: parsedPath.path,
-            grants: grants,
-            preferredDirectoryPath: preferredDirectoryPath,
-            recentTargetPaths: recentTargetPaths
-        ),
-              FileManager.default.fileExists(atPath: targetURL.path) else {
-            return .message("The target file must already exist inside a granted folder or match a granted file.")
-        }
-
-        return .proposal(
-            LocalFileWriteProposal(
-                id: UUID(),
-                targetPath: targetURL.path,
-                operation: .replaceText(oldText: replacement.oldText, newText: replacement.newText)
-            )
-        )
-    }
-
-    private nonisolated func parsePathAndContent(from body: String) -> (path: String, content: String)? {
-        if let quoted = parsePathPrefix(from: body), quoted.remainder.lowercased().hasPrefix("with content") {
-            return (quoted.path, contentAfterMarker(in: quoted.remainder) ?? "")
-        }
-
-        let markers = [" with content:", " with content ", " content:", ":"]
-        for marker in markers {
-            if let range = body.range(of: marker, options: [.caseInsensitive]) {
-                let path = String(body[..<range.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
-                let content = String(body[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !path.isEmpty else { return nil }
-                return (path, content)
-            }
-        }
-        return nil
-    }
-
-    private nonisolated func contentAfterMarker(in text: String) -> String? {
-        let markers = ["with content:", "with content"]
-        for marker in markers {
-            if let range = text.range(of: marker, options: [.caseInsensitive]) {
-                return String(text[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-        }
-        return nil
-    }
-
-    private nonisolated func parsePathPrefix(from body: String) -> (path: String, remainder: String)? {
-        let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-
-        if trimmed.first == "\"" {
-            let rest = trimmed.dropFirst()
-            guard let closing = rest.firstIndex(of: "\"") else { return nil }
-            let path = String(rest[..<closing])
-            let remainder = String(rest[rest.index(after: closing)...])
-            return (path, remainder)
-        }
-
-        let markers = [" with content:", " with content ", " content:", " \"", ":"]
-        let lower = trimmed.lowercased()
-        let markerRange = markers
-            .compactMap { marker -> Range<String.Index>? in lower.range(of: marker) }
-            .min { $0.lowerBound < $1.lowerBound }
-        guard let markerRange else { return nil }
-        let path = String(trimmed[..<markerRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
-        let remainder = String(trimmed[markerRange.lowerBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
-        return path.isEmpty ? nil : (path, remainder)
-    }
-
-    private nonisolated func parseReplacement(from text: String) -> (oldText: String, newText: String)? {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.first == "\"" else { return nil }
-        let rest = trimmed.dropFirst()
-        guard let oldEnd = rest.firstIndex(of: "\"") else { return nil }
-        let oldText = String(rest[..<oldEnd])
-        let afterOld = String(rest[rest.index(after: oldEnd)...]).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard afterOld.lowercased().hasPrefix("with ") else { return nil }
-        let newPart = String(afterOld.dropFirst("with ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard newPart.first == "\"" else { return nil }
-        let newRest = newPart.dropFirst()
-        guard let newEnd = newRest.firstIndex(of: "\"") else { return nil }
-        return (oldText, String(newRest[..<newEnd]))
+        let lowercased = content.lowercased()
+        return [
+            " nimport ",
+            " nfrom ",
+            " nwith ",
+            " ndef ",
+            " nclass ",
+            " nif ",
+            " nfor ",
+            " nwhile ",
+            " ntry ",
+            " nexcept ",
+            " necho ",
+            " nprintf ",
+            " ncp ",
+            " nmv ",
+            " ncat ",
+            " nsubprocess"
+        ].contains { lowercased.contains($0) }
     }
 
     private nonisolated func resolvedURL(
@@ -736,27 +554,6 @@ struct LocalFileContextProvider: Sendable {
         var filesRead = 0
         var contentCandidates: [URL] = []
 
-        if shouldPrioritizeProjectFiles(question) {
-            for grant in activeGrants {
-                for fileURL in likelyProjectFileURLs(in: grant) {
-                    guard filesRead < maxFilesToRead,
-                          !seenSnippetPaths.contains(fileURL.path),
-                          let content = readTextFile(fileURL) else { continue }
-                    filesRead += 1
-                    seenSnippetPaths.insert(fileURL.path)
-                    let contentScore = score(text: content, terms: terms)
-                    snippets.append(
-                        LocalFileSnippet(
-                            id: fileURL.path,
-                            path: fileURL.path,
-                            preview: snippet(from: content, terms: terms),
-                            score: 500 + contentScore
-                        )
-                    )
-                }
-            }
-        }
-
         for grant in activeGrants {
             guard visitedFiles < maxCandidateFiles else { break }
             for fileURL in fileURLs(in: grant) {
@@ -826,50 +623,6 @@ struct LocalFileContextProvider: Sendable {
         )
     }
 
-    nonisolated func directAnswer(for question: String, grants: [LocalFileGrant]) -> String? {
-        let normalized = Self.normalized(question)
-        let fileSignals = [
-            "file", "files", "folder", "folders", "directory", "directories",
-            "local file", "local files", "source", "sources", "repo", "repository",
-            "project", "workspace"
-        ]
-        let accessSignals = [
-            "access", "see", "view", "read", "search", "look at", "look in",
-            "have", "know about", "use"
-        ]
-        let capabilitySignals = [
-            "can you", "are you able", "do you have access", "do you see",
-            "can pixel pane", "can the app"
-        ]
-        let inventorySignals = [
-            "what", "which", "list", "show", "where", "any", "granted",
-            "connected", "available"
-        ]
-        let asksForGrants =
-            normalized.contains("granted files")
-            || normalized.contains("granted folders")
-            || normalized.contains("file sources")
-            || normalized.contains("local sources")
-            || (
-                fileSignals.contains { normalized.contains($0) }
-                && accessSignals.contains { normalized.contains($0) }
-                && (
-                    inventorySignals.contains { normalized.contains($0) }
-                    || capabilitySignals.contains { normalized.contains($0) }
-                )
-            )
-
-        guard asksForGrants else { return nil }
-
-        let activeGrants = grants.filter { FileManager.default.fileExists(atPath: $0.path) }
-        guard !activeGrants.isEmpty else {
-            return "I can read and search only files or folders you grant. Right now, no local file sources are granted."
-        }
-
-        let lines = activeGrants.map { "- \($0.kindLabel): \($0.path)" }
-        return "I can read and search only these user-granted locations:\n\n\(lines.joined(separator: "\n"))"
-    }
-
     private nonisolated static func normalized(_ value: String) -> String {
         value
             .lowercased()
@@ -902,67 +655,6 @@ struct LocalFileContextProvider: Sendable {
             urls.append(url)
         }
         return urls
-    }
-
-    private nonisolated func shouldPrioritizeProjectFiles(_ question: String) -> Bool {
-        let normalized = Self.normalized(question)
-        let projectSignals = [
-            "what is this project",
-            "what's this project",
-            "what is this repo",
-            "what's this repo",
-            "summarize this project",
-            "summarize this repo",
-            "about this project",
-            "about this repo",
-            "portfolio",
-            "experience",
-            "background"
-        ]
-        return projectSignals.contains { normalized.contains($0) }
-    }
-
-    private nonisolated func likelyProjectFileURLs(in grant: LocalFileGrant) -> [URL] {
-        guard grant.isDirectory else {
-            return isLikelyProjectFile(grant.url) ? [grant.url] : []
-        }
-
-        let root = grant.url.standardizedFileURL
-        var candidates: [URL] = []
-        let names = [
-            "README.md", "README.markdown", "README.txt", "AGENTS.md",
-            "package.json", "Package.swift", "pyproject.toml", "Cargo.toml",
-            "Gemfile", "go.mod", "pom.xml", "build.gradle",
-            "index.html", "whoami.html", "about.html", "resume.md",
-            "resume.txt", "resume.json", "cv.md", "cv.txt", "data.json",
-            "script.js", "main.js", "app.js", "src/App.jsx", "src/App.tsx",
-            "src/main.jsx", "src/main.tsx", "src/data.js", "src/data.ts",
-            "docs/README.md", "docs/architecture.md", "docs/project-brief.md",
-            "docs/prd.md", "resume-latex/resume.tex"
-        ]
-        for name in names {
-            let url = root.appendingPathComponent(name)
-            if FileManager.default.fileExists(atPath: url.path), isTextLikeFile(url) {
-                candidates.append(url)
-            }
-        }
-        return candidates
-    }
-
-    private nonisolated func isLikelyProjectFile(_ url: URL) -> Bool {
-        let name = url.lastPathComponent.lowercased()
-        return name.hasPrefix("readme")
-            || name == "agents.md"
-            || name == "package.json"
-            || name == "package.swift"
-            || name == "pyproject.toml"
-            || name == "cargo.toml"
-            || name == "go.mod"
-            || name == "index.html"
-            || name == "whoami.html"
-            || name == "about.html"
-            || name.contains("resume")
-            || name.contains("cv")
     }
 
     private nonisolated func isTextLikeFile(_ url: URL) -> Bool {
@@ -1017,36 +709,7 @@ struct LocalFileContextProvider: Sendable {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { $0.count >= 3 && !stopwords.contains($0) }
         )
-        return Array(expandedSearchTerms(for: normalized, baseTerms: baseTerms))
-        .sorted()
-    }
-
-    private nonisolated func expandedSearchTerms(
-        for normalizedQuestion: String,
-        baseTerms: Set<String>
-    ) -> Set<String> {
-        var terms = baseTerms
-
-        if normalizedQuestion.contains("experience")
-            || normalizedQuestion.contains("background")
-            || normalizedQuestion.contains("work history")
-            || normalizedQuestion.contains("professional")
-            || normalizedQuestion.contains("career") {
-            terms.formUnion([
-                "experience", "background", "work", "career", "role", "roles",
-                "job", "jobs", "position", "positions", "company", "companies",
-                "professional", "employment", "intern", "internship", "engineer",
-                "developer", "software", "machine", "learning", "data", "science",
-                "education", "degree", "university", "skills", "resume", "cv",
-                "about", "whoami", "projects"
-            ])
-        }
-
-        if normalizedQuestion.contains("portfolio") {
-            terms.formUnion(["portfolio", "about", "whoami", "intro", "profile", "resume", "cv"])
-        }
-
-        return terms
+        return Array(baseTerms).sorted()
     }
 
     private nonisolated func score(text: String, terms: [String]) -> Int {

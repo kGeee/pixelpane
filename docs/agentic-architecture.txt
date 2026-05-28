@@ -1,0 +1,859 @@
+Pixel Pane Agentic Architecture
+Last updated: 2026-05-28
+
+This document explains the full agentic platform architecture for Pixel Pane in plain language.
+
+The short version:
+
+Pixel Pane is not meant to be a chat box with a big prompt. It is a Mac app that owns the agent runtime. The model can reason, propose tool calls, and write final answers, but the app owns state, permissions, tools, approvals, evidence, safety policy, persistence, and UI behavior.
+
+The core idea is:
+
+The model proposes. The runtime validates. App-owned tools execute. Evidence is recorded. The runtime decides whether the task can continue, needs approval, must stop, or can answer.
+
+
+1. Product Shape
+
+Pixel Pane is a local-first, notch-native assistant shell for macOS.
+
+The preserved product shell includes:
+
+- The notch chat surface.
+- Capture and OCR from selected screen regions.
+- Image and visual context for local or cloud routes.
+- Local file grants.
+- Chat history.
+- Settings for permissions, routing, local models, history, and privacy.
+- Existing local/cloud AI backend plumbing.
+- Existing file write proposal and write execution primitives.
+- Existing terminal and process primitives, now routed through the new runtime.
+
+The old agent system was intentionally deleted. It mixed model prompts, approval UI, tool observations, terminal behavior, and chat transcript state too closely. That made it easy for the model to leak protocol JSON into chat, repeat approval loops, fake tool progress, or answer from stale assumptions.
+
+The new system is Agent Kernel V2, also called AGENTV2.
+
+
+2. Architectural Goal
+
+The goal is a deterministic local-first agent runtime that can work with weak local models, stronger cloud models, fixture models, and future native tool-calling providers without changing product policy.
+
+The product should not depend on a model "remembering" safety rules from a prompt.
+
+Instead:
+
+- Product behavior lives in Swift runtime code.
+- Models receive a minimal protocol and available tool schemas.
+- The app validates every tool request.
+- The app decides what is safe, what needs approval, and what is impossible.
+- The app records evidence before trusting local-state claims.
+- The app separates user conversation from internal control events.
+
+This is the most important design point in the whole architecture.
+
+Pixel Pane is building an agentic platform, not a clever prompt.
+
+
+3. Main Layers
+
+The architecture has five main layers.
+
+Layer 1: Native Product Shell
+
+This is the visible Mac app:
+
+- Notch panel.
+- Chat composer.
+- Capture flow.
+- OCR.
+- Settings.
+- Local file grant UI.
+- History UI.
+- Approval cards.
+- Terminal/process confirmation UI.
+
+This layer presents state and gathers user input. It does not own the agent loop.
+
+Layer 2: App State And Context Sources
+
+This layer owns trusted app state:
+
+- Current local file grants.
+- Active visual context.
+- OCR excerpt.
+- Allowed working directories.
+- Recent write targets.
+- AI routing mode.
+- Local model setup status.
+- Cloud mode setting.
+- Chat history.
+
+These are app facts. The model should not invent them.
+
+Layer 3: Agent Kernel V2
+
+This is the actual agent runtime.
+
+It owns:
+
+- The task loop.
+- The session ledger.
+- Model calls.
+- Tool validation.
+- Tool execution dispatch.
+- Approval requests.
+- Approval resume.
+- Cancellation.
+- No-progress guards.
+- Evidence planning.
+- Final answer verification.
+- UI event output.
+
+This is the center of the architecture.
+
+Layer 4: Typed Capabilities
+
+These are app-owned tools that the model can request but cannot directly execute.
+
+Current capability groups:
+
+- Local context tools.
+- File read/search/list tools.
+- Staged file write tool.
+- Visual context tool.
+- Finite command tool.
+- Long-running process lifecycle tools.
+- Local server probe tool.
+
+Every capability has a schema, risk level, scope requirements, and approval policy.
+
+Layer 5: Model Providers
+
+Models are behind adapter boundaries.
+
+Current and planned provider kinds:
+
+- Fixture models for deterministic tests.
+- Apple local models.
+- MLX local text models.
+- MLX local vision models.
+- Pixel Pane Cloud.
+- OpenAI-compatible local endpoints.
+- Future native tool-calling providers.
+
+The provider is replaceable. The runtime is not.
+
+
+4. The Runtime Contract
+
+The model is allowed to return only two useful kinds of output during an agent turn:
+
+- A final answer.
+- A typed tool call.
+
+For text-only models that do not support native tool calls, Pixel Pane uses a small text protocol. The model is asked to produce one structured object representing either a final answer or a tool call.
+
+That protocol is not product policy. It is just transport.
+
+The runtime still decides:
+
+- Whether the tool exists.
+- Whether arguments are valid.
+- Whether the path is granted.
+- Whether the command is safe.
+- Whether approval is required.
+- Whether a repeated tool call is a loop.
+- Whether a final answer has enough evidence.
+- Whether malformed output can be repaired.
+- Whether the turn should continue, stop, fail, or ask for approval.
+
+The app must treat model output as untrusted until it crosses this typed boundary.
+
+
+5. The Session Ledger
+
+Every agent turn is recorded in an append-only session ledger.
+
+The ledger has two different kinds of information:
+
+Transcript events:
+
+- User messages.
+- Assistant messages.
+
+Control-plane events:
+
+- Model calls.
+- Model responses.
+- Tool proposals.
+- Tool results.
+- Approval requests.
+- Approval resolutions.
+- Process status.
+- Evidence records.
+- Task blocked events.
+- Task failed events.
+- Task canceled events.
+- Task completed events.
+
+This separation is critical.
+
+The visible chat transcript should contain only what the user said and what the assistant answered. It should not contain internal tool calls, approval messages, raw JSON, terminal receipts, process status events, or hidden control instructions.
+
+The model may receive control events later as observations, but those observations are not fake user messages.
+
+The full ledger is retained for history, export, and debugging. Model requests do not receive the full ledger forever. They receive packed context: recent transcript continuity plus current-turn observations. This keeps follow-up conversation usable while preventing old file contents, terminal output, or tool receipts from becoming unbounded implicit memory.
+
+This prevents bugs where the assistant starts responding to its own approval UI or tool receipts as if the user typed them.
+
+
+6. App Context Inventory
+
+Before model calls, the runtime injects an app-generated context inventory.
+
+This inventory tells the model what trusted local context exists right now.
+
+It can include:
+
+- Granted files and folders.
+- Active visual context.
+- Whether image input is available.
+- Whether OCR text is available.
+- A bounded OCR excerpt.
+- Allowed working directories.
+- Recent write targets.
+
+This is not meant to solve every task by itself. It is meant to keep the model grounded in the app's actual state.
+
+The inventory is trusted because it comes from the app.
+
+Retrieved file contents, OCR text, terminal output, process output, and web/server output are not trusted in the same way. They are observations. They can contain instructions, mistakes, or hostile text. The runtime should not treat them as policy.
+
+
+7. Tool Registry
+
+All tools are registered in the runtime.
+
+Each tool definition describes:
+
+- Tool name.
+- Human summary.
+- Input arguments.
+- Argument types.
+- Required arguments.
+- Output type.
+- Risk level.
+- Required scope.
+- Whether approval is required.
+- Deny rules.
+
+The model sees schemas. The runtime owns enforcement.
+
+A tool call is rejected before execution if:
+
+- The tool name is unknown.
+- The argument name is unknown.
+- A required argument is missing.
+- An argument has the wrong type.
+- The needed scope has not been granted.
+- The request matches a deny rule.
+- The call repeats a completed step.
+- The policy says the action must be blocked.
+
+If a side-effect call is otherwise valid, the runtime returns a pending approval state instead of executing it immediately.
+
+If a model proposes a known tool with incomplete or malformed arguments, that is treated as a recoverable model mistake when it is safe to do so. The runtime records a failed tool-result observation with the validation details and gives the model another bounded chance to correct the call. This keeps schema errors out of user-visible chat while preserving strict validation before execution.
+
+Write proposals can also fail preflight before approval. For example, a generated script that still contains obvious protocol newline artifacts or an invalid Python main guard is rejected as a failed tool observation. The model can retry with corrected content, and the user is not asked to approve a file that the runtime already knows is malformed.
+
+
+8. Local File Architecture
+
+Pixel Pane uses explicit user grants as the file access boundary.
+
+The assistant can only see files and folders that the user grants.
+
+Local file capabilities include:
+
+- Listing grants.
+- Listing a granted folder.
+- Searching text-like files in granted locations.
+- Reading bounded text from a granted file.
+- Staging a write proposal inside a granted location.
+
+Reads are bounded. Searches return snippets. Folder listings are capped.
+
+Writes are never direct model actions.
+
+For writes:
+
+1. The model proposes a write.
+2. The runtime validates the target is inside a grant.
+3. The runtime stages a write proposal.
+4. The UI shows the proposed operation.
+5. The user confirms or cancels.
+6. Only after confirmation does the runtime execute the write.
+7. The result is recorded as evidence.
+
+This means the model cannot silently edit the file system.
+
+
+9. Visual Context Architecture
+
+Pixel Pane can use selected screen regions, OCR, image context, and image attachments.
+
+The privacy rule is:
+
+Screenshots and image pixels are transient unless a future explicit export feature says otherwise.
+
+The runtime may receive:
+
+- A label for the visual context.
+- Whether image input exists.
+- Whether OCR text exists.
+- A bounded OCR excerpt.
+- Transient image input for providers that support it.
+
+Saved chat history should not persist screenshot pixels.
+
+Visual context is a tool-accessible capability, not hidden global memory.
+
+
+10. Command Architecture
+
+Pixel Pane separates finite commands from long-running processes.
+
+Finite commands are commands expected to finish.
+
+They are useful for:
+
+- Listing repo state.
+- Running quick checks.
+- Reading command output.
+- Running bounded diagnostics.
+- Small local inspections.
+
+Finite command execution is bounded by:
+
+- Working directory scope.
+- Timeout.
+- Output caps.
+- Command policy.
+- Risk classification.
+
+Low-risk read-only commands may run without approval.
+
+Commands that are privileged, destructive, networked, install packages, mutate files, or control processes require approval or are blocked.
+
+Terminal output is evidence, but it is still untrusted text.
+
+
+11. Process And Local Server Architecture
+
+Long-running commands are not treated like finite commands.
+
+They have their own lifecycle tools:
+
+- Start process.
+- Check process status.
+- Tail process output.
+- Stop process.
+- Probe local server.
+
+Starting and stopping a process are side effects and require approval.
+
+Checking status, reading output tails, and probing localhost are read-only operations.
+
+Managed processes are tracked by:
+
+- Process ID.
+- Command.
+- Working directory.
+- Owner session.
+- PID.
+- Start time.
+- Status.
+- Exit code.
+- Bounded stdout tail.
+- Bounded stderr tail.
+- Detected local server URL when output announces one.
+
+Local server probes are restricted to loopback targets such as localhost, 127.0.0.1, or explicit local TCP ports.
+
+This is important because "is my site running?" is not a text-generation question. It is a local-state question that requires local evidence.
+
+
+12. Approval Architecture
+
+Approvals are control-plane events.
+
+They are not chat messages.
+
+A pending approval includes:
+
+- Approval ID.
+- Tool call ID.
+- Tool name.
+- Risk class.
+- Reason.
+- User-visible summary.
+- Operation preview.
+
+The UI renders the approval. The user approves, denies, or cancels.
+
+If approved, the runtime resumes the same task with the approval resolution recorded in the ledger. The runtime, not the UI, executes the approved side-effect tool and records the tool result.
+
+If canceled or denied, the runtime records that outcome without pretending the user typed a new instruction.
+
+This fixes the old class of bugs where approval UI got serialized into the conversation and the model started looping over approval text.
+
+
+13. Evidence Architecture
+
+Pixel Pane should not let the model claim local facts without local evidence.
+
+Evidence records can come from:
+
+- File reads.
+- Folder listings.
+- File searches.
+- Staged write proposals.
+- Completed file writes.
+- Finite command results.
+- Managed process records.
+- Local server probes.
+- Visual context observations.
+- Approval outcomes.
+- Task lifecycle events.
+
+Evidence records include:
+
+- Source ID.
+- Evidence kind.
+- Summary.
+- Optional bounded body.
+- Metadata.
+- Privacy class.
+- Trust class.
+- Related tool call ID.
+
+Evidence is used in two places.
+
+First, before the main answer, the model may declare what evidence it thinks it needs. The runtime maps those needs to tools and collects safe evidence.
+
+Second, before accepting a final answer, the runtime asks the model to declare any verifiable local-state claims made by that answer. The runtime checks those claims against ledger evidence.
+
+Examples of claims that need evidence:
+
+- A file exists.
+- A file changed.
+- A command ran.
+- A command succeeded.
+- A process is alive.
+- A port is listening.
+- A URL responded.
+- A build or test passed.
+- A task was canceled.
+
+If the claim is unsupported, the runtime should block or continue gathering evidence instead of presenting an ungrounded answer.
+
+
+14. Evidence Planning Is Helpful But Not Enough
+
+Evidence planning is currently an auxiliary model pass.
+
+That means:
+
+- If evidence planning works, it can guide the runtime toward the right tools.
+- If evidence planning returns malformed output, the runtime records that as a control-plane failure and continues through the normal tool loop.
+- Final answer verification remains stricter.
+
+This design is correct as far as it goes, but final-answer verification alone is not enough.
+
+A model can avoid making a positive local-state claim by saying "I cannot confirm" or by asking whether to proceed with an action the user already requested. That is still not a useful final answer when the runtime has tools available.
+
+Agent Kernel V2 therefore has an answerability deferral guard.
+
+The guard does not hardcode a specific folder, port, or file action. It uses the offered runtime tool schemas as the capability boundary. If a final answer defers while typed capabilities are available, the runtime records a hidden answerability observation and continues the normal model/tool loop. The model must then either call a typed tool, answer from existing evidence, or hit the bounded retry guard.
+
+If the model repeats the deferral after the guard observation, the runtime blocks the turn as an agent failure instead of showing the useless answer.
+
+This matters for questions and requests like:
+
+- Is my website running locally?
+- Is anything listening on this port?
+- Do you see this granted folder?
+- Did the file get created?
+- Did the command finish?
+- Are tests passing?
+
+The principle is simple:
+
+Do not let the model give up when the app has a safe tool that can answer.
+
+And do not let the model ask for pre-confirmation when the app already has a real approval UI for side effects.
+
+The answerability guard runs after a final answer. The accepted next increment adds a complementary step that runs before the generic model loop: a deterministic, runtime-owned answerability preflight.
+
+On the user's turn, the preflight classifies obvious local-state intents from the user message, current grants, and the ledger. When it is nearly certain, it does one of three things:
+
+- For a safe, obvious local-state question, such as a localhost probe with a known port or a file read in a granted folder, it pre-positions the right evidence by reusing the existing evidence-need to tool mapping, so the model synthesizes from real evidence instead of guessing or hedging.
+- For a request that needs a capability or target the app does not currently have, such as a file question with no grants or a local-server question with no known port or URL, it returns a typed blocked event that asks for the missing grant or target.
+- For anything ambiguous, it falls back to the existing model-driven evidence planning and generic loop.
+
+The preflight is high precision and low recall: it only short-circuits when classification is nearly certain, and a wrong fallback is cheap because it just defers to today's behavior. It does not replace the answerability guard, the final-claim verifier, the tool registry, the approval flow, or the ledger projection. Its routing decision is recorded as a control-plane observation, never as assistant prose.
+
+This increment is planned as stories AGENTV2-036 through AGENTV2-039 and is not yet implemented.
+
+
+15. Model Adapter Architecture
+
+The runtime is provider-neutral.
+
+Each model adapter describes:
+
+- Provider kind.
+- Local or cloud route.
+- Display name.
+- Model name when available.
+- Input modalities.
+- Output modalities.
+- Tool-calling mode.
+- Structured output reliability.
+- Streaming mode.
+- Context limits.
+- Output limits.
+- Availability.
+
+Current model paths include:
+
+- Fixture adapters for tests.
+- Existing AI backend bridge for Apple, MLX, hybrid local, and cloud.
+- OpenAI-compatible adapter for local endpoints.
+- Provider catalog helpers for constructing common adapters.
+
+Text-only models use a minimal tool protocol. They are asked to return one structured final answer or tool call.
+
+The runtime then decodes the output through a strict protocol decoder.
+
+The decoder checks:
+
+- The output is the right envelope when protocol mode is required.
+- The tool exists.
+- The arguments are known.
+- Required arguments are present.
+- Types match the schema.
+
+There is limited repair for known-safe drift, such as a staged write using a path alias instead of the canonical target path. Repair must stay narrow and explicit. It should not become a second hidden agent.
+
+
+16. Output Normalization
+
+Some weak or text-only models may emit tool-call JSON as if it were final prose.
+
+Pixel Pane has a normalization boundary before transcript writes.
+
+If final text is actually protocol-shaped output, the runtime converts it into a typed event or rejects it before it can become visible assistant text.
+
+This prevents chat from showing raw internal protocol objects.
+
+Non-protocol JSON can still be legitimate prose and is left alone.
+
+
+17. Runtime Loop
+
+A normal turn works like this:
+
+1. The user sends a message.
+2. The UI builds a chat context from current app state.
+3. The runtime appends the user message to the ledger.
+4. The runtime checks model availability.
+5. The runtime sends the app context inventory and optional evidence-planning request.
+6. The runtime collects any declared evidence through typed tools.
+7. The runtime sends the model packed transcript context, current-turn observations, tool schemas, and context inventory.
+8. The model returns either a final answer or a tool call.
+9. The runtime normalizes and validates the output.
+10. If it is a tool call, the runtime validates scope, policy, loops, and approvals.
+11. Read-only tools execute immediately.
+12. Side-effect tools create a pending approval.
+13. Tool results become observations and evidence.
+14. The loop continues until the model proposes a final answer or the task stops.
+15. Before showing a final answer, the runtime verifies local-state claims against evidence.
+16. If allowed, the assistant message is appended to transcript and shown in chat.
+17. If blocked, failed, canceled, or pending approval, the UI receives a typed event instead of raw model text.
+
+The runtime has a tool-step budget and per-model-call deadline so a turn cannot loop forever. If a provider stalls, the runtime emits a typed timeout failure instead of leaving the UI in a permanent Thinking state.
+
+
+18. Runtime Guards
+
+Runtime guards are app-owned safety and progress checks.
+
+They currently cover:
+
+- Approval decisions from tool risk.
+- Duplicate tool call detection.
+- Repeated model response detection.
+- No-progress blocking.
+- Cancel/resume state helpers.
+
+The purpose of guards is not to understand every user intent. The purpose is to enforce invariants:
+
+- Do not run unsafe side effects silently.
+- Do not repeat the same step forever.
+- Do not treat approval UI as user text.
+- Do not complete when required evidence is missing.
+
+More answerability guards are still needed.
+
+
+19. UI Integration
+
+The UI does not run the agent.
+
+The UI:
+
+- Collects the user message.
+- Builds the runtime context.
+- Shows loading state.
+- Shows visible assistant answers.
+- Shows pending approval cards.
+- Shows recent tool state.
+- Handles cancel.
+- Handles approval confirmation.
+- Persists chat transcript projection.
+- Exports chat and control-event summaries.
+
+The runtime returns typed UI events:
+
+- Final message.
+- Approval requested.
+- Tool requested.
+- Tool result.
+- Blocked.
+- Failed.
+- Canceled.
+- Completed.
+
+Only final, blocked, failed, and canceled events are primary chat events.
+
+Tool results and approvals are visible state, but they are not assistant prose.
+
+
+20. Persistence And Export
+
+Saved chat history is built from transcript projection, not raw runtime internals.
+
+The export separates:
+
+- Conversation.
+- Agent control events.
+- Tool state snapshot.
+- Granted file access.
+- Runtime state.
+
+Raw model JSON and hidden control payloads should not be dumped into normal conversation history.
+
+Screenshots and image pixels should not be persisted by default.
+
+
+21. Local And Cloud Routing
+
+Pixel Pane is local-first.
+
+Local Mode is the default when local capability exists.
+
+Cloud Mode is explicit opt-in.
+
+Cloud Mode routes through Pixel Pane's backend proxy. Provider keys do not ship in the app.
+
+The cloud backend is only a model route. It does not own:
+
+- Local permissions.
+- File access.
+- Terminal execution.
+- Write approval.
+- Process lifecycle.
+- Evidence policy.
+- Agent safety.
+- Source tracking.
+
+Those remain app-owned.
+
+This keeps the privacy and safety model consistent across local and cloud providers.
+
+
+22. Settings And Model Selection
+
+Settings controls:
+
+- Local/cloud routing.
+- Local AI capability status.
+- MLX model selection and validation.
+- Screen recording permission.
+- Local file grants.
+- Chat history.
+- Privacy onboarding.
+
+Model selection affects the model route, but should not affect runtime policy.
+
+Changing from Apple local to MLX local should change the model adapter and display label. It should not change file permission policy, approval behavior, evidence rules, or ledger semantics.
+
+
+23. Privacy Model
+
+The privacy model is:
+
+- Local-first by default.
+- Cloud is opt-in.
+- Local files require explicit grants.
+- Screenshots and image pixels are transient.
+- Saved chats should not store image pixels.
+- Retrieved text is bounded.
+- Tool output is bounded.
+- Terminal output is untrusted.
+- Provider keys stay out of the app.
+- Telemetry is deferred. If added later, it must be opt-in and exclude sensitive content.
+
+The agent should be useful because the app gives it controlled capabilities, not because it has broad invisible access.
+
+
+24. Safety Model
+
+The safety model is based on app-owned capability gates.
+
+Safe by default:
+
+- Listing granted folders.
+- Reading granted files.
+- Searching granted files.
+- Describing current visual context.
+- Checking status of managed processes.
+- Probing localhost.
+
+Approval required:
+
+- File writes.
+- Starting processes.
+- Stopping processes.
+- Risky finite commands.
+- Commands that mutate files.
+- Install/package commands.
+- Network commands.
+- Privileged commands.
+- Process-control commands.
+
+Blocked:
+
+- Destructive patterns such as root removal.
+- Unknown tools.
+- Unknown or malformed arguments.
+- Missing permissions.
+- Unsupported paths.
+- Repeated no-progress behavior.
+- Unsupported final claims without evidence.
+
+
+25. Testing Strategy
+
+Fixture models are the foundation of the test strategy.
+
+They prove the runtime before real providers shape it.
+
+Fixture coverage includes:
+
+- Plain final answers.
+- App context inventory.
+- Granted file reads.
+- Folder listing.
+- Staged writes.
+- Approval flow.
+- Canceled writes and commands.
+- Low-risk finite commands.
+- Process and local server lifecycle primitives.
+- Repeated tool loops.
+- Malformed output.
+- Empty output.
+- Timeout behavior.
+- Protocol leak prevention.
+- Control-plane/transcript separation.
+- Evidence planning.
+- Final-claim verification.
+- Export projection.
+
+Real provider QA is still necessary because Apple local models, MLX models, cloud models, and OpenAI-compatible local models all fail differently.
+
+The architecture should absorb those failures at the runtime boundary instead of adding provider-specific product behavior.
+
+
+26. What Is Strong Today
+
+The strong parts of the architecture are:
+
+- The old prompt-heavy harness is gone.
+- The app owns the runtime.
+- Tool calls are typed.
+- Tool schemas are strict.
+- Known incomplete tool calls can be treated as recoverable control-plane validation failures instead of user-visible answers.
+- Tool output and approval state are control-plane events.
+- The UI receives typed runtime events.
+- File grants are enforced in app code.
+- Writes are staged and approved.
+- Terminal and process paths are separated.
+- Local server probing exists as a bounded read-only capability.
+- Evidence records exist.
+- Final answers can be gated against evidence.
+- Export no longer treats raw runtime payloads as normal chat.
+- Provider adapters are replaceable.
+
+
+27. What Is Still Weak
+
+The main remaining weakness is answerability.
+
+The runtime has tools and evidence machinery, but it can still accept a bad model choice in some cases.
+
+Example:
+
+The user asks whether a granted website is running locally.
+
+A weak model may answer that it cannot confirm because it did not choose to probe localhost.
+
+That answer is poor because the app has a safe read-only local server probe.
+
+The right architecture is not to hardcode that exact phrase. The right architecture is capability-aware answerability:
+
+- Classify final answers that refuse or hedge on local facts.
+- Check whether an available safe capability can answer.
+- If yes, force the tool path.
+- If no, return a clear typed blocked event.
+
+This should be generalized across local files, commands, processes, ports, URLs, builds, tests, and write results.
+
+The accepted fix is the deterministic answerability preflight described in section 14. It runs before the generic model loop, classifies obvious local-state intents, pre-positions safe evidence through existing typed tools, and returns a typed blocked event when the needed capability or target is missing. It is scheduled as stories AGENTV2-036 through AGENTV2-039, starting with a behavior-neutral scaffold. Until those land, the post-answer answerability guard remains the only answerability safeguard.
+
+
+
+29. Mental Model
+
+Think of Pixel Pane as a small local operating room for agent tasks.
+
+The model is the reasoning engine.
+
+The runtime is the operator.
+
+The tool registry is the allowed equipment list.
+
+The ledger is the chart.
+
+Evidence records are test results.
+
+Approvals are consent.
+
+The UI is the visible surface.
+
+The model can make suggestions, but the app decides what actually happens.
+
+
+30. The One-Sentence Architecture
+
+Pixel Pane's agentic platform is a local-first Mac assistant where a model-agnostic Swift runtime owns task state, permissions, typed tools, approvals, evidence, verification, and UI events, while interchangeable models only propose tool calls or final answers through a validated boundary.

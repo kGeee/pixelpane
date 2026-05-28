@@ -22,7 +22,7 @@ struct AIBackendRequest: Sendable {
     let cloudQuestion: String?
     let cloudConversation: [AIBackendConversationTurn]
 
-    init(
+    nonisolated init(
         actionKind: AIActionKind,
         prompt: String,
         capturedImage: CGImage? = nil,
@@ -81,11 +81,11 @@ struct AIModelOutputStatistic: Equatable, Identifiable, Sendable {
 }
 
 protocol AIBackend: Sendable {
-    var id: String { get }
-    var displayName: String { get }
+    nonisolated var id: String { get }
+    nonisolated var displayName: String { get }
 
-    func capabilities() async -> AIBackendCapabilities
-    func streamResponse(for request: AIBackendRequest) -> AsyncThrowingStream<AIBackendStreamEvent, Error>
+    nonisolated func capabilities() async -> AIBackendCapabilities
+    nonisolated func streamResponse(for request: AIBackendRequest) -> AsyncThrowingStream<AIBackendStreamEvent, Error>
 }
 
 struct AIBackendCapabilities: Sendable {
@@ -109,12 +109,12 @@ enum AIBackendCapabilityStatus: Sendable {
     case installing(AIBackendProvider, detail: String)
     case unavailable(AIBackendUnavailableReason)
 
-    var isAvailable: Bool {
+    nonisolated var isAvailable: Bool {
         if case .available = self { return true }
         return false
     }
 
-    var label: String {
+    nonisolated var label: String {
         switch self {
         case .available(let provider):
             "\(provider.displayName) available"
@@ -125,7 +125,7 @@ enum AIBackendCapabilityStatus: Sendable {
         }
     }
 
-    var detail: String {
+    nonisolated var detail: String {
         switch self {
         case .available(let provider):
             provider.availableDetail
@@ -143,7 +143,7 @@ enum AIBackendProvider: String, Sendable {
     case mlxVision
     case pixelPaneCloud
 
-    var displayName: String {
+    nonisolated var displayName: String {
         switch self {
         case .appleFoundationModels:
             "Apple Foundation Models"
@@ -156,7 +156,7 @@ enum AIBackendProvider: String, Sendable {
         }
     }
 
-    var availableDetail: String {
+    nonisolated var availableDetail: String {
         switch self {
         case .appleFoundationModels:
             "Text-only local generation can run on this Mac."
@@ -188,7 +188,7 @@ enum AIBackendUnavailableReason: Sendable {
     case cancelled
     case unknown
 
-    var label: String {
+    nonisolated var label: String {
         switch self {
         case .appleFrameworkUnavailable:
             "Apple local AI unavailable"
@@ -225,7 +225,7 @@ enum AIBackendUnavailableReason: Sendable {
         }
     }
 
-    var detail: String {
+    nonisolated var detail: String {
         switch self {
         case .appleFrameworkUnavailable:
             "Apple Foundation Models requires macOS 26 or later."
@@ -269,7 +269,7 @@ enum AIBackendError: LocalizedError, Sendable {
     case generationFailed(String)
     case cancelled
 
-    var errorDescription: String? {
+    nonisolated var errorDescription: String? {
         switch self {
         case .unavailable(let reason):
             reason.detail
@@ -284,6 +284,6 @@ enum AIBackendError: LocalizedError, Sendable {
 }
 
 enum AIModelLimits {
-    static let maxPromptCharacters = 12_000
-    static let defaultMaxOutputTokens = 4_096
+    nonisolated static let maxPromptCharacters = 12_000
+    nonisolated static let defaultMaxOutputTokens = 4_096
 }

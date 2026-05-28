@@ -636,7 +636,7 @@ private struct ChatHistorySettingsView: View {
                     Button(role: .destructive) {
                         store.clearAll()
                     } label: {
-                        Label("Clear History", systemImage: "trash")
+                        Label("Clear Chat History", systemImage: "trash")
                     }
                     .disabled(store.sessions.isEmpty)
                 }

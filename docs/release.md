@@ -1,6 +1,6 @@
 # Pixel Pane Release Baseline
 
-Last updated: 2026-05-21
+Last updated: 2026-05-27
 
 Pixel Pane uses Direct distribution for alpha and v1. Releases are signed with Developer ID, notarized by Apple, packaged as a DMG, and delivered through Sparkle once the app embeds the Sparkle framework.
 
@@ -29,8 +29,10 @@ Keep this baseline until a story explicitly needs a new entitlement. If an entit
 Debug builds may keep automatic signing with the development team configured in the Xcode project. Local development should continue to use:
 
 ```bash
-xcodebuild -project PixelPane/PixelPane.xcodeproj -scheme PixelPane -configuration Debug build
+PixelPane/Scripts/verify-debug-build.sh
 ```
+
+The wrapper runs the Debug `xcodebuild` verification used by workflow stories.
 
 ## Sparkle Update Plan
 
@@ -124,10 +126,17 @@ Before publishing the appcast:
 
 Final manual QA:
 
-- Install the stapled DMG on a clean or quarantine-preserving macOS machine.
+- Install the stapled DMG on a clean macOS machine.
 - Confirm Gatekeeper opens the app without an unidentified-developer warning.
-- Confirm the app has no Dock icon and appears in the menu bar.
+- Confirm the app has no Dock icon and appears in the menu bar/notch flow.
 - Confirm Screen Recording permission recovery works from the fresh install.
-- Confirm capture, OCR, Copy, and Cloud Mode opt-in still work.
+- Confirm hover-open notch chat focuses the composer.
+- Confirm chat routes through Agent Kernel V2.
+- Confirm selected-region capture and OCR can seed Agent Kernel V2 context without persisting image pixels.
+- Confirm Local Mode is default and Cloud Mode is explicit opt-in.
+- Confirm granted file/folder context is unavailable until the user grants it.
+- Confirm file writes are staged for approval and risky terminal/process operations require approval.
+- Confirm cancellation does not create a fake user turn.
+- Confirm dev assistant scripts are not present.
 - For update-enabled builds, install the previous beta, publish a newer appcast entry, and confirm Sparkle discovers, downloads, verifies, installs, and relaunches into the new version.
 - Record the tested version/build and any release notes in the workflow handoff.
