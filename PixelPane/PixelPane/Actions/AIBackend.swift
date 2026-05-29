@@ -68,6 +68,19 @@ struct AIModelOutput: Equatable, Sendable {
     let finalText: String
     let reasoningText: String?
     let statistics: [AIModelOutputStatistic]
+    let rawText: String?
+
+    nonisolated init(
+        finalText: String,
+        reasoningText: String?,
+        statistics: [AIModelOutputStatistic],
+        rawText: String? = nil
+    ) {
+        self.finalText = finalText
+        self.reasoningText = reasoningText
+        self.statistics = statistics
+        self.rawText = rawText
+    }
 }
 
 struct AIModelOutputStatistic: Equatable, Identifiable, Sendable {

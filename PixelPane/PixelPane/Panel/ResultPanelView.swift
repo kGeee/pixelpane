@@ -13,6 +13,7 @@ struct ResultPanelView: View {
     let localAICapabilities: AIBackendCapabilities
     @ObservedObject var localFileAccess: LocalFileAccessStore
     @ObservedObject var chatHistory: ChatHistoryStore
+    @StateObject private var agentRunViewModel: AgentRunViewModel
     let presentationStyle: ResultPanelPresentationStyle
     let startsInAssistantMode: Bool
     let startsExpanded: Bool
@@ -26,8 +27,6 @@ struct ResultPanelView: View {
     private let mlxDetector = MLXVisionRuntimeDetector()
     private let mlxModelStore = MLXVisionModelStore()
     private let displayTextNormalizer = ModelDisplayTextNormalizer()
-    private let agentKernelRuntime = AgentKernelChatRuntimeV2()
-    private let agentKernelExportProjection = AgentKernelExportProjectionV2()
     @State private var selectedAction: PanelActionKind = .extractText
     @State private var loadingActions: Set<PanelActionKind> = []
     @State private var activeText: String
@@ -42,17 +41,13 @@ struct ResultPanelView: View {
     @State private var actionOutputs: [PanelActionKind: PanelActionOutputState]
     @State private var askInput = ""
     @State private var askTurns: [AskConversationTurn] = []
-    @State private var pendingLocalFileWriteProposal: LocalFileWriteProposal?
-    @State private var pendingTerminalCommandProposal: AssistantTerminalCommandProposal?
-    @State private var pendingAgentKernelApproval: AgentKernelPendingApprovalV2?
-    @State private var agentKernelLedger: AgentKernelSessionLedgerV2
-    @State private var askTask: Task<Void, Never>?
     @State private var assistantImageContext: AssistantImageContext?
     @State private var assistantToolState: AssistantToolState
     @State private var isPreparingAssistantImage = false
     @State private var chatContextID: String
     @State private var chatContextKind: ChatSessionContextKind
     @State private var didAppear = false
+    @State private var didLoadAgentRunProjection = false
     @State private var didStartSmartDefault = false
     @State private var isNotchExpanded = false
     @State private var isNotchContentVisible = false
@@ -133,7 +128,6 @@ struct ResultPanelView: View {
             initialToolState.updateVisualContext(Self.captureVisualState(for: result, imageWillBeSent: false))
         }
         _askTurns = State(initialValue: restoredTurns)
-        _agentKernelLedger = State(initialValue: Self.agentKernelLedger(for: restoredTurns))
         _assistantToolState = State(initialValue: initialToolState)
         _chatContextID = State(initialValue: restoredSession?.contextID ?? Self.defaultChatContextID(for: result))
         _chatContextKind = State(initialValue: restoredSession?.contextKind ?? Self.defaultChatContextKind(for: result))
@@ -145,6 +139,7 @@ struct ResultPanelView: View {
         _hiddenReasoning = State(initialValue: initialState.reasoning)
         _recoveryState = State(initialValue: initialState.recovery)
         _actionOutputs = State(initialValue: outputStates)
+        _agentRunViewModel = StateObject(wrappedValue: AgentRunViewModel.makeDefault())
         _isNotchExpanded = State(initialValue: startsExpanded)
         _isNotchContentVisible = State(initialValue: startsExpanded)
     }
@@ -165,6 +160,7 @@ struct ResultPanelView: View {
                         onPresentationSizeChange?(ResultPanelPresentationStyle.notchCompactSize)
                     }
                 }
+                initializeAgentRunProjectionIfNeeded()
                 startSmartDefaultActionIfNeeded()
                 focusChatInputSoon()
             }
@@ -173,6 +169,15 @@ struct ResultPanelView: View {
             }
             .onChange(of: askInput) { _, _ in
                 updateExpandedNotchSizeIfNeeded()
+            }
+            .onChange(of: askTurns.count) { _, _ in
+                updateExpandedNotchSizeIfNeeded()
+            }
+            .onChange(of: loadingActions.contains(.ask)) { _, _ in
+                updateExpandedNotchSizeIfNeeded()
+            }
+            .onChange(of: agentRunViewModel.state) { _, _ in
+                applyAgentRunProjectionChange()
             }
     }
 
@@ -204,21 +209,6 @@ struct ResultPanelView: View {
         result.sourceType == .assistant ? .assistant : .capture
     }
 
-    private static func agentKernelLedger(for turns: [AskConversationTurn]) -> AgentKernelSessionLedgerV2 {
-        var ledger = AgentKernelSessionLedgerV2()
-        for turn in turns {
-            let question = turn.question.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !question.isEmpty {
-                ledger.append(.userMessage(ledger.boundedText(question)))
-            }
-            let answer = turn.answer.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !answer.isEmpty {
-                ledger.append(.assistantMessage(ledger.boundedText(answer)))
-            }
-        }
-        return ledger
-    }
-
     private static func initialAssistantToolState(for result: CaptureResult) -> AssistantToolState {
         var state = AssistantToolState()
         if result.sourceType == .ocr {
@@ -238,6 +228,100 @@ struct ResultPanelView: View {
             hasImageInput: imageWillBeSent && result.image != nil,
             ocrText: result.text
         )
+    }
+
+    private func initializeAgentRunProjectionIfNeeded() {
+        guard !didLoadAgentRunProjection else { return }
+        didLoadAgentRunProjection = true
+        Task {
+            await importLegacyChatHistoryIfNeeded()
+            try? await agentRunViewModel.loadOrCreateSession(context: agentRunViewContext())
+            _ = try? await agentRunViewModel.recoverOnLaunch()
+            applyAgentRunProjectionChange()
+        }
+    }
+
+    private func importLegacyChatHistoryIfNeeded() async {
+        let legacySessions = chatHistory.recentSessions(limit: 60)
+        for session in legacySessions {
+            try? await agentRunViewModel.importLegacyConversation(
+                context: AgentRunViewContext(
+                    title: session.displayTitle,
+                    contextID: session.contextID,
+                    contextKind: session.contextKind.rawValue
+                ),
+                turns: session.turns.map { turn in
+                    AgentRunLegacyConversationTurn(
+                        question: turn.question,
+                        answer: turn.answer,
+                        backendLabel: turn.backendLabel,
+                        createdAt: turn.createdAt
+                    )
+                }
+            )
+        }
+    }
+
+    private func agentRunViewContext() -> AgentRunViewContext {
+        AgentRunViewContext(
+            title: chatContextKind.displayName,
+            contextID: chatContextID,
+            contextKind: chatContextKind.rawValue
+        )
+    }
+
+    private func applyAgentRunProjectionChange() {
+        if selectedAction == .ask {
+            setOutputState(askOutputState(backendLabel: actionBackendLabel ?? askBackendLabelForNextTurn()), for: .ask)
+        }
+        updateNotchNotificationState(isProcessing: !visibleLoadingActions.isEmpty)
+        updateExpandedNotchSizeIfNeeded()
+    }
+
+    private func durableAgentSystemPrompt() -> String {
+        var sections = [
+            "You are Pixel Pane's local-first macOS assistant.",
+            "When Pixel Pane exposes local tools, use those tools instead of asking the user to run terminal commands or paste file listings.",
+            "Answer the user's latest message directly. Do not claim that files, commands, or processes changed unless Pixel Pane records an approved side effect.",
+            "If the available context is insufficient, say what is missing instead of inventing details."
+        ]
+
+        if hasCaptureContext {
+            let ocrText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !ocrText.isEmpty {
+                sections.append(
+                    """
+                    Current screen OCR:
+                    \(Self.truncatedForDebugExport(ocrText, limit: 12_000))
+                    """
+                )
+            }
+        }
+
+        if let visualContext = assistantToolState.activeVisualContext,
+           let excerpt = visualContext.ocrExcerpt,
+           !excerpt.isEmpty {
+            sections.append(
+                """
+                Active visual context (\(visualContext.label)):
+                \(Self.truncatedForDebugExport(excerpt, limit: 6_000))
+                """
+            )
+        }
+
+        if !localFileAccess.grants.isEmpty {
+            let grants = localFileAccess.grants
+                .map { "- \($0.kindLabel): \($0.path)" }
+                .joined(separator: "\n")
+            sections.append(
+                """
+                User-granted local file roots:
+                \(grants)
+                """
+            )
+        }
+
+        return sections.joined(separator: "\n\n")
     }
 
     @ViewBuilder
@@ -272,8 +356,7 @@ struct ResultPanelView: View {
             workspaceSection
             recoverySection
             assistantContextSection
-            localFileWriteConfirmationSection
-            terminalCommandConfirmationSection
+            agentRunApprovalSection
             askInputSection
         }
     }
@@ -291,8 +374,7 @@ struct ResultPanelView: View {
             }
             recoverySection
             assistantContextSection
-            localFileWriteConfirmationSection
-            terminalCommandConfirmationSection
+            agentRunApprovalSection
             askInputSection
         }
     }
@@ -428,7 +510,7 @@ struct ResultPanelView: View {
 
             Spacer()
 
-            if loadingActions.contains(.ask) {
+            if isAskRunning {
                 ProgressView()
                     .controlSize(.small)
                     .tint(.secondary)
@@ -512,6 +594,15 @@ struct ResultPanelView: View {
             )
             .padding(.horizontal, 20)
             .padding(.bottom, 12)
+        } else if selectedAction == .ask,
+                  agentRunViewModel.state.activeStatus == .interrupted {
+            AgentRunRecoveryControlView(
+                summary: agentRunViewModel.state.statusSummary,
+                onRetry: retryInterruptedAgentRun,
+                onCancel: cancelAskQuestion
+            )
+            .padding(.horizontal, 20)
+            .padding(.bottom, 12)
         }
     }
 
@@ -525,7 +616,7 @@ struct ResultPanelView: View {
         if selectedAction == .ask {
             askInputBar
                 .padding(.horizontal, 20)
-                .padding(.bottom, presentationStyle == .notchAttached ? 18 : 16)
+                .padding(.bottom, presentationStyle == .notchAttached ? 12 : 16)
         }
     }
 
@@ -543,121 +634,16 @@ struct ResultPanelView: View {
     }
 
     @ViewBuilder
-    private var localFileWriteConfirmationSection: some View {
-        if let proposal = pendingLocalFileWriteProposal, selectedAction == .ask {
+    private var agentRunApprovalSection: some View {
+        if selectedAction == .ask, !agentRunViewModel.state.pendingApprovals.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    Image(systemName: "square.and.pencil")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.orange)
-
-                    Text(proposal.actionLabel)
-                        .font(.system(size: 12, weight: .bold, design: .rounded))
-                        .foregroundStyle(.primary)
-
-                    Spacer()
-                }
-
-                Text(proposal.targetPath)
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .textSelection(.enabled)
-
-                Text(proposal.detailText)
-                    .font(.system(size: 12, weight: .regular))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                HStack(spacing: 8) {
-                    OverlayPillButton(
-                        title: "Confirm",
-                        systemImage: "checkmark",
-                        style: .accent,
-                        action: confirmLocalFileWrite
+                ForEach(agentRunViewModel.state.pendingApprovals) { approval in
+                    AgentRunApprovalCard(
+                        approval: approval,
+                        onApprove: { approveAgentRunApproval(approval) },
+                        onDeny: { denyAgentRunApproval(approval) }
                     )
-
-                    OverlayPillButton(
-                        title: "Cancel",
-                        systemImage: "xmark",
-                        style: .secondary,
-                        action: cancelLocalFileWrite
-                    )
-
                 }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(.orange.opacity(0.20), lineWidth: 1)
-            }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 10)
-        }
-    }
-
-    @ViewBuilder
-    private var terminalCommandConfirmationSection: some View {
-        if let proposal = pendingTerminalCommandProposal, selectedAction == .ask {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    Image(systemName: "terminal")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.orange)
-
-                    Text("Allow terminal")
-                        .font(.system(size: 12, weight: .bold, design: .rounded))
-                        .foregroundStyle(.primary)
-
-                    Spacer()
-                }
-
-                Text(proposal.reason)
-                    .font(.system(size: 12, weight: .regular))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(URL(fileURLWithPath: proposal.workingDirectory).lastPathComponent)
-                        .font(.system(size: 11, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.primary)
-
-                    Text(proposal.command)
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .textSelection(.enabled)
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 7)
-                .background(.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-                HStack(spacing: 8) {
-                    OverlayPillButton(
-                        title: "Allow",
-                        systemImage: "play.fill",
-                        style: .accent,
-                        action: confirmTerminalCommand
-                    )
-
-                    OverlayPillButton(
-                        title: "Cancel",
-                        systemImage: "xmark",
-                        style: .secondary,
-                        action: cancelTerminalCommand
-                    )
-
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(.orange.opacity(0.20), lineWidth: 1)
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 10)
@@ -810,7 +796,7 @@ struct ResultPanelView: View {
     private var outputContent: some View {
         if selectedAction == .ask {
             AskTranscriptView(
-                turns: askTurns,
+                turns: displayedAskTurns,
                 toolState: assistantToolState,
                 emptyText: hasCaptureContext
                     ? "Chat about this capture."
@@ -1068,17 +1054,17 @@ struct ResultPanelView: View {
 
                     FileSourceMenuButton(
                         grants: localFileAccess.grants,
-                        isDisabled: !loadingActions.isEmpty,
+                        isDisabled: !loadingActions.isEmpty || isAskRunning,
                         onGrantFolder: localFileAccess.grantFolder,
                         onGrantFile: localFileAccess.grantFile,
                         onRemove: localFileAccess.removeGrant,
                         onClear: localFileAccess.clearGrants
                     )
 
-                    ChatHistoryMenuButton(
-                        sessions: chatHistory.recentSessions(),
-                        isDisabled: !loadingActions.isEmpty,
-                        onSelect: loadChatSession,
+                    AgentRunHistoryMenuButton(
+                        sessions: agentRunViewModel.state.recentSessions,
+                        isDisabled: !loadingActions.isEmpty || isAskRunning,
+                        onSelect: loadAgentRunSession,
                         onClearHistory: clearChatHistory
                     )
 
@@ -1094,7 +1080,7 @@ struct ResultPanelView: View {
                     AssistantImageMenuButton(
                         context: assistantImageContext,
                         isPreparing: isPreparingAssistantImage,
-                        isDisabled: !loadingActions.isEmpty,
+                        isDisabled: !loadingActions.isEmpty || isAskRunning,
                         onChoose: chooseAssistantImage,
                         onClear: clearAssistantImage
                     )
@@ -1102,21 +1088,22 @@ struct ResultPanelView: View {
                     Spacer(minLength: 0)
                 }
 
-                HStack(alignment: .bottom, spacing: 8) {
+                HStack(alignment: .center, spacing: 8) {
                     OverlayTextField(
                         placeholder: hasCaptureContext ? "Ask about this screen" : "Ask Pixel Pane",
                         text: $askInput,
+                        height: askComposerInputHeight,
                         isFocused: $isChatInputFocused,
                         onSubmit: sendAskQuestion
                     )
                     .layoutPriority(1)
 
-                    if loadingActions.contains(.ask) {
+                    if isAskRunning {
                         OverlayPillButton(
                             title: "Cancel",
                             systemImage: "xmark.circle.fill",
                             style: .accent,
-                            displayStyle: .prominentIconAndTitle,
+                            displayStyle: .iconOnly,
                             action: cancelAskQuestion
                         )
                     } else {
@@ -1124,13 +1111,16 @@ struct ResultPanelView: View {
                             title: "Send",
                             systemImage: "paperplane.fill",
                             style: .accent,
-                            displayStyle: .prominentIconAndTitle,
+                            displayStyle: .iconOnly,
                             action: sendAskQuestion
                         )
                         .disabled(!canSendAskQuestion)
                     }
                 }
+                .frame(height: askComposerInputHeight)
             }
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .bottom)
         }
     }
 
@@ -1141,10 +1131,8 @@ struct ResultPanelView: View {
     }
 
     private var canCopyChatTranscript: Bool {
-        !askTurns.isEmpty
-            || !agentKernelLedger.transcriptMessages.isEmpty
-            || pendingTerminalCommandProposal != nil
-            || pendingLocalFileWriteProposal != nil
+        !displayedAskTurns.isEmpty
+            || !agentRunViewModel.state.messages.isEmpty
             || !assistantToolState.recentToolResults.isEmpty
     }
 
@@ -1155,6 +1143,11 @@ struct ResultPanelView: View {
     }
 
     private func chatTranscriptExportText() -> String {
+        if let traceExport = agentRunViewModel.state.traceExport,
+           !traceExport.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return traceExport
+        }
+
         var sections: [String] = []
         sections.append(
             """
@@ -1170,20 +1163,11 @@ struct ResultPanelView: View {
             Current Source Label: \(actionSourceLabel ?? "none")
             Current Target Label: \(actionTargetLabel ?? "none")
             Active Text Characters: \(activeText.count)
-            Hidden Reasoning Characters: \(hiddenReasoning?.count ?? 0)
+            Private Reasoning Content: omitted from export
             """
         )
 
         sections.append(chatRuntimeDebugExportText())
-
-        if let hiddenReasoning, !hiddenReasoning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            sections.append(
-                """
-                ## Hidden Thinking / Reasoning
-                \(Self.truncatedForDebugExport(hiddenReasoning, limit: 12_000))
-                """
-            )
-        }
 
         if let assistantImageContext {
             sections.append(
@@ -1220,7 +1204,7 @@ struct ResultPanelView: View {
             sections.append("## Granted File Access\n\(grantLines.joined(separator: "\n"))")
         }
 
-        let exportTurns = agentKernelConversationTurnsForExport()
+        let exportTurns = displayedAskTurns
         if !exportTurns.isEmpty {
             let turnText = exportTurns.enumerated().map { index, turn in
                 var lines = [
@@ -1245,38 +1229,9 @@ struct ResultPanelView: View {
             sections.append("## Conversation\n\(turnText.joined(separator: "\n\n"))")
         }
 
-        let controlEventsText = agentKernelControlEventsExportText()
-        if !controlEventsText.isEmpty {
-            sections.append("## Agent Control Events\n\(controlEventsText)")
-        }
-
         let toolStateText = assistantToolStateExportText()
         if !toolStateText.isEmpty {
             sections.append("## Agent Tool State Snapshot\n\(toolStateText)")
-        }
-
-        if let pendingTerminalCommandProposal {
-            sections.append(
-                """
-                ## Pending Terminal Confirmation
-                Command: \(pendingTerminalCommandProposal.command)
-                Directory: \(pendingTerminalCommandProposal.workingDirectory)
-                Reason: \(pendingTerminalCommandProposal.reason)
-                Risk: \(pendingTerminalCommandProposal.riskLevel.rawValue)
-                Requires Confirmation: \(pendingTerminalCommandProposal.requiresConfirmation ? "yes" : "no")
-                """
-            )
-        }
-
-        if let pendingLocalFileWriteProposal {
-            sections.append(
-                """
-                ## Pending File Write Confirmation
-                Action: \(pendingLocalFileWriteProposal.actionLabel)
-                Target: \(pendingLocalFileWriteProposal.targetPath)
-                Details: \(pendingLocalFileWriteProposal.detailText)
-                """
-            )
         }
 
         return sections
@@ -1287,12 +1242,16 @@ struct ResultPanelView: View {
 
     private func chatRuntimeDebugExportText() -> String {
         var lines: [String] = [
-            "## Current Runtime State",
+            "## Observable Agent Debug Trace",
+            "This section contains observable runtime events and UI state only. It is not the model's private hidden reasoning.",
             "- Chat Context ID: \(chatContextID)",
             "- Chat Context Kind: \(chatContextKind.displayName)",
+            "- Durable Session ID: \(agentRunViewModel.state.sessionID?.uuidString ?? "none")",
+            "- Durable Run ID: \(agentRunViewModel.state.activeRunID?.uuidString ?? "none")",
+            "- Durable Run Status: \(agentRunViewModel.state.activeStatus?.rawValue ?? "none")",
+            "- Durable Progress: \(agentRunViewModel.state.statusSummary)",
             "- Ask Input Draft: \(askInput.isEmpty ? "[empty]" : Self.truncatedForDebugExport(askInput, limit: 2_000))",
-            "- Pending File Write: \(pendingLocalFileWriteProposal?.detailText ?? "none")",
-            "- Pending Terminal: \(pendingTerminalCommandProposal?.command ?? "none")"
+            "- Pending Durable Approvals: \(agentRunViewModel.state.pendingApprovals.count)"
         ]
 
         if !outputStatistics.isEmpty {
@@ -1310,28 +1269,6 @@ struct ResultPanelView: View {
         }
 
         return lines.joined(separator: "\n")
-    }
-
-    private func agentKernelConversationTurnsForExport() -> [AskConversationTurn] {
-        let projected = agentKernelExportProjection.conversationTurns(from: agentKernelLedger)
-        guard !projected.isEmpty else { return askTurns }
-        return projected.enumerated().map { index, turn in
-            AskConversationTurn(
-                question: turn.question.text,
-                answer: turn.answer?.text ?? "",
-                backendLabel: askTurns.indices.contains(index)
-                    ? askTurns[index].backendLabel
-                    : (actionBackendLabel ?? askBackendLabelForNextTurn())
-            )
-        }
-    }
-
-    private func agentKernelControlEventsExportText() -> String {
-        let records = agentKernelExportProjection.controlEventRecords(from: agentKernelLedger)
-        guard !records.isEmpty else { return "" }
-        return records.map { record in
-            "- \(record.kind): \(record.summary.text)"
-        }.joined(separator: "\n")
     }
 
     private func assistantToolStateExportText() -> String {
@@ -1546,7 +1483,59 @@ struct ResultPanelView: View {
     }
 
     private var visibleLoadingActions: Set<PanelActionKind> {
-        loadingActions
+        var actions = loadingActions
+        if agentRunViewModel.state.isBusy {
+            actions.insert(.ask)
+        }
+        return actions
+    }
+
+    private var isAskRunning: Bool {
+        loadingActions.contains(.ask) || agentRunViewModel.state.isBusy
+    }
+
+    private var displayedAskTurns: [AskConversationTurn] {
+        let projected = agentRunProjectedAskTurns()
+        return projected.isEmpty ? askTurns : projected
+    }
+
+    private func agentRunProjectedAskTurns() -> [AskConversationTurn] {
+        guard !agentRunViewModel.state.messages.isEmpty else { return [] }
+
+        var turns: [AskConversationTurn] = []
+        for message in agentRunViewModel.state.messages {
+            switch message.role {
+            case .user:
+                turns.append(
+                    AskConversationTurn(
+                        question: message.text.text,
+                        answer: "",
+                        backendLabel: actionBackendLabel ?? askBackendLabelForNextTurn()
+                    )
+                )
+            case .assistant:
+                let answer = displayTextNormalizer.normalize(message.text.text)
+                if let index = turns.indices.last, turns[index].answer.isEmpty {
+                    turns[index].answer = answer
+                } else {
+                    turns.append(
+                        AskConversationTurn(
+                            question: "Continue",
+                            answer: answer,
+                            backendLabel: actionBackendLabel ?? askBackendLabelForNextTurn()
+                        )
+                    )
+                }
+            }
+        }
+
+        if let index = turns.indices.last,
+           turns[index].answer.isEmpty,
+           agentRunViewModel.state.activeStatus != .completed {
+            turns[index].runtimeProgressSummary = agentRunViewModel.state.statusSummary
+        }
+
+        return turns
     }
 
     private var hasUsableOCRText: Bool {
@@ -1560,15 +1549,15 @@ struct ResultPanelView: View {
 
     private var isBlankAssistantChat: Bool {
         selectedAction == .ask
-            && askTurns.isEmpty
+            && displayedAskTurns.isEmpty
             && !hasCaptureContext
             && recoveryState == nil
     }
 
     private var canStartNewChat: Bool {
         selectedAction == .ask
-            && !loadingActions.contains(.ask)
-            && (!askTurns.isEmpty || hasCaptureContext || recoveryState != nil)
+            && !isAskRunning
+            && (!displayedAskTurns.isEmpty || hasCaptureContext || recoveryState != nil)
     }
 
     private var preferredNotchExpandedSize: CGSize {
@@ -1603,16 +1592,14 @@ struct ResultPanelView: View {
         let chipHeight: CGFloat = assistantContextBadges.isEmpty ? 0 : 34
         let composerHeight = estimatedAskComposerHeight
         let recoveryHeight: CGFloat = recoveryState == nil ? 0 : 96
-        let writeConfirmationHeight: CGFloat = pendingLocalFileWriteProposal == nil ? 0 : 136
-        let terminalConfirmationHeight: CGFloat = pendingTerminalCommandProposal == nil ? 0 : 132
+        let approvalHeight: CGFloat = agentRunViewModel.state.pendingApprovals.isEmpty ? 0 : 136
         let transcriptHeight = estimatedAskTranscriptHeight
         let height = headerHeight
             + transcriptHeight
             + chipHeight
             + composerHeight
             + recoveryHeight
-            + writeConfirmationHeight
-            + terminalConfirmationHeight
+            + approvalHeight
             + 14
 
         return CGSize(
@@ -1622,20 +1609,30 @@ struct ResultPanelView: View {
     }
 
     private var estimatedAskComposerHeight: CGFloat {
+        AskComposerMetrics.toolbarHeight
+            + AskComposerMetrics.verticalSpacing
+            + askComposerInputHeight
+    }
+
+    private var askComposerInputHeight: CGFloat {
         let trimmed = askInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return 76 }
+        guard !trimmed.isEmpty else { return AskComposerMetrics.minimumInputHeight }
         let explicitLines = CGFloat(trimmed.filter { $0 == "\n" }.count + 1)
         let wrappedLines = ceil(CGFloat(trimmed.count) / 72)
         let lines = min(5, max(1, max(explicitLines, wrappedLines)))
-        return 66 + (lines - 1) * 16
+        return min(
+            AskComposerMetrics.maximumInputHeight,
+            AskComposerMetrics.minimumInputHeight + (lines - 1) * AskComposerMetrics.lineHeight
+        )
     }
 
     private var estimatedAskTranscriptHeight: CGFloat {
-        guard !askTurns.isEmpty else {
+        let turns = displayedAskTurns
+        guard !turns.isEmpty else {
             return hasCaptureContext ? 52 : 0
         }
 
-        let visibleTurns = askTurns.suffix(3)
+        let visibleTurns = turns.suffix(3)
         let estimated = visibleTurns.reduce(CGFloat(0)) { total, turn in
             let questionLines = max(1, ceil(CGFloat(turn.question.count) / 64))
             let answerText = turn.answer.isEmpty ? "Thinking..." : turn.answer
@@ -1993,66 +1990,59 @@ struct ResultPanelView: View {
 
     private var canSendAskQuestion: Bool {
         selectedAction == .ask
-            && !loadingActions.contains(.ask)
+            && !isAskRunning
             && !isPreparingAssistantImage
             && !askInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func sendAskQuestion() {
         let question = askInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !question.isEmpty, !loadingActions.contains(.ask) else { return }
+        guard !question.isEmpty, !isAskRunning else { return }
         askInput = ""
-        pendingLocalFileWriteProposal = nil
-        pendingTerminalCommandProposal = nil
-        pendingAgentKernelApproval = nil
         recoveryState = nil
         hiddenReasoning = nil
         outputStatistics = []
         let backendLabel = askBackendLabelForNextTurn()
         actionBackendLabel = backendLabel
-        askTurns.append(
-            AskConversationTurn(
-                question: question,
-                answer: "",
-                backendLabel: backendLabel
-            )
-        )
-        let turnIndex = askTurns.index(before: askTurns.endIndex)
-        loadingActions.insert(.ask)
         setOutputState(askOutputState(backendLabel: backendLabel), for: .ask)
         updateExpandedNotchSizeIfNeeded()
 
-        let context = agentKernelContext(userMessage: question)
-        askTask?.cancel()
-        askTask = Task {
-            let model = await makeAgentKernelModelAdapter()
-            let output = await agentKernelRuntime.runTurn(context: context, model: model)
-            await MainActor.run {
-                guard !Task.isCancelled else { return }
-                applyAgentKernelOutput(output, toTurnAt: turnIndex)
+        Task {
+            do {
+                let model = await makeAgentKernelModelAdapter()
+                let toolConfiguration = agentToolRunConfiguration(for: model)
+                try await agentRunViewModel.startRun(
+                    userMessage: question,
+                    context: agentRunViewContext(),
+                    adapter: model,
+                    mode: toolConfiguration.mode,
+                    tools: toolConfiguration.tools,
+                    toolContext: toolConfiguration.context,
+                    systemPrompt: durableAgentSystemPrompt(),
+                    maxOutputTokens: responseDetail.maxOutputTokens(for: .ask)
+                )
+                setOutputState(askOutputState(backendLabel: backendLabel), for: .ask)
+                updateExpandedNotchSizeIfNeeded()
+            } catch {
+                updateLastAskAnswer("The agent could not start: \(error)", backendLabel: backendLabel)
+                setOutputState(askOutputState(backendLabel: backendLabel), for: .ask)
+                updateExpandedNotchSizeIfNeeded()
             }
         }
     }
 
     private func cancelAskQuestion() {
-        askTask?.cancel()
-        askTask = nil
-        let reason = AgentKernelTerminalReasonV2(
-            code: "user_cancelled",
-            summary: AgentKernelBoundedTextV2("User canceled the task.")
-        )
-        agentKernelLedger.append(.taskCanceled(reason))
-        if let lastIndex = askTurns.indices.last, askTurns[lastIndex].answer.isEmpty {
-            askTurns[lastIndex].answer = "Cancelled. No changes were made."
+        if routingSettings.effectiveMode == .local {
+            Task {
+                await MLXTextServerManager.terminateCurrentProcess()
+            }
         }
-        pendingLocalFileWriteProposal = nil
-        pendingTerminalCommandProposal = nil
-        pendingAgentKernelApproval = nil
-        _ = loadingActions.remove(.ask)
-        persistAskSession()
-        setOutputState(askOutputState(), for: .ask)
-        updateExpandedNotchSizeIfNeeded()
-        focusChatInputSoon()
+        Task {
+            await agentRunViewModel.cancelRun()
+            setOutputState(askOutputState(), for: .ask)
+            updateExpandedNotchSizeIfNeeded()
+            focusChatInputSoon()
+        }
     }
 
     private func makeAgentKernelModelAdapter() async -> AgentKernelAIBackendAdapterV2 {
@@ -2075,197 +2065,127 @@ struct ResultPanelView: View {
         )
     }
 
-    private func agentKernelContext(userMessage: String? = nil) -> AgentKernelChatContextV2 {
-        AgentKernelChatContextV2(
-            ledger: agentKernelLedger,
-            userMessage: userMessage,
-            grants: localFileAccess.grants,
-            visualContext: assistantToolState.activeVisualContext,
-            allowedWorkingDirectories: agentKernelAllowedWorkingDirectories(),
-            recentWriteTargetPaths: agentKernelRecentWriteTargetPaths(),
-            maxOutputTokens: responseDetail.maxOutputTokens(for: .ask)
+    private func agentToolRunConfiguration(
+        for model: any AgentKernelModelAdapterV2
+    ) -> (mode: AgentModelGatewayMode, tools: [AgentKernelToolSchemaV2], context: AgentToolRunContext) {
+        let providerTier = AgentModelGateway.tier(for: model.capabilities)
+        let grants = agentRuntimeLocalGrants()
+        let runMode: AgentRunPermissionMode
+        if providerTier == .tierCPlainChat || grants.isEmpty {
+            runMode = .plainChat
+        } else if grants.contains(where: { $0.access == .readWrite }) {
+            runMode = .proposalOnly
+        } else {
+            runMode = .readOnly
+        }
+
+        let context = AgentToolRunContext(
+            runMode: runMode,
+            localGrants: grants,
+            grantedScopes: [],
+            deniedScopes: [.network, .processControl, .privileged]
         )
+        guard runMode != .plainChat else {
+            return (.plainChat, [], context)
+        }
+
+        let tools = AgentToolCatalog().visibleModelSchemas(
+            providerTier: providerTier,
+            runMode: runMode,
+            localGrants: grants,
+            grantedScopes: context.grantedScopes,
+            deniedScopes: context.deniedScopes
+        )
+        guard !tools.isEmpty else {
+            return (.plainChat, [], context)
+        }
+        let mode: AgentModelGatewayMode = providerTier == .tierAFullAgent
+            ? .fullAgent
+            : .constrainedStructuredText
+        return (mode, tools, context)
     }
 
-    private func agentKernelRecentWriteTargetPaths() -> [String] {
-        var paths: [String] = []
-        if let pendingLocalFileWriteProposal {
-            paths.append(pendingLocalFileWriteProposal.targetPath)
-        }
-        for result in assistantToolState.recentToolResults where result.toolName == .stageWriteProposal {
-            paths.append(contentsOf: result.sources?.map(\.path) ?? [])
-        }
-        var seen: Set<String> = []
-        return paths.filter { path in
-            guard !path.isEmpty, !seen.contains(path) else { return false }
-            seen.insert(path)
-            return true
-        }
-    }
-
-    private func agentKernelAllowedWorkingDirectories() -> [String] {
-        let paths = localFileAccess.grants.map { grant in
-            if grant.isDirectory {
-                return grant.path
-            }
-            return URL(fileURLWithPath: grant.path).deletingLastPathComponent().path
-        }
-        var seen: Set<String> = []
-        return paths.filter { path in
-            guard !path.isEmpty, !seen.contains(path) else { return false }
-            seen.insert(path)
-            return true
-        }
-    }
-
-    private func applyAgentKernelOutput(_ output: AgentKernelChatResultV2, toTurnAt turnIndex: Int?) {
-        agentKernelLedger = output.ledger
-        pendingAgentKernelApproval = output.pendingApproval
-        pendingLocalFileWriteProposal = output.pendingWriteProposal
-        pendingTerminalCommandProposal = output.pendingTerminalCommand
-        output.statePatch.applying(to: &assistantToolState)
-        actionBackendLabel = output.backendLabel
-        if let primaryChatEvent = output.primaryChatEvent,
-           let turnIndex,
-           askTurns.indices.contains(turnIndex) {
-            askTurns[turnIndex].answer = displayTextNormalizer.normalize(primaryChatEvent.summary.text)
-            askTurns[turnIndex].backendLabel = output.backendLabel
-        } else if output.pendingApproval != nil,
-                  let turnIndex,
-                  askTurns.indices.contains(turnIndex) {
-            askTurns[turnIndex].backendLabel = output.backendLabel
-        }
-        if output.terminalReason != nil {
-            showConfirmation("Task stopped")
-        }
-        _ = loadingActions.remove(.ask)
-        askTask = nil
-        persistAskSession()
-        setOutputState(askOutputState(backendLabel: output.backendLabel), for: .ask)
-        updateExpandedNotchSizeIfNeeded()
-        focusChatInputSoon()
-    }
-
-    private func confirmLocalFileWrite() {
-        guard let proposal = pendingLocalFileWriteProposal else { return }
-        guard let approval = pendingAgentKernelApproval else {
-            pendingLocalFileWriteProposal = nil
-            updateLastAskAnswer("No pending write approval was available.", backendLabel: "Local Files")
-            _ = loadingActions.remove(.ask)
-            askTask = nil
-            persistAskSession()
-            setOutputState(askOutputState(), for: .ask)
-            updateExpandedNotchSizeIfNeeded()
-            focusChatInputSoon()
-            return
-        }
-        let context = agentKernelContext()
-        pendingLocalFileWriteProposal = nil
-        pendingAgentKernelApproval = nil
-        updateLastAskAnswer("Applying \(proposal.actionLabel.lowercased())...", backendLabel: "Local Files")
-        loadingActions.insert(.ask)
-        askTask?.cancel()
-        askTask = Task {
-            let model = await makeAgentKernelModelAdapter()
-            let output = await agentKernelRuntime.resolveApproval(
-                context: context,
-                approval: approval,
-                decision: .approved,
-                model: model
+    private func agentRuntimeLocalGrants() -> [AgentLocalFileGrant] {
+        localFileAccess.grants.map { grant in
+            AgentLocalFileGrant(
+                path: grant.path,
+                isDirectory: grant.isDirectory,
+                access: grant.isDirectory ? .readWrite : .readOnly
             )
-            await MainActor.run {
-                guard !Task.isCancelled else { return }
-                applyAgentKernelOutput(output, toTurnAt: askTurns.indices.last)
-            }
         }
-        showConfirmation("File approved")
-        setOutputState(askOutputState(backendLabel: "Local Files"), for: .ask)
-        updateExpandedNotchSizeIfNeeded()
-        focusChatInputSoon()
     }
 
-    private func cancelLocalFileWrite() {
-        guard let proposal = pendingLocalFileWriteProposal else { return }
-        pendingLocalFileWriteProposal = nil
-        if let approval = pendingAgentKernelApproval {
-            agentKernelLedger.append(
-                .approvalResolved(
-                    AgentKernelApprovalResolutionV2(
-                        approvalID: approval.request.id,
-                        decision: .canceled,
-                        reason: AgentKernelBoundedTextV2("User canceled \(proposal.actionLabel.lowercased()).")
-                    )
+    private func approveAgentRunApproval(_ approval: AgentRunProjectedApproval) {
+        Task {
+            do {
+                let model = await makeAgentKernelModelAdapter()
+                let toolConfiguration = agentToolRunConfiguration(for: model)
+                try await agentRunViewModel.approveWait(
+                    approval.waitID,
+                    adapter: model,
+                    context: agentRunViewContext(),
+                    mode: toolConfiguration.mode,
+                    tools: toolConfiguration.tools,
+                    toolContext: toolConfiguration.context,
+                    systemPrompt: durableAgentSystemPrompt(),
+                    maxOutputTokens: responseDetail.maxOutputTokens(for: .ask)
                 )
-            )
-        }
-        pendingAgentKernelApproval = nil
-        _ = loadingActions.remove(.ask)
-        askTask = nil
-        updateLastAskAnswer("Cancelled. No file was changed.", backendLabel: "Local Files")
-        persistAskSession()
-        setOutputState(askOutputState(), for: .ask)
-        updateExpandedNotchSizeIfNeeded()
-        focusChatInputSoon()
-    }
-
-    private func confirmTerminalCommand() {
-        guard let proposal = pendingTerminalCommandProposal else { return }
-        guard let approval = pendingAgentKernelApproval else {
-            pendingTerminalCommandProposal = nil
-            updateLastAskAnswer("No pending terminal approval was available.", backendLabel: "Terminal")
-            persistAskSession()
-            setOutputState(askOutputState(), for: .ask)
-            return
-        }
-        pendingTerminalCommandProposal = nil
-        pendingAgentKernelApproval = nil
-        updateLastAskAnswer("Running `\(proposal.command)`...", backendLabel: "Terminal")
-        loadingActions.insert(.ask)
-        let context = agentKernelContext()
-        askTask?.cancel()
-        askTask = Task {
-            let model = await makeAgentKernelModelAdapter()
-            let output = await agentKernelRuntime.resolveApproval(
-                context: context,
-                approval: approval,
-                decision: .approved,
-                model: model
-            )
-            await MainActor.run {
-                guard !Task.isCancelled else { return }
-                applyAgentKernelOutput(output, toTurnAt: askTurns.indices.last)
+                showConfirmation("Approved")
+                setOutputState(askOutputState(), for: .ask)
+                updateExpandedNotchSizeIfNeeded()
+                focusChatInputSoon()
+            } catch {
+                updateLastAskAnswer("Approval failed: \(error)", backendLabel: "Agent")
+                setOutputState(askOutputState(), for: .ask)
             }
         }
-        updateExpandedNotchSizeIfNeeded()
-        focusChatInputSoon()
     }
 
-    private func cancelTerminalCommand() {
-        guard let proposal = pendingTerminalCommandProposal else { return }
-        pendingTerminalCommandProposal = nil
-        if let approval = pendingAgentKernelApproval {
-            agentKernelLedger.append(
-                .approvalResolved(
-                    AgentKernelApprovalResolutionV2(
-                        approvalID: approval.request.id,
-                        decision: .canceled,
-                        reason: AgentKernelBoundedTextV2("User canceled terminal command.")
-                    )
+    private func denyAgentRunApproval(_ approval: AgentRunProjectedApproval) {
+        Task {
+            do {
+                let model = await makeAgentKernelModelAdapter()
+                let toolConfiguration = agentToolRunConfiguration(for: model)
+                try await agentRunViewModel.denyWait(
+                    approval.waitID,
+                    adapter: model,
+                    context: agentRunViewContext(),
+                    mode: toolConfiguration.mode,
+                    tools: toolConfiguration.tools,
+                    toolContext: toolConfiguration.context,
+                    systemPrompt: durableAgentSystemPrompt(),
+                    maxOutputTokens: responseDetail.maxOutputTokens(for: .ask)
                 )
-            )
+                showConfirmation("Denied")
+                setOutputState(askOutputState(), for: .ask)
+                updateExpandedNotchSizeIfNeeded()
+                focusChatInputSoon()
+            } catch {
+                updateLastAskAnswer("Could not deny approval: \(error)", backendLabel: "Agent")
+                setOutputState(askOutputState(), for: .ask)
+            }
         }
-        pendingAgentKernelApproval = nil
-        updateLastAskAnswer("Cancelled. No terminal command was run.\n\n`\(proposal.command)`", backendLabel: "Terminal")
-        persistAskSession()
-        setOutputState(askOutputState(), for: .ask)
-        updateExpandedNotchSizeIfNeeded()
-        focusChatInputSoon()
+    }
+
+    private func retryInterruptedAgentRun() {
+        Task {
+            do {
+                try await agentRunViewModel.retryInterruptedRun()
+                showConfirmation("Queued")
+                setOutputState(askOutputState(), for: .ask)
+                updateExpandedNotchSizeIfNeeded()
+            } catch {
+                updateLastAskAnswer("Retry failed: \(error)", backendLabel: "Agent")
+                setOutputState(askOutputState(), for: .ask)
+            }
+        }
     }
 
     private func updateLastAskAnswer(_ answer: String, backendLabel: String) {
         if let index = askTurns.indices.last {
             askTurns[index].answer = answer
             askTurns[index].backendLabel = backendLabel
+            askTurns[index].runtimeProgressSummary = nil
         } else {
             askTurns.append(AskConversationTurn(question: "Continue", answer: answer, backendLabel: backendLabel))
         }
@@ -2273,45 +2193,38 @@ struct ResultPanelView: View {
     }
 
     private func persistAskSession() {
-        let persistedTurns = agentKernelConversationTurnsForExport()
-        guard !persistedTurns.isEmpty else { return }
-        chatHistory.upsertSession(
-            contextID: chatContextID,
-            kind: chatContextKind,
-            title: chatContextKind.displayName,
-            turns: persistedTurns.map { $0.storedTurn() },
-            toolState: assistantToolState
-        )
+        Task {
+            await agentRunViewModel.refresh()
+        }
     }
 
-    private func loadChatSession(_ session: StoredChatSession) {
-        guard loadingActions.isEmpty else { return }
+    private func loadAgentRunSession(_ session: AgentRunProjectedSession) {
+        guard loadingActions.isEmpty, !isAskRunning else { return }
         assistantImageContext = nil
         isPreparingAssistantImage = false
-        pendingLocalFileWriteProposal = nil
-        pendingTerminalCommandProposal = nil
-        assistantToolState = session.toolState ?? AssistantToolState()
-        chatContextID = session.contextID
-        chatContextKind = session.contextKind
-        askTurns = session.turns.map { AskConversationTurn(storedTurn: $0) }
-        agentKernelLedger = Self.agentKernelLedger(for: askTurns)
-        pendingAgentKernelApproval = nil
+        if let contextID = session.contextID {
+            chatContextID = contextID
+        }
+        if let contextKind = session.contextKind,
+           let kind = ChatSessionContextKind(rawValue: contextKind) {
+            chatContextKind = kind
+        }
+        askTurns = []
         selectedAction = .ask
-        setOutputState(askOutputState(backendLabel: askTurns.last?.backendLabel), for: .ask)
-        updateExpandedNotchSizeIfNeeded()
-        focusChatInputSoon()
+        Task {
+            try? await agentRunViewModel.loadSession(sessionID: session.id)
+            setOutputState(askOutputState(), for: .ask)
+            updateExpandedNotchSizeIfNeeded()
+            focusChatInputSoon()
+        }
     }
 
     private func startNewAssistantChat() {
-        guard loadingActions.isEmpty else { return }
+        guard loadingActions.isEmpty, !isAskRunning else { return }
         suppressNextNotchHoverCollapseBriefly()
         assistantImageContext = nil
         isPreparingAssistantImage = false
-        pendingLocalFileWriteProposal = nil
-        pendingTerminalCommandProposal = nil
         assistantToolState = AssistantToolState()
-        agentKernelLedger = AgentKernelSessionLedgerV2()
-        pendingAgentKernelApproval = nil
         chatContextID = Self.defaultChatContextID(
             for: CaptureResult(
                 image: nil,
@@ -2340,17 +2253,26 @@ struct ResultPanelView: View {
         )
         updateExpandedNotchSizeIfNeeded()
         isChatInputFocused = true
+        Task {
+            try? await agentRunViewModel.startNewSession(context: agentRunViewContext())
+        }
         focusChatInputSoon()
     }
 
     private func clearChatHistory() {
-        guard loadingActions.isEmpty else { return }
-        chatHistory.clearAll()
-        showConfirmation("History cleared")
+        guard loadingActions.isEmpty, !isAskRunning else { return }
+        Task {
+            try? await agentRunViewModel.clearHistory()
+            chatHistory.clearAll()
+            askTurns = []
+            setOutputState(askOutputState(), for: .ask)
+            updateExpandedNotchSizeIfNeeded()
+            showConfirmation("History cleared")
+        }
     }
 
     private func formattedAskTranscript() -> String {
-        askTurns
+        displayedAskTurns
             .enumerated()
             .map { index, turn in
                 let answer = turn.answer.isEmpty ? "Thinking..." : turn.answer
@@ -2361,19 +2283,6 @@ struct ResultPanelView: View {
                 """
             }
             .joined(separator: "\n\n")
-    }
-
-    private func cloudConversationTurns(beforeLastTurn: Bool) -> [AIBackendConversationTurn] {
-        let turns: ArraySlice<AskConversationTurn> = beforeLastTurn ? askTurns.dropLast() : askTurns[...]
-        return turns.flatMap { turn in
-            [
-                AIBackendConversationTurn(role: .user, content: turn.question),
-                AIBackendConversationTurn(
-                    role: .assistant,
-                    content: turn.answer.isEmpty ? "Thinking..." : turn.answer
-                )
-            ]
-        }
     }
 
     private func askBackendLabelForNextTurn() -> String {
@@ -2391,15 +2300,16 @@ struct ResultPanelView: View {
         reasoning: String? = nil,
         recovery: ActionRecoveryState? = nil
     ) -> PanelActionOutputState {
-        PanelActionOutputState(
-            text: askTurns.isEmpty
+        let turns = displayedAskTurns
+        return PanelActionOutputState(
+            text: turns.isEmpty
                 ? (hasCaptureContext
                     ? "Chat about this capture."
                     : "")
                 : formattedAskTranscript(),
             sourceLabel: hasCaptureContext ? "Source: \(result.detectedLanguage.displayName)" : nil,
             targetLabel: nil,
-            backendLabel: backendLabel ?? askTurns.last?.backendLabel ?? askBackendLabelForNextTurn(),
+            backendLabel: backendLabel ?? turns.last?.backendLabel ?? askBackendLabelForNextTurn(),
             statistics: [],
             reasoning: reasoning,
             recovery: recovery
@@ -2624,6 +2534,14 @@ struct ResultPanelView: View {
     static let mlxTextBackendLabel = "MLX Text"
     static let mlxVisionBackendLabel = "MLX Vision"
     static let cloudBackendLabel = "Pixel Pane Cloud"
+
+    private enum AskComposerMetrics {
+        static let toolbarHeight: CGFloat = 40
+        static let verticalSpacing: CGFloat = 8
+        static let minimumInputHeight: CGFloat = 36
+        static let maximumInputHeight: CGFloat = 108
+        static let lineHeight: CGFloat = 18
+    }
 
     private static func initialSmartDefaultOutputState(
         for action: PanelActionKind,
@@ -3110,9 +3028,9 @@ private struct OverlayPillButton: View {
                 }
             }
             .foregroundStyle(foreground)
-            .frame(width: displayStyle == .iconOnly ? 36 : nil)
+            .frame(width: buttonWidth)
             .padding(.horizontal, displayStyle == .iconOnly ? 0 : 12)
-            .frame(minHeight: 36)
+            .frame(height: 36)
             .background {
                 RoundedRectangle(cornerRadius: 13, style: .continuous)
                     .fill(fill)
@@ -3125,9 +3043,22 @@ private struct OverlayPillButton: View {
             .opacity(isEnabled ? 1 : 0.45)
         }
         .buttonStyle(.plain)
+        .frame(width: buttonWidth, height: 36)
+        .fixedSize()
         .onHover { hovered = $0 && isEnabled }
         .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
         .help(title)
+    }
+
+    private var buttonWidth: CGFloat? {
+        switch displayStyle {
+        case .iconOnly:
+            return 36
+        case .prominentIconAndTitle:
+            return 88
+        case .iconAndTitle:
+            return nil
+        }
     }
 
     private var foreground: Color {
@@ -3172,6 +3103,61 @@ private struct OverlayPillButton: View {
 }
 
 // MARK: - Text field
+
+private struct AgentRunHistoryMenuButton: View {
+    let sessions: [AgentRunProjectedSession]
+    let isDisabled: Bool
+    let onSelect: (AgentRunProjectedSession) -> Void
+    let onClearHistory: () -> Void
+
+    var body: some View {
+        Menu {
+            if sessions.isEmpty {
+                Text("No recent chats")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(sessions) { session in
+                    Button {
+                        onSelect(session)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(session.displayTitle)
+                            Text(session.updatedAt, style: .relative)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .disabled(isDisabled)
+                }
+
+                Divider()
+
+                Button(role: .destructive) {
+                    onClearHistory()
+                } label: {
+                    Label("Clear Chat History", systemImage: "trash")
+                }
+                .disabled(isDisabled)
+            }
+        } label: {
+            HStack(spacing: 0) {
+                Image(systemName: "clock")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .foregroundStyle(sessions.isEmpty ? .tertiary : .secondary)
+            .frame(width: 40)
+            .frame(height: 40)
+            .background(.black.opacity(0.24), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .stroke(.white.opacity(0.08), lineWidth: 1)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .disabled(isDisabled || sessions.isEmpty)
+        .help(sessions.isEmpty ? "No recent chats yet" : "Open a recent chat")
+    }
+}
 
 private struct ChatHistoryMenuButton: View {
     let sessions: [StoredChatSession]
@@ -3363,6 +3349,7 @@ private struct AssistantImageMenuButton: View {
 private struct OverlayTextField: View {
     let placeholder: String
     @Binding var text: String
+    let height: CGFloat
     let isFocused: FocusState<Bool>.Binding
     let onSubmit: () -> Void
 
@@ -3372,12 +3359,13 @@ private struct OverlayTextField: View {
             .font(.system(size: 12.5))
             .foregroundStyle(.primary)
             .lineLimit(1...5)
-            .frame(maxWidth: .infinity, minHeight: 20, alignment: .topLeading)
+            .frame(maxWidth: .infinity, minHeight: 20, maxHeight: max(20, height - 16), alignment: .topLeading)
             .focused(isFocused)
             .onSubmit(onSubmit)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .frame(maxWidth: .infinity, minHeight: 36, alignment: .topLeading)
+            .frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .topLeading)
+            .fixedSize(horizontal: false, vertical: true)
             .background {
                 RoundedRectangle(cornerRadius: 13, style: .continuous)
                     .fill(Color.white.opacity(0.05))
@@ -3491,6 +3479,168 @@ private struct TypingStatusView: View {
     }
 }
 
+private struct AgentRunApprovalCard: View {
+    let approval: AgentRunProjectedApproval
+    let onApprove: () -> Void
+    let onDeny: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.orange)
+
+                Text(approval.title)
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .foregroundStyle(.primary)
+
+                Spacer(minLength: 0)
+
+                if let risk = approval.risk {
+                    Text(risk)
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(.black.opacity(0.16), in: Capsule())
+                }
+            }
+
+            Text(approval.prompt)
+                .font(.system(size: 12, weight: .regular))
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 3) {
+                if let secondaryText = approval.secondaryText {
+                    Text(displayName(for: secondaryText))
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                Text(approval.primaryText)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+                    .textSelection(.enabled)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 7)
+            .background(.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            HStack(spacing: 8) {
+                OverlayPillButton(
+                    title: approval.approveTitle,
+                    systemImage: approveIcon,
+                    style: .accent,
+                    action: onApprove
+                )
+
+                OverlayPillButton(
+                    title: approval.denyTitle,
+                    systemImage: "xmark",
+                    style: .secondary,
+                    action: onDeny
+                )
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(.orange.opacity(0.20), lineWidth: 1)
+        }
+    }
+
+    private var systemImage: String {
+        switch approval.kind {
+        case .fileWrite:
+            return "square.and.pencil"
+        case .command:
+            return "terminal"
+        case .processStart:
+            return "play.rectangle"
+        case .processStop:
+            return "stop.circle"
+        case .approval:
+            return "checkmark.shield"
+        }
+    }
+
+    private var approveIcon: String {
+        switch approval.kind {
+        case .command, .processStart:
+            return "play.fill"
+        case .processStop:
+            return "stop.fill"
+        case .fileWrite, .approval:
+            return "checkmark"
+        }
+    }
+
+    private func displayName(for value: String) -> String {
+        if value.hasPrefix("/") {
+            return URL(fileURLWithPath: value).lastPathComponent
+        }
+        return value
+    }
+}
+
+private struct AgentRunRecoveryControlView: View {
+    let summary: String
+    let onRetry: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.arrow.triangle.2.circlepath")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.orange)
+
+                Text("Run interrupted")
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .foregroundStyle(.primary)
+
+                Spacer(minLength: 0)
+            }
+
+            Text(summary)
+                .font(.system(size: 12, weight: .regular))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                OverlayPillButton(
+                    title: "Retry",
+                    systemImage: "arrow.clockwise",
+                    style: .accent,
+                    action: onRetry
+                )
+
+                OverlayPillButton(
+                    title: "Cancel",
+                    systemImage: "xmark",
+                    style: .secondary,
+                    action: onCancel
+                )
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(.orange.opacity(0.20), lineWidth: 1)
+        }
+    }
+}
+
 // MARK: - Chat transcript
 
 private struct AskTranscriptView: View {
@@ -3553,6 +3703,7 @@ private struct AskTranscriptView: View {
 }
 
 private struct AssistantThinkingIndicator: View {
+    let summary: String?
     @State private var phase = false
     private let accent = Color(red: 0.72, green: 0.82, blue: 1.0)
 
@@ -3594,9 +3745,11 @@ private struct AssistantThinkingIndicator: View {
             }
             .frame(width: 23, height: 18)
 
-            Text("Thinking")
+            Text(summary?.isEmpty == false ? summary! : "Thinking")
                 .font(.system(size: 13, weight: .semibold, design: .rounded))
                 .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.vertical, 2)
         .onAppear {
@@ -3797,7 +3950,7 @@ private struct AskTurnView: View {
                 metadataLine
 
                 if turn.answer.isEmpty {
-                    AssistantThinkingIndicator()
+                    AssistantThinkingIndicator(summary: turn.runtimeProgressSummary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .accessibilityLabel("Thinking")
                 } else if let fileWriteDetail = FileWriteContinuationBanner.parse(from: turn.answer) {
@@ -4271,17 +4424,20 @@ private struct AskConversationTurn: Equatable {
     let question: String
     var answer: String
     var backendLabel: String
+    var runtimeProgressSummary: String?
     var statistics: [AIModelOutputStatistic] = []
 
     init(
         question: String,
         answer: String,
         backendLabel: String,
+        runtimeProgressSummary: String? = nil,
         statistics: [AIModelOutputStatistic] = []
     ) {
         self.question = question
         self.answer = answer
         self.backendLabel = backendLabel
+        self.runtimeProgressSummary = runtimeProgressSummary
         self.statistics = statistics
     }
 
@@ -4289,6 +4445,7 @@ private struct AskConversationTurn: Equatable {
         question = storedTurn.question
         answer = storedTurn.answer
         backendLabel = storedTurn.backendLabel
+        runtimeProgressSummary = nil
         statistics = []
     }
 

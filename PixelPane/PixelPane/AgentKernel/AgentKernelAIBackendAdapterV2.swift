@@ -88,7 +88,7 @@ struct AgentKernelAIBackendAdapterV2: AgentKernelModelAdapterV2 {
                                 continuation.yield(.snapshot(text))
                             }
                         case .output(let output):
-                            finalText = output.finalText
+                            finalText = shouldUseProtocol ? (output.rawText ?? output.finalText) : output.finalText
                         case .metadata:
                             continue
                         case .completed:
@@ -162,6 +162,7 @@ struct AgentKernelAIBackendAdapterV2: AgentKernelModelAdapterV2 {
         )
         var latestSnapshot = ""
         var finalOutput: String?
+        let shouldUseProtocol = !request.tools.isEmpty || request.responseFormat == .textProtocol
         for try await event in backend.streamResponse(for: backendRequest) {
             try Task.checkCancellation()
             switch event {
@@ -170,7 +171,7 @@ struct AgentKernelAIBackendAdapterV2: AgentKernelModelAdapterV2 {
             case .snapshot(let text):
                 latestSnapshot = text
             case .output(let output):
-                finalOutput = output.finalText
+                finalOutput = shouldUseProtocol ? (output.rawText ?? output.finalText) : output.finalText
             case .completed:
                 break
             }

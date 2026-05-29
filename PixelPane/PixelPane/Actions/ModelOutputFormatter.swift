@@ -15,7 +15,8 @@ struct ModelOutputFormatter: Sendable {
         return AIModelOutput(
             finalText: finalText.isEmpty ? cleanVisibleText(rawText) : finalText,
             reasoningText: reasoningText.isEmpty ? nil : reasoningText,
-            statistics: statisticsExtraction.statistics
+            statistics: statisticsExtraction.statistics,
+            rawText: rawText
         )
     }
 

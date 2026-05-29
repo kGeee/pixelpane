@@ -5,7 +5,8 @@ This repo is built with long-running LLM assistance. Before doing any work, read
 1. `workflow/README.md`
 2. `workflow/status.md`
 3. `workflow/backlog.md`
-4. `workflow/references.md` if the task touches macOS APIs, backend, updates, payments, or other researched specifics
+4. `workflow/decisions.md`
+5. `workflow/references.md` if the task touches macOS APIs, backend, updates, payments, or researched agent architecture specifics
 
 ## Project Layout
 
@@ -19,7 +20,8 @@ This repo is built with long-running LLM assistance. Before doing any work, read
 - Keep tracking updates inside `workflow/`.
 - Work one story ID at a time.
 - Inspect relevant files before editing.
-- Do not broaden scope into backend, auth, monetization, PDF import, or expansion features unless the story asks for it.
+- Do not broaden scope into backend, auth, monetization, PDF import, browser automation, or expansion features unless the story asks for it.
+- Treat AGENTV2 code as historical implementation/audit input. The active path is the `AGENTR` durable runtime.
 - Record product or architecture decisions in `workflow/decisions.md`.
 - Update `workflow/status.md` before finishing meaningful work.
 - Update the story status in `workflow/backlog.md` before finishing meaningful work.
@@ -34,9 +36,9 @@ This repo is built with long-running LLM assistance. Before doing any work, read
 ## Build Command
 
 ```bash
-xcodebuild -project PixelPane/PixelPane.xcodeproj -scheme PixelPane -configuration Debug build
+PixelPane/Scripts/verify-debug-build.sh
 ```
 
 ## Current Priority
 
-Follow `workflow/status.md`. The current recommended story is listed under `Next Best Story`.
+Follow `workflow/status.md`. The current recommended story is listed under `Current Recommended Story`.
