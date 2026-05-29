@@ -112,13 +112,6 @@ struct AgentKernelModelAdapterCapabilitiesV2: Codable, Equatable, Sendable {
         self.unavailableReason = unavailableReason
     }
 
-    nonisolated var legacyCapabilities: AgentKernelModelCapabilitiesV2 {
-        AgentKernelModelCapabilitiesV2(
-            supportsNativeToolCalling: toolCallingMode == .native,
-            supportsStreaming: streamingMode != .unsupported,
-            contextWindowTokens: limits.contextWindowTokens
-        )
-    }
 }
 
 struct AgentKernelModelAttachmentV2: Codable, Equatable, Identifiable, Sendable {
@@ -170,13 +163,6 @@ struct AgentKernelModelAdapterRequestV2: Codable, Equatable, Identifiable, Senda
         self.metadata = metadata
     }
 
-    nonisolated var legacyRequest: AgentKernelModelRequestV2 {
-        AgentKernelModelRequestV2(
-            messages: messages,
-            tools: tools,
-            maxOutputTokens: requestedMaxOutputTokens
-        )
-    }
 }
 
 enum AgentKernelModelAdapterEventV2: Codable, Equatable, Sendable {

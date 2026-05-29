@@ -131,8 +131,9 @@ Final manual QA:
 - Confirm the app has no Dock icon and appears in the menu bar/notch flow.
 - Confirm Screen Recording permission recovery works from the fresh install.
 - Confirm hover-open notch chat focuses the composer.
-- Confirm chat routes through Agent Kernel V2.
-- Confirm selected-region capture and OCR can seed Agent Kernel V2 context without persisting image pixels.
+- Confirm chat starts or resumes an assistant run through the current runtime path.
+- Confirm selected-region capture and OCR can seed assistant context without persisting image pixels.
+- Confirm durable agent runs, pending waits, and trace export work if the build includes `AGENTR`.
 - Confirm Local Mode is default and Cloud Mode is explicit opt-in.
 - Confirm granted file/folder context is unavailable until the user grants it.
 - Confirm file writes are staged for approval and risky terminal/process operations require approval.

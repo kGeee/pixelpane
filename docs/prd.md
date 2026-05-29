@@ -1,18 +1,18 @@
 # Product Requirements Document: Pixel Pane
 
-Last updated: 2026-05-28
+Last updated: 2026-05-29
 
 ## Overview
 
-Pixel Pane is a local-first, notch-native assistant shell for macOS. Assistant execution now routes through AGENTV2, an app-owned model-agnostic runtime, while preserving the native shell: notch chat, capture/OCR, settings, local file grants, chat history shell, routing settings, and model backend plumbing.
+Pixel Pane is a local-first, notch-native assistant shell for macOS. The app preserves the native shell: notch chat, capture/OCR, settings, local file grants, history shell, routing settings, and model backend plumbing. Assistant execution is being rebuilt around the `AGENTR` durable runtime.
 
 ## Goals
 
 1. Preserve a fast Mac-native notch chat shell.
 2. Keep Local Mode as the default and Cloud Mode explicit.
 3. Use selected screen regions, OCR, images, files, folders, and terminal/process observations only through explicit app-owned context boundaries.
-4. Build AGENTV2 as a deterministic runtime where product policy lives in Swift, not internal prompts.
-5. Make approvals, tool execution, evidence, receipts, cancellation, and failure states clear and testable.
+4. Build `AGENTR` so product policy, permissions, side effects, state, and recovery live in Swift/runtime code, not hidden prompt behavior.
+5. Make approvals, tool execution, evidence, receipts, cancellation, recovery, and failure states clear and testable.
 
 ## Non-Goals For Current Alpha
 
@@ -31,37 +31,37 @@ Pixel Pane is a local-first, notch-native assistant shell for macOS. Assistant e
 | Students and self-learners | Understand screenshots, notes, dense passages, and local study material |
 | Privacy-sensitive professionals | Use local context and local models by default, opt into cloud only when wanted |
 
-## Current Shell Requirements
+## Shell Requirements
 
 | ID | Requirement |
 |---|---|
 | PR-01 | The notch chat is the primary product surface. |
-| PR-02 | Chat opens and routes messages through Agent Kernel V2. |
-| PR-03 | Capture/OCR/image context remains available as shell context. |
+| PR-02 | Chat starts assistant runs through the durable runtime once `AGENTR` is wired. |
+| PR-03 | Capture/OCR/image context remains available as explicit shell context. |
 | PR-04 | Screenshots and attached image pixels are transient unless a future explicit export feature says otherwise. |
 | PR-05 | Local Mode is default; Cloud Mode is explicit opt-in. |
 | PR-06 | User-granted files/folders remain the only local file access boundary. |
 | PR-07 | Settings remain compact around assistant routing, local models, permissions/files, history, updates, and privacy. |
 | PR-08 | Saved chats do not persist screenshot/image pixels by default. |
 
-## AGENTV2 Target Requirements
+## Runtime Requirements
 
 | ID | Requirement |
 |---|---|
-| AV2-01 | The runtime owns task state, event flow, approvals, cancellation, loop budgets, failures, and completion. |
-| AV2-02 | Chat transcript contains user messages and assistant messages only; control-plane events stay separate. |
-| AV2-03 | Models may propose final text or typed tool calls; Swift validates and executes. |
-| AV2-04 | File, visual context, finite command, long-running process, and local server lifecycle capabilities are typed tools. |
-| AV2-05 | File writes are staged proposals inside granted locations and require visible confirmation. |
-| AV2-06 | Risky, destructive, process-control, install, network, privileged, or system-affecting commands require confirmation or are blocked. |
-| AV2-07 | Retrieved file, OCR, image-derived, terminal, and tool-output text is treated as untrusted data. |
-| AV2-08 | Final answers never claim tool/source usage without explicit observations. |
-| AV2-09 | Fixture models prove malformed output, repeated calls, timeouts, cancellation, approvals, and completion before real providers are wired. |
+| AR-01 | Durable sessions, runs, steps, events, waits, evidence, artifacts, side effects, and trace records are the source of truth. |
+| AR-02 | Visible chat history is a projection; control-plane events do not become user/assistant transcript turns. |
+| AR-03 | Providers are capability-tiered: full agent, constrained structured text, or plain chat/synthesis. |
+| AR-04 | Models may propose tool calls or side-effect drafts; Swift validates, gates, executes, records, and recovers. |
+| AR-05 | File writes, risky commands, installs, network commands, privileged commands, and process control require app-owned approval unless a narrow deterministic allow rule applies. |
+| AR-06 | Retrieved file, OCR, image-derived, terminal, and tool-output text is treated as untrusted data. |
+| AR-07 | Local-state answers are backed by evidence packets or artifact references. |
+| AR-08 | Final answers never claim source/tool usage without recorded evidence. |
+| AR-09 | Fixture tests prove malformed output, repeated calls, timeouts, cancellation, approvals, reload recovery, evidence support, and completion before real-provider confidence. |
 
 ## Success Metrics
 
-- Useful completed assistant tasks per weekly active user after AGENTV2 integration.
-- Low rate of repeated no-op loops or unsupported local-model failures.
+- Useful completed assistant tasks per weekly active user after `AGENTR` integration.
+- Low rate of repeated no-op loops, indefinite thinking, or unsupported local-model failures.
 - Confirmation clarity: users can understand target, risk, and result of side effects.
 - Source trust: users can tell what context was used for an answer.
 - Local-first adoption: Local Mode remains usable without cloud by default.

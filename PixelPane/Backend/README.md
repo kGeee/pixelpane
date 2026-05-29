@@ -2,6 +2,8 @@
 
 Cloudflare Workers proxy for Pixel Pane Cloud Mode. The Worker implements the `/v1` contract in `docs/backend-api.md`, keeps the Anthropic API key server-side, requires a Pixel Pane app token, normalizes Anthropic streaming into Pixel Pane SSE events, and uses KV for free-tier daily quota.
 
+The Worker is a model route only. The macOS app owns local permissions, durable agent runs, tool execution, approvals, evidence, side effects, trace state, and local/cloud routing decisions.
+
 ## Local Commands
 
 ```bash
@@ -30,6 +32,6 @@ npx wrangler secret put DEV_APP_TOKEN
 
 ## Privacy Rules
 
-- Do not log OCR text, screenshots, prompts, questions, or model output.
+- Do not log OCR text, screenshots, prompts, questions, filenames, file contents, or model output.
 - `X-PixelPane-Request-ID` is safe to log because the app generates it as a random UUID per action attempt.
 - Provider keys stay in Worker secrets only; the macOS app never stores them.

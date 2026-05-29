@@ -1,13 +1,56 @@
 import Foundation
 
-enum AgentKernelRoleV2: String, Codable, Equatable, Sendable {
+nonisolated struct AgentKernelBoundedTextV2: Codable, Equatable, Sendable {
+    nonisolated static let defaultLimit = 12_000
+
+    let text: String
+    let characterLimit: Int
+    let isTruncated: Bool
+
+    nonisolated init(_ text: String, characterLimit: Int = Self.defaultLimit) {
+        let limit = max(0, characterLimit)
+        if text.count > limit {
+            self.text = String(text.prefix(limit))
+            self.isTruncated = true
+        } else {
+            self.text = text
+            self.isTruncated = false
+        }
+        self.characterLimit = limit
+    }
+}
+
+nonisolated enum AgentKernelMetadataValueV2: Codable, Equatable, Sendable {
+    case string(String)
+    case int(Int)
+    case double(Double)
+    case bool(Bool)
+}
+
+nonisolated struct AgentKernelTerminalReasonV2: Error, Codable, Equatable, Sendable {
+    let code: String
+    let summary: AgentKernelBoundedTextV2
+    let metadata: [String: AgentKernelMetadataValueV2]
+
+    nonisolated init(
+        code: String,
+        summary: AgentKernelBoundedTextV2,
+        metadata: [String: AgentKernelMetadataValueV2] = [:]
+    ) {
+        self.code = code
+        self.summary = summary
+        self.metadata = metadata
+    }
+}
+
+nonisolated enum AgentKernelRoleV2: String, Codable, Equatable, Sendable {
     case system
     case user
     case assistant
     case observation
 }
 
-struct AgentKernelMessageV2: Codable, Equatable, Identifiable, Sendable {
+nonisolated struct AgentKernelMessageV2: Codable, Equatable, Identifiable, Sendable {
     let id: UUID
     let role: AgentKernelRoleV2
     let content: String
@@ -19,7 +62,34 @@ struct AgentKernelMessageV2: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
-struct AgentKernelToolSchemaV2: Codable, Equatable, Identifiable, Sendable {
+nonisolated enum AgentKernelToolArgumentTypeV2: String, Codable, Equatable, Sendable {
+    case string
+    case integer
+    case number
+    case boolean
+    case jsonString
+}
+
+nonisolated struct AgentKernelToolArgumentSchemaV2: Codable, Equatable, Sendable {
+    let name: String
+    let type: AgentKernelToolArgumentTypeV2
+    let isRequired: Bool
+    let summary: String
+
+    nonisolated init(
+        name: String,
+        type: AgentKernelToolArgumentTypeV2,
+        isRequired: Bool = true,
+        summary: String
+    ) {
+        self.name = name
+        self.type = type
+        self.isRequired = isRequired
+        self.summary = summary
+    }
+}
+
+nonisolated struct AgentKernelToolSchemaV2: Codable, Equatable, Identifiable, Sendable {
     let id: String
     let name: String
     let summary: String
@@ -70,7 +140,7 @@ struct AgentKernelToolSchemaV2: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
-struct AgentKernelToolCallV2: Codable, Equatable, Identifiable, Sendable {
+nonisolated struct AgentKernelToolCallV2: Codable, Equatable, Identifiable, Sendable {
     let id: UUID
     let name: String
     let arguments: [String: String]
@@ -89,49 +159,10 @@ struct AgentKernelToolCallV2: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
-struct AgentKernelModelCapabilitiesV2: Codable, Equatable, Sendable {
-    let supportsNativeToolCalling: Bool
-    let supportsStreaming: Bool
-    let contextWindowTokens: Int?
-
-    nonisolated init(
-        supportsNativeToolCalling: Bool,
-        supportsStreaming: Bool,
-        contextWindowTokens: Int? = nil
-    ) {
-        self.supportsNativeToolCalling = supportsNativeToolCalling
-        self.supportsStreaming = supportsStreaming
-        self.contextWindowTokens = contextWindowTokens
-    }
-}
-
-struct AgentKernelModelRequestV2: Codable, Equatable, Sendable {
-    let messages: [AgentKernelMessageV2]
-    let tools: [AgentKernelToolSchemaV2]
-    let maxOutputTokens: Int
-
-    nonisolated init(
-        messages: [AgentKernelMessageV2],
-        tools: [AgentKernelToolSchemaV2] = [],
-        maxOutputTokens: Int = 1_024
-    ) {
-        self.messages = messages
-        self.tools = tools
-        self.maxOutputTokens = maxOutputTokens
-    }
-}
-
-enum AgentKernelModelEventV2: Codable, Equatable, Sendable {
+nonisolated enum AgentKernelModelEventV2: Codable, Equatable, Sendable {
     case finalAnswer(String)
     case toolCall(AgentKernelToolCallV2)
     case malformedOutput(String)
     case emptyOutput
     case timedOut
-}
-
-protocol AgentKernelModelClientV2: Sendable {
-    nonisolated var id: String { get }
-    nonisolated var capabilities: AgentKernelModelCapabilitiesV2 { get }
-
-    nonisolated func events(for request: AgentKernelModelRequestV2) async -> [AgentKernelModelEventV2]
 }

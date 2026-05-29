@@ -6,7 +6,7 @@ Status: accepted for current Cloud Mode implementation.
 
 This contract defines the Pixel Pane Cloud Mode proxy. Local Mode remains the default. The macOS app may call this proxy only when Cloud Mode is enabled and the user has granted any required image consent.
 
-The future AGENTV2 runtime stays app-owned. The backend is a model route, not the authority for local permissions, file access, terminal execution, write approval, or source tracking.
+The `AGENTR` runtime stays app-owned. The backend is a model route, not the authority for local permissions, file access, terminal execution, write approval, durable run state, evidence, side effects, or source tracking.
 
 ## Hosting And Ownership
 
@@ -175,7 +175,7 @@ All endpoints accept this envelope. Fields that do not apply to an action are om
 - `client_context` is metadata only. It must not include OCR text, prompt text, result text, filenames, or window/app names captured from the user's screen.
 - `limits.max_output_tokens` is optional. The server clamps it to the plan and action maximum. Client response style should guide verbosity, not deliberately truncate a response before completion.
 
-Current limitation: the deployed schema is still capture/action shaped plus a plain `/chat` route. Agent tool observations are primarily handled locally today. If Cloud Mode becomes a full assistant planner/synthesizer route, add a versioned `/assistant` endpoint instead of overloading this contract silently.
+Current limitation: the deployed schema is still capture/action shaped plus a plain `/chat` route. Agent tools, approvals, evidence, and durable run state are handled locally. If Cloud Mode becomes a full assistant planner/synthesizer route, add a versioned `/assistant` endpoint instead of overloading this contract silently.
 
 ## Action-Specific Prompt Inputs
 
