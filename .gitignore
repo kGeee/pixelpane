@@ -23,6 +23,9 @@ xcuserdata/
 !.env.example
 .claude/
 .codex/
+AGENTS.md
+docs/
+workflow/
 
 # Node / Cloudflare Workers
 node_modules/
