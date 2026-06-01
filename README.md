@@ -2,15 +2,12 @@
 
 Pixel Pane is a local-first, notch-native assistant shell for macOS. It keeps capture/OCR, explicit file grants, local/cloud routing, and confirmation-based side effects inside the native app.
 
-Current engineering state: the unreliable pre-rearchitecture agent path has been replaced by the `AGENTR` durable runtime described in `docs/architecture.md` and `workflow/agent-architecture-revision.md`.
+Current engineering state: the app runs through the `AGENTR` durable runtime. Local agent instructions, workflow notes, and architecture docs live only in this checkout and are intentionally ignored by git.
 
 ## Start Here
 
-- Agent workflow: `workflow/README.md`
-- Current status: `workflow/status.md`
-- Active backlog: `workflow/backlog.md`
-- Product architecture: `docs/architecture.md`
-- Backend contract: `docs/backend-api.md`
+- App source: `PixelPane/`
+- Local-only agent context: `AGENTS.md`, `docs/`, `workflow/`, `.claude/`
 
 ## Build
 
