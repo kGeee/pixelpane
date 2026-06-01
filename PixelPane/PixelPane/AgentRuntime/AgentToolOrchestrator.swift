@@ -1168,16 +1168,6 @@ actor AgentLocalToolExecutor {
         providerTier: AgentModelCapabilityTier,
         context: AgentToolRunContext
     ) async throws -> AgentToolExecutionResult {
-        if call.name == "run_finite_command",
-           let deterministic = try await deterministicCommandResult(
-                call: call,
-                runID: runID,
-                stepID: stepID,
-                context: context
-           ) {
-            return deterministic
-        }
-
         let decision = policy.decision(
             for: AgentPermissionRequest(
                 runMode: context.runMode,
@@ -1804,7 +1794,7 @@ actor AgentLocalToolExecutor {
         _ = try await sideEffects.resolveApproval(
             sideEffectID: stage.sideEffect.sideEffectID,
             decision: .approved,
-            summary: AgentRunText("Allowed by deterministic command policy.")
+            summary: AgentRunText("Allowed by command policy.")
         )
         let completed = try await sideEffects.executeApproved(sideEffectID: stage.sideEffect.sideEffectID)
         return try await sideEffectExecutionResult(
@@ -1812,238 +1802,6 @@ actor AgentLocalToolExecutor {
             stepID: stepID,
             fallbackSummary: AgentRunText("Allowed command executed.")
         )
-    }
-
-    private func deterministicCommandResult(
-        call: AgentKernelToolCallV2,
-        runID: UUID,
-        stepID: UUID?,
-        context: AgentToolRunContext
-    ) async throws -> AgentToolExecutionResult? {
-        let command = call.arguments["command"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let normalized = command
-            .lowercased()
-            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalized.isEmpty else { return nil }
-
-        if normalized == "date" || normalized.hasPrefix("date ") {
-            let temporal = AgentTemporalContext()
-            _ = try await evidenceRecorder.recordTemporalContext(runID: runID, stepID: stepID, context: temporal)
-            return try await deterministicCommandOutputResult(
-                command: command,
-                workingDirectory: "app-runtime",
-                stdout: "\(temporal.weekday) \(temporal.currentDate) \(temporal.localTime) \(temporal.timeZoneIdentifier) \(temporal.utcOffset)\n",
-                stderr: "",
-                runID: runID,
-                stepID: stepID
-            )
-        }
-
-        if isTopProcessSnapshotCommand(normalized),
-           let output = try await topProcessSnapshot(command: command) {
-            return try await deterministicCommandOutputResult(
-                command: command,
-                workingDirectory: "system-process-snapshot",
-                stdout: output,
-                stderr: "",
-                runID: runID,
-                stepID: stepID
-            )
-        }
-
-        if let byteCount = deterministicByteCount(command: command, context: context) {
-            switch byteCount {
-            case .success(let value):
-                return try await deterministicCommandOutputResult(
-                    command: command,
-                    workingDirectory: value.workingDirectory,
-                    stdout: "\(value.byteCount) \(value.path)\n",
-                    stderr: "",
-                    runID: runID,
-                    stepID: stepID
-                )
-            case .failure(let message):
-                return failedResult(call.name, message)
-            }
-        }
-
-        return nil
-    }
-
-    private enum DeterministicByteCountResult {
-        struct Value {
-            let path: String
-            let workingDirectory: String
-            let byteCount: Int
-        }
-        case success(Value)
-        case failure(String)
-    }
-
-    private func deterministicByteCount(
-        command: String,
-        context: AgentToolRunContext
-    ) -> DeterministicByteCountResult? {
-        guard let regex = try? NSRegularExpression(pattern: #"^\s*wc\s+-c\s+(.+?)\s*$"#, options: [.caseInsensitive]) else {
-            return nil
-        }
-        let range = NSRange(command.startIndex..<command.endIndex, in: command)
-        guard let match = regex.firstMatch(in: command, range: range),
-              let targetRange = Range(match.range(at: 1), in: command) else {
-            return nil
-        }
-        let rawPath = String(command[targetRange])
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-        let preferredDirectory = callPreferredWorkingDirectory(command: command, context: context)
-        let resolution = pathResolver.resolve(
-            rawPath,
-            grants: context.localGrants,
-            access: .read,
-            target: .existingFile,
-            preferredDirectoryPath: preferredDirectory
-        )
-        guard let resolved = resolution.resolution else {
-            return .failure(resolution.failure?.summary.text ?? "The wc -c target is outside granted local file access.")
-        }
-        let values = try? resolved.url.resourceValues(forKeys: [.fileSizeKey])
-        return .success(
-            DeterministicByteCountResult.Value(
-                path: resolved.path,
-                workingDirectory: preferredDirectory ?? resolved.url.deletingLastPathComponent().path,
-                byteCount: values?.fileSize ?? 0
-            )
-        )
-    }
-
-    private func callPreferredWorkingDirectory(command: String, context: AgentToolRunContext) -> String? {
-        _ = command
-        return context.localGrants.first(where: { $0.isDirectory })?.path
-    }
-
-    private func deterministicCommandOutputResult(
-        command: String,
-        workingDirectory: String,
-        stdout: String,
-        stderr: String,
-        runID: UUID,
-        stepID: UUID?
-    ) async throws -> AgentToolExecutionResult {
-        let output = AgentCommandExecutionOutput(
-            command: command,
-            workingDirectory: workingDirectory,
-            exitCode: 0,
-            stdout: AgentRunText(stdout),
-            stderr: AgentRunText(stderr),
-            durationSeconds: 0,
-            didTimeOut: false
-        )
-        let evidence = try await evidenceRecorder.recordCommandOutput(
-            runID: runID,
-            stepID: stepID,
-            output: output,
-            claimTags: ["deterministic-observation"]
-        )
-        let observation = sideEffectObservation(
-            AgentRunSideEffectRecord(
-                sessionID: evidence.sessionID,
-                runID: runID,
-                kind: .command,
-                status: .completed
-            ),
-            output: output,
-            errorText: nil
-        )
-        return AgentToolExecutionResult(
-            status: .succeeded,
-            toolName: "run_finite_command",
-            summary: output.summary,
-            observation: observation,
-            evidenceIDs: [evidence.evidenceID],
-            artifactIDs: evidence.artifactID.map { [$0] } ?? []
-        )
-    }
-
-    private nonisolated func isTopProcessSnapshotCommand(_ normalized: String) -> Bool {
-        normalized.contains("ps aux")
-            || normalized.contains("ps -axo")
-            || normalized.contains("ps axo")
-    }
-
-    private func topProcessSnapshot(command: String) async throws -> String? {
-        let rowLimit = processSnapshotRowLimit(from: command)
-        return await Task.detached(priority: .utility) {
-            Self.runTopProcessSnapshotBlocking(rowLimit: rowLimit)
-        }.value
-    }
-
-    private nonisolated static func runTopProcessSnapshotBlocking(rowLimit: Int) -> String {
-        let process = Process()
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-
-        process.executableURL = URL(fileURLWithPath: "/bin/ps")
-        process.arguments = ["-axo", "pid,pcpu,pmem,comm", "-r"]
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        do {
-            try process.run()
-        } catch {
-            return fallbackProcessSnapshot()
-        }
-        let finished = DispatchSemaphore(value: 0)
-        DispatchQueue.global(qos: .utility).async {
-            process.waitUntilExit()
-            finished.signal()
-        }
-        let didTimeOut = finished.wait(timeout: .now() + .seconds(2)) == .timedOut
-        if didTimeOut {
-            process.terminate()
-            _ = finished.wait(timeout: .now() + .milliseconds(500))
-        }
-        let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        guard !didTimeOut,
-              process.terminationStatus == 0,
-              let text = String(data: data, encoding: .utf8),
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return fallbackProcessSnapshot()
-        }
-        return limitedProcessSnapshot(text, rowLimit: rowLimit)
-    }
-
-    private nonisolated func processSnapshotRowLimit(from command: String) -> Int {
-        guard let regex = try? NSRegularExpression(pattern: #"\bhead\s+-(\d{1,2})\b"#, options: [.caseInsensitive]) else {
-            return 8
-        }
-        let range = NSRange(command.startIndex..<command.endIndex, in: command)
-        guard let match = regex.firstMatch(in: command, range: range),
-              let valueRange = Range(match.range(at: 1), in: command),
-              let lineLimit = Int(command[valueRange]) else {
-            return 8
-        }
-        return min(max(lineLimit - 1, 1), 20)
-    }
-
-    private nonisolated static func limitedProcessSnapshot(_ text: String, rowLimit: Int) -> String {
-        let lines = text
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map(String.init)
-            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        guard let header = lines.first else {
-            return text
-        }
-        let rows = lines.dropFirst().prefix(rowLimit)
-        return ([header] + Array(rows)).joined(separator: "\n") + "\n"
-    }
-
-    private nonisolated static func fallbackProcessSnapshot() -> String {
-        let process = ProcessInfo.processInfo
-        return """
-        PID %CPU %MEM COMM
-        \(process.processIdentifier) 0.0 0.0 \(process.processName)
-        """
     }
 
     private func commandDraft(
@@ -2444,14 +2202,6 @@ actor AgentToolOrchestrator {
         if !pendingPreflightWaits.isEmpty {
             return
         }
-        if let answer = deterministicTemporalAnswer(profile: profile, startedAt: startedAt) {
-            try await acceptFinalAnswer(answer, runID: runID, profile: profile)
-            return
-        }
-        if let answer = await deterministicProcessSnapshotAnswer(runID: runID, profile: profile) {
-            try await acceptFinalAnswer(answer, runID: runID, profile: profile)
-            return
-        }
 
         for iteration in 1...maxIterations {
             try Task.checkCancellation()
@@ -2701,54 +2451,6 @@ actor AgentToolOrchestrator {
         return fallback.isEmpty ? result.summary.text : fallback + "\n"
     }
 
-    private nonisolated func deterministicTemporalAnswer(
-        profile: AgentRunTaskProfile,
-        startedAt: Date
-    ) -> String? {
-        guard let dayOffset = profile.taskFrame.temporalDayOffset else {
-            return nil
-        }
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = .current
-        guard let targetDate = calendar.date(byAdding: .day, value: dayOffset, to: startedAt) else {
-            return nil
-        }
-        let formatter = DateFormatter()
-        formatter.calendar = calendar
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = calendar.timeZone
-        formatter.dateFormat = "yyyy-MM-dd"
-        let date = formatter.string(from: targetDate)
-        if dayOffset == 0 {
-            return "Today is \(date)."
-        }
-        return "\(abs(dayOffset)) day\(abs(dayOffset) == 1 ? "" : "s") \(dayOffset >= 0 ? "from" : "before") today is \(date)."
-    }
-
-    private func deterministicProcessSnapshotAnswer(
-        runID: UUID,
-        profile: AgentRunTaskProfile
-    ) async -> String? {
-        guard profile.taskFrame.requiresProcessSnapshotEvidence else {
-            return nil
-        }
-        let evidence = await store.evidenceArtifactSummary(runID: runID).evidence
-        guard let record = evidence.last(where: { record in
-            record.kind == AgentEvidenceKind.commandOutput.rawValue
-                && record.stringMetadata("command")?.contains("ps") == true
-        }),
-              let artifactID = record.artifactID,
-              let data = try? await store.readArtifact(artifactID),
-              let output = try? JSONDecoder().decode(AgentCommandExecutionOutput.self, from: data) else {
-            return nil
-        }
-        let stdout = output.stdout.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !stdout.isEmpty else {
-            return nil
-        }
-        return "Top running processes:\n\(stdout)"
-    }
-
     /// Last-resort synthesis: ask the model once more for a plain final answer from the
     /// evidence already gathered, with no tools, so an exhausted or stuck run degrades into a
     /// useful answer instead of a bare terminal block (RELY-004 / RC-4). Returns true if an
@@ -2915,7 +2617,7 @@ actor AgentToolOrchestrator {
                         "command": processSnapshotCommand.command,
                         "timeoutSeconds": "5"
                     ],
-                    reason: "Collect the deterministic process snapshot recorded in the task frame."
+                    reason: "Collect the process snapshot recorded in the task frame."
                 ),
                 runID: runID,
                 providerTier: providerTier,

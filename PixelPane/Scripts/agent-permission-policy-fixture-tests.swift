@@ -266,7 +266,7 @@ enum AgentPermissionPolicyFixtureHarness {
                 localGrants: grants
             )
         )
-        try expect(safeCommand.kind == .allow, "safe read-only command should be allowed")
+        try expect(safeCommand.kind == .deny && safeCommand.reason == .rawShellRequiresApproval, "with no read-only allowlist, git status is a raw shell command and is denied in read-only mode")
 
         let rawCommand = policy.decision(
             for: request(
@@ -351,7 +351,7 @@ enum AgentPermissionPolicyFixtureHarness {
                 localGrants: []
             )
         )
-        try expect(topProcesses.kind == .allow, "top-process inspection should emerge from the generic command tool")
+        try expect(topProcesses.kind == .deny && topProcesses.reason == .rawShellRequiresApproval, "with no read-only allowlist, ps is a raw shell command and is denied in read-only mode")
 
         let localhostListeners = policy.decision(
             for: request(
@@ -361,7 +361,7 @@ enum AgentPermissionPolicyFixtureHarness {
                 localGrants: []
             )
         )
-        try expect(localhostListeners.kind == .allow, "localhost listener inspection should emerge from the generic command tool")
+        try expect(localhostListeners.kind == .deny && localhostListeners.reason == .rawShellRequiresApproval, "with no read-only allowlist, lsof is a raw shell command and is denied in read-only mode")
 
         let startProcess = policy.decision(
             for: request(

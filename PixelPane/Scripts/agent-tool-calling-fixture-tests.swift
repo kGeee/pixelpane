@@ -15,9 +15,6 @@ enum AgentToolCallingFixtureHarness {
     static func run() async throws {
         try await testTaskProfileClassifiesOperationIntent()
         try await testTaskFrameBuilderUsesStructuralSources()
-        try await testTemporalQuestionUsesAppOwnedContext()
-        try await testDateCommandUsesDeterministicTemporalController()
-        try await testProcessSnapshotUsesDeterministicControllerBeforeModel()
         try await testToolLoopListsGrantedFolderAndContinues()
         try await testSearchAndReadToolsRecordEvidence()
         try await testQuotedSearchUsesPreciseQuery()
@@ -44,7 +41,6 @@ enum AgentToolCallingFixtureHarness {
         try await testWriteProposalApprovalExecutesAndContinues()
         try await testWriteRequestCannotCompleteFromReadEvidenceOnly()
         try await testRequiredWriteToolNonAdherenceBlocksBeforeIterationCap()
-        try await testCommandOnlyDoesNotSatisfyCombinedWriteRequest()
         try await testWriteProposalCanStillBeStagedWithoutPreclassifiedEditIntent()
         try await testStructuredOutputFailureBlocksWithRecoveryGuidance()
         try await testSpecificGrantBeatsBroadGrantForRandomTests()
@@ -195,101 +191,6 @@ enum AgentToolCallingFixtureHarness {
         try expect(writeFrame.writeRequest?.operation == .create, "explicit create target should preserve write operation")
         try expect(writeFrame.writeRequest?.targetPath == harness.workspace.appendingPathComponent("notes.txt").path, "explicit create target should preserve target path")
         try expect(writeFrame.localReferences.contains(where: { $0.source == .explicitWriteTarget }), "write target should be a structural local reference")
-    }
-
-    @MainActor
-    private static func testTemporalQuestionUsesAppOwnedContext() async throws {
-        let harness = try await makeHarness(prefix: "tool-temporal-context")
-        let temporal = AgentTemporalContext()
-        let adapter = FixtureAgentKernelAdapterV2(responses: [])
-
-        let runID = try await harness.viewModel.startRun(
-            userMessage: "what is today's date?",
-            context: AgentRunViewContext(title: "Temporal", contextID: "tool-temporal-context", contextKind: "assistant"),
-            adapter: adapter,
-            mode: .plainChat,
-            tools: [],
-            toolContext: .plainChat,
-            systemPrompt: "Answer from runtime context when provided.",
-            timeout: 2
-        )
-        try await harness.viewModel.waitForIdle(timeout: 3)
-        await harness.viewModel.refresh()
-
-        let trace = try await harness.store.traceProjection(runID: runID)
-        let requests = await adapter.requests()
-        try expect(harness.viewModel.state.activeStatus == .completed, "temporal question should complete")
-        try expect(harness.viewModel.state.messages.last?.text.text.contains(temporal.currentDate) == true, "accepted temporal answer should use the app-owned date")
-        try expect(requests.isEmpty, "closed-form relative date should resolve without a model request")
-        try expect(trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.temporalContext.rawValue }), "temporal context should be recorded as evidence")
-    }
-
-    @MainActor
-    private static func testDateCommandUsesDeterministicTemporalController() async throws {
-        let harness = try await makeHarness(prefix: "tool-date-command")
-        let adapter = FixtureAgentKernelAdapterV2(
-            responses: [
-                .toolCall(name: "run_finite_command", arguments: ["command": "date"], reason: nil),
-                .finalAnswer("The deterministic date command returned the current app-owned date.")
-            ]
-        )
-        let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
-
-        let runID = try await harness.viewModel.startRun(
-            userMessage: "run date",
-            context: AgentRunViewContext(title: "Date Command", contextID: "tool-date-command", contextKind: "assistant"),
-            adapter: adapter,
-            mode: config.mode,
-            tools: config.tools,
-            toolContext: config.context,
-            systemPrompt: "Use tools when available.",
-            timeout: 2
-        )
-        try await harness.viewModel.waitForIdle(timeout: 3)
-        await harness.viewModel.refresh()
-
-        let trace = try await harness.store.traceProjection(runID: runID)
-        try expect(harness.viewModel.state.activeStatus == .completed, "date command should complete")
-        try expect(trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.temporalContext.rawValue }), "date command should record temporal context")
-        try expect(trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.commandOutput.rawValue }), "date command should record command-style output")
-        try expect(!trace.events.contains(where: { event in
-            guard event.kind == .progress,
-                  case .progress(let text) = event.payload else { return false }
-            return text.text.contains("Raw shell commands are denied")
-        }), "date command should not go through raw-shell denial")
-    }
-
-    @MainActor
-    private static func testProcessSnapshotUsesDeterministicControllerBeforeModel() async throws {
-        let harness = try await makeHarness(prefix: "tool-process-snapshot")
-        let adapter = tierBFixtureAdapter(responses: [.finalAnswer("The model should not be needed for a deterministic process snapshot.")])
-        let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
-
-        let runID = try await harness.viewModel.startRun(
-            userMessage: "what are my top running processes?",
-            context: AgentRunViewContext(title: "Process Snapshot", contextID: "tool-process-snapshot", contextKind: "assistant"),
-            adapter: adapter,
-            mode: config.mode,
-            tools: config.tools,
-            toolContext: config.context,
-            systemPrompt: "Use tools when available.",
-            timeout: 2
-        )
-        try await harness.viewModel.waitForIdle(timeout: 3)
-        await harness.viewModel.refresh()
-
-        let requests = await adapter.requests()
-        let trace = try await harness.store.traceProjection(runID: runID)
-        try expect(
-            harness.viewModel.state.activeStatus == .completed,
-            "process snapshot should complete, got \(harness.viewModel.state.activeStatus?.rawValue ?? "nil"): \(harness.viewModel.state.statusSummary)"
-        )
-        try expect(requests.isEmpty, "deterministic process snapshot should complete before asking the model")
-        try expect(harness.viewModel.state.messages.last?.text.text.contains("Top running processes:") == true, "process snapshot answer should be projected")
-        try expect(trace.evidence.contains(where: { record in
-            record.kind == AgentEvidenceKind.commandOutput.rawValue
-                && record.metadata["command"]?.stringValue == "ps -axo pid,pcpu,pmem,comm -r"
-        }), "process snapshot should record command-output evidence")
     }
 
     @MainActor
@@ -1392,48 +1293,6 @@ enum AgentToolCallingFixtureHarness {
         }), "side-effect non-adherence should not fall through to max-iteration failure")
         try expect(content == "existing note\n", "file should not be changed without an approved side effect")
         try expect(trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.sideEffect.rawValue }) == false, "no side-effect evidence should be fabricated")
-    }
-
-    @MainActor
-    private static func testCommandOnlyDoesNotSatisfyCombinedWriteRequest() async throws {
-        let harness = try await makeHarness(prefix: "tool-command-write-missing")
-        let adapter = FixtureAgentKernelAdapterV2(
-            responses: [
-                .toolCall(
-                    name: "run_finite_command",
-                    arguments: ["command": "ps -axo pid,pcpu,pmem,comm -r"],
-                    reason: "Inspect running processes."
-                ),
-                .finalAnswer("I checked the running processes, but I cannot save the file.")
-            ]
-        )
-        let config = toolConfig(grant: harness.grant, runMode: .proposalOnly, adapter: adapter)
-
-        let runID = try await harness.viewModel.startRun(
-            userMessage: """
-            command: ps -axo pid,pcpu,pmem,comm -r
-            operation: create
-            targetPath: \(harness.workspace.appendingPathComponent("processes.txt").path)
-            """,
-            context: AgentRunViewContext(title: "Command Write Missing", contextID: "tool-command-write-missing", contextKind: "assistant"),
-            adapter: adapter,
-            mode: config.mode,
-            tools: config.tools,
-            toolContext: config.context,
-            systemPrompt: "Use tools when available.",
-            timeout: 2
-        )
-        try await harness.viewModel.waitForIdle(timeout: 3)
-        await harness.viewModel.refresh()
-
-        let trace = try await harness.store.traceProjection(runID: runID)
-        try expect(harness.viewModel.state.activeStatus == .waitingForApproval, "combined command/write request should stage a write approval from command output")
-        try expect(trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.commandOutput.rawValue }), "command evidence should still be recorded")
-        try expect(trace.sideEffects.contains(where: { sideEffect in
-            sideEffect.kind == .fileWrite
-                && sideEffect.status == .proposed
-                && sideEffect.metadata["targetPath"]?.stringValue == harness.workspace.appendingPathComponent("processes.txt").path
-        }), "runtime should stage the requested write proposal from command output")
     }
 
     @MainActor

@@ -658,7 +658,6 @@ nonisolated struct AgentPermissionDecision: Codable, Equatable, Sendable {
 }
 
 nonisolated enum AgentCommandClass: String, Codable, Equatable, Sendable {
-    case safeRead
     case rawShell
     case fileMutation
     case install
@@ -746,65 +745,13 @@ nonisolated struct AgentCommandClassifier: Sendable {
             )
         }
 
-        if isSafeReadCommand(cleaned) {
-            return AgentCommandClassification(
-                commandClass: .safeRead,
-                reason: .allowed,
-                summary: AgentRunText("The command matches the deterministic read-only allowlist.")
-            )
-        }
-
         return AgentCommandClassification(
             commandClass: .rawShell,
             reason: .rawShellRequiresApproval,
-            summary: AgentRunText("Raw shell commands outside the read-only allowlist require approval.")
+            summary: AgentRunText("Raw shell commands require approval.")
         )
     }
 
-    private func isSafeReadCommand(_ command: String) -> Bool {
-        let lowercased = command.lowercased()
-        let disallowedOperators = ["|", ">", "<", ";", "&&", "||", "`", "$(", "\n"]
-        guard !disallowedOperators.contains(where: { lowercased.contains($0) }) else {
-            return false
-        }
-
-        let tokens = lowercased.split { $0 == " " || $0 == "\t" }.map(String.init)
-        guard let first = tokens.first else { return false }
-
-        switch first {
-        case "date":
-            return true
-        case "ps", "lsof", "netstat", "pgrep":
-            return true
-        case "top":
-            return tokens.contains("-l")
-        case "pwd", "ls", "rg", "grep", "cat", "wc", "head", "tail":
-            return true
-        case "sed":
-            return tokens.contains("-n")
-        case "find":
-            return !tokens.contains("-exec") && !tokens.contains("-delete")
-        case "git":
-            guard tokens.count >= 2 else { return false }
-            return ["status", "diff", "show", "log", "branch", "rev-parse"].contains(tokens[1])
-        default:
-            return false
-        }
-    }
-
-    func allowsOmittedWorkingDirectory(_ command: String) -> Bool {
-        let lowercased = command.lowercased()
-        let tokens = lowercased.split { $0 == " " || $0 == "\t" }.map(String.init)
-        guard let first = tokens.first else { return false }
-        switch first {
-        case "date", "ps", "lsof", "netstat", "pgrep":
-            return true
-        case "top":
-            return tokens.contains("-l")
-        default:
-            return false
-        }
-    }
 }
 
 nonisolated struct AgentToolCatalog: Sendable {
@@ -1436,23 +1383,6 @@ nonisolated struct AgentPermissionPolicy: Sendable {
         let classification = commandClassifier.classify(command, sensitivePathRules: sensitivePathRules)
 
         switch classification.commandClass {
-        case .safeRead:
-            let workingDirectory = request.arguments["workingDirectory"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if workingDirectory.isEmpty && !commandClassifier.allowsOmittedWorkingDirectory(command) {
-                return deny(
-                    reason: .missingRequiredArgument,
-                    summary: "A granted working directory is required for file-oriented read commands.",
-                    toolName: spec.name,
-                    risk: spec.risk,
-                    metadata: ["argument": .string("workingDirectory")]
-                )
-            }
-            return allow(
-                reason: .allowed,
-                summary: classification.summary.text,
-                toolName: spec.name,
-                risk: spec.risk
-            )
         case .destructive:
             return deny(
                 reason: classification.reason,
