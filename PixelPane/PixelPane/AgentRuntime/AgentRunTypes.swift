@@ -24,6 +24,15 @@ nonisolated enum AgentRunStatus: String, Codable, Equatable, Sendable {
             false
         }
     }
+
+    var isTerminal: Bool {
+        switch self {
+        case .completed, .blocked, .failed, .canceled, .interrupted:
+            true
+        case .draft, .queued, .running, .waitingForApproval, .waitingForUserInput:
+            false
+        }
+    }
 }
 
 nonisolated enum AgentRunStepKind: String, Codable, Equatable, Sendable {
@@ -98,6 +107,30 @@ nonisolated enum AgentRunEventKind: String, Codable, Equatable, Sendable {
     case providerDiagnostic
     case failure
     case custom
+}
+
+nonisolated struct AgentToolRunContext: Codable, Equatable, Sendable {
+    let runMode: AgentRunPermissionMode
+    let localGrants: [AgentLocalFileGrant]
+    let grantedScopes: [AgentPermissionScope]
+    let deniedScopes: [AgentPermissionScope]
+    let supportedOperations: Set<AgentToolOperationKind>
+
+    init(
+        runMode: AgentRunPermissionMode,
+        localGrants: [AgentLocalFileGrant] = [],
+        grantedScopes: [AgentPermissionScope] = [],
+        deniedScopes: [AgentPermissionScope] = [],
+        supportedOperations: Set<AgentToolOperationKind> = AgentToolExecutionCapabilities.activeLocalRuntimeOperations
+    ) {
+        self.runMode = runMode
+        self.localGrants = localGrants
+        self.grantedScopes = grantedScopes
+        self.deniedScopes = deniedScopes
+        self.supportedOperations = supportedOperations
+    }
+
+    static let plainChat = AgentToolRunContext(runMode: .plainChat)
 }
 
 nonisolated enum AgentRunMetadataValue: Codable, Equatable, Sendable {
@@ -402,6 +435,42 @@ nonisolated enum AgentRunEventPayload: Codable, Equatable, Sendable {
     case sideEffect(AgentRunSideEffectRecord)
     case diagnostic(AgentRunText)
     case metadata([String: AgentRunMetadataValue])
+    case runConfiguration(AgentRunModelConfigurationRecord)
+}
+
+nonisolated struct AgentRunModelConfigurationRecord: Codable, Equatable, Sendable {
+    let adapterDescriptor: AgentKernelModelDescriptorV2
+    let request: AgentModelGatewayRequest
+    let toolContext: AgentToolRunContext
+    let createdAt: Date
+
+    init(
+        adapterDescriptor: AgentKernelModelDescriptorV2,
+        request: AgentModelGatewayRequest,
+        toolContext: AgentToolRunContext,
+        createdAt: Date = Date()
+    ) {
+        self.adapterDescriptor = adapterDescriptor
+        self.request = request
+        self.toolContext = toolContext
+        self.createdAt = createdAt
+    }
+
+    static func == (lhs: AgentRunModelConfigurationRecord, rhs: AgentRunModelConfigurationRecord) -> Bool {
+        lhs.adapterDescriptor.id == rhs.adapterDescriptor.id
+            && lhs.adapterDescriptor.providerKind == rhs.adapterDescriptor.providerKind
+            && lhs.adapterDescriptor.route == rhs.adapterDescriptor.route
+            && lhs.adapterDescriptor.displayName == rhs.adapterDescriptor.displayName
+            && lhs.adapterDescriptor.modelName == rhs.adapterDescriptor.modelName
+            && lhs.request.id == rhs.request.id
+            && lhs.request.mode == rhs.request.mode
+            && lhs.request.tools.map(\.name) == rhs.request.tools.map(\.name)
+            && lhs.request.requestedMaxOutputTokens == rhs.request.requestedMaxOutputTokens
+            && lhs.request.timeout == rhs.request.timeout
+            && lhs.request.metadata == rhs.request.metadata
+            && lhs.toolContext == rhs.toolContext
+            && lhs.createdAt == rhs.createdAt
+    }
 }
 
 nonisolated struct AgentRunEventRecord: Codable, Equatable, Identifiable, Sendable {

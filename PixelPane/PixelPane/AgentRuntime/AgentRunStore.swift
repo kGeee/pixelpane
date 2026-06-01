@@ -602,6 +602,36 @@ actor AgentRunStore {
             .last
     }
 
+    func latestTerminalSummary(runID: UUID) -> AgentRunText? {
+        let events = snapshot.events
+            .filter { $0.runID == runID }
+            .sorted { $0.sequence > $1.sequence }
+
+        if let statusReason = events.compactMap({ event -> AgentRunText? in
+            guard event.kind == .statusChanged,
+                  case .status(let status, let reason) = event.payload,
+                  status.isTerminal,
+                  let reason,
+                  !reason.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else {
+                return nil
+            }
+            return reason
+        }).first {
+            return statusReason
+        }
+
+        return events.compactMap { event -> AgentRunText? in
+            guard event.kind == .failure,
+                  case .diagnostic(let text) = event.payload,
+                  !text.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else {
+                return nil
+            }
+            return text
+        }.first
+    }
+
     func evidenceArtifactSummary(runID: UUID) -> AgentRunEvidenceArtifactSummary {
         AgentRunEvidenceArtifactSummary(
             evidence: snapshot.evidence.filter { $0.runID == runID },

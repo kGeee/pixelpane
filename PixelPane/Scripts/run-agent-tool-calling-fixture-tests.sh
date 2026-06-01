@@ -14,6 +14,7 @@ swiftc \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentKernel/AgentKernelV2Types.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentKernel/AgentKernelModelAdapterV2.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentKernel/AgentKernelModelOutputNormalizerV2.swift" \
+  "${PROJECT_ROOT}/PixelPane/PixelPane/AgentKernel/AgentKernelProtocolAdaptersV2.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentKernel/FixtureAgentKernelAdapterV2.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentRunTypes.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentRunStore.swift" \
@@ -21,6 +22,7 @@ swiftc \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentModelGateway.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentPermissionPolicy.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentSideEffectController.swift" \
+  "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentLocalEvidencePlanner.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentEvidencePackets.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentToolOrchestrator.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentRunTraceExport.swift" \

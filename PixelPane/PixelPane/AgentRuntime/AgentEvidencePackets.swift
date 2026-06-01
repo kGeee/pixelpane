@@ -9,11 +9,46 @@ nonisolated enum AgentEvidenceKind: String, Codable, Equatable, Sendable {
     case commandOutput = "command.output"
     case localServer = "server.local"
     case processState = "process.state"
+    case temporalContext = "temporal.context"
     case visualContext = "visual.context"
     case approval = "approval"
     case sideEffect = "side_effect"
     case terminalState = "terminal.state"
+    case evidenceRequirement = "evidence.requirement"
     case finalAnswerSupport = "final_answer.support"
+}
+
+nonisolated enum AgentLocalEvidenceRequirementKind: String, Codable, Equatable, Sendable {
+    case grantDiscovery = "grant_discovery"
+    case directoryListing = "directory_listing"
+    case fileContent = "file_content"
+    case searchDiscovery = "search_discovery"
+}
+
+nonisolated struct AgentLocalEvidenceRequirement: Codable, Equatable, Identifiable, Sendable {
+    let id: String
+    let kind: AgentLocalEvidenceRequirementKind
+    let targetPath: String?
+    let targetIsDirectory: Bool
+    let query: String?
+
+    init(
+        kind: AgentLocalEvidenceRequirementKind,
+        targetPath: String? = nil,
+        targetIsDirectory: Bool = false,
+        query: String? = nil
+    ) {
+        let normalizedTarget = targetPath.map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+        self.kind = kind
+        self.targetPath = normalizedTarget
+        self.targetIsDirectory = targetIsDirectory
+        self.query = query
+        id = [
+            kind.rawValue,
+            normalizedTarget ?? "none",
+            query ?? "none"
+        ].joined(separator: ":")
+    }
 }
 
 nonisolated enum AgentEvidenceTrustClass: String, Codable, Equatable, Sendable {
@@ -307,7 +342,9 @@ actor AgentEvidenceRecorder {
         stepID: UUID? = nil,
         query: String,
         matches: [AgentFileSearchMatch],
-        isTruncated: Bool = false
+        isTruncated: Bool = false,
+        rootPath: String? = nil,
+        filenameOnly: Bool = false
     ) async throws -> AgentRunEvidenceRecord {
         let sorted = matches.sorted {
             if $0.score == $1.score {
@@ -330,7 +367,42 @@ actor AgentEvidenceRecorder {
                     "query": .string(query),
                     "matchCount": .int(matches.count),
                     "paths": .string(paths.joined(separator: "\n")),
-                    "topPath": .string(paths.first ?? "")
+                    "topPath": .string(paths.first ?? ""),
+                    "rootPath": .string(rootPath ?? ""),
+                    "filenameOnly": .bool(filenameOnly)
+                ]
+            ),
+            runID: runID,
+            stepID: stepID
+        )
+    }
+
+    @discardableResult
+    func recordVisualContext(
+        runID: UUID,
+        stepID: UUID? = nil,
+        attachment: AgentKernelModelAttachmentV2
+    ) async throws -> AgentRunEvidenceRecord {
+        let ocrText = attachment.metadata["ocrText"]?.stringValue ?? ""
+        let source = attachment.metadata["source"]?.stringValue ?? "attachment"
+        let isTruncated = ocrText.count > AgentKernelBoundedTextV2.defaultLimit
+        return try await record(
+            AgentEvidencePacket(
+                sourceID: "visual-context:\(attachment.id.uuidString)",
+                kind: .visualContext,
+                summary: AgentRunText("Recorded visual context for \(attachment.label)."),
+                body: ocrText.isEmpty ? nil : AgentRunText(ocrText, characterLimit: AgentKernelBoundedTextV2.defaultLimit),
+                privacyClass: .visualContext,
+                trustClass: .appControl,
+                isTruncated: isTruncated,
+                metadata: [
+                    "attachmentID": .string(attachment.id.uuidString),
+                    "label": .string(attachment.label),
+                    "source": .string(source),
+                    "modality": .string(attachment.modality.rawValue),
+                    "hasOCRText": .bool(!ocrText.isEmpty),
+                    "hasImageInput": .bool(attachment.modality == .image),
+                    "ocrCharacters": .int(ocrText.count)
                 ]
             ),
             runID: runID,
@@ -347,6 +419,47 @@ actor AgentEvidenceRecorder {
         isTruncated: Bool = false
     ) async throws -> AgentRunEvidenceRecord {
         let data = try encoder.encode(entries)
+        let largestFile = entries
+            .filter { !$0.isDirectory }
+            .max { lhs, rhs in
+                let lhsBytes = lhs.byteCount ?? -1
+                let rhsBytes = rhs.byteCount ?? -1
+                if lhsBytes == rhsBytes {
+                    return lhs.path.localizedCaseInsensitiveCompare(rhs.path) == .orderedDescending
+                }
+                return lhsBytes < rhsBytes
+            }
+        var metadata: [String: AgentRunMetadataValue] = [
+            "path": .string(folderPath),
+            "entryCount": .int(entries.count),
+            "paths": .string(entries.map(\.path).joined(separator: "\n"))
+        ]
+        if let largestFile {
+            metadata["topFilePath"] = .string(largestFile.path)
+            if let byteCount = largestFile.byteCount {
+                metadata["topFileByteCount"] = .int(byteCount)
+            }
+        }
+        let largestByExtension = Dictionary(grouping: entries.filter { !$0.isDirectory }) { entry in
+            URL(fileURLWithPath: entry.path).pathExtension.lowercased()
+        }
+        for (ext, candidates) in largestByExtension where !ext.isEmpty {
+            guard let largest = candidates.max(by: { lhs, rhs in
+                let lhsBytes = lhs.byteCount ?? -1
+                let rhsBytes = rhs.byteCount ?? -1
+                if lhsBytes == rhsBytes {
+                    return lhs.path.localizedCaseInsensitiveCompare(rhs.path) == .orderedDescending
+                }
+                return lhsBytes < rhsBytes
+            }) else {
+                continue
+            }
+            let normalizedExt = ext.replacingOccurrences(of: #"[^a-z0-9]"#, with: "", options: .regularExpression)
+            metadata["topFilePath_\(normalizedExt)"] = .string(largest.path)
+            if let byteCount = largest.byteCount {
+                metadata["topFileByteCount_\(normalizedExt)"] = .int(byteCount)
+            }
+        }
         return try await record(
             AgentEvidencePacket(
                 sourceID: "folder-list:\(folderPath)",
@@ -356,11 +469,7 @@ actor AgentEvidenceRecorder {
                 privacyClass: .localFile,
                 trustClass: .toolObservation,
                 isTruncated: isTruncated,
-                metadata: [
-                    "path": .string(folderPath),
-                    "entryCount": .int(entries.count),
-                    "paths": .string(entries.map(\.path).joined(separator: "\n"))
-                ]
+                metadata: metadata
             ),
             runID: runID,
             stepID: stepID
@@ -411,7 +520,7 @@ actor AgentEvidenceRecorder {
             AgentEvidencePacket(
                 sourceID: "command:\(AgentEvidenceHasher.sha256Hex(Data(output.command.utf8)).prefix(12))",
                 kind: .commandOutput,
-                summary: AgentRunText("Command exited with \(output.exitCode.map(String.init) ?? "timeout")."),
+                summary: output.summary,
                 artifactData: data,
                 privacyClass: .terminalOutput,
                 trustClass: .toolObservation,
@@ -493,6 +602,36 @@ actor AgentEvidenceRecorder {
     }
 
     @discardableResult
+    func recordTemporalContext(
+        runID: UUID,
+        stepID: UUID? = nil,
+        context: AgentTemporalContext
+    ) async throws -> AgentRunEvidenceRecord {
+        try await record(
+            AgentEvidencePacket(
+                sourceID: "temporal-context:\(runID.uuidString)",
+                kind: .temporalContext,
+                summary: AgentRunText("Recorded app-owned current date/time context."),
+                body: AgentRunText(context.modelObservation),
+                artifactMimeType: "text/plain",
+                artifactFileExtension: "txt",
+                privacyClass: .controlPlane,
+                trustClass: .appControl,
+                metadata: [
+                    "currentDate": .string(context.currentDate),
+                    "localTime": .string(context.localTime),
+                    "weekday": .string(context.weekday),
+                    "timeZone": .string(context.timeZoneIdentifier),
+                    "utcOffset": .string(context.utcOffset),
+                    "source": .string(context.source)
+                ]
+            ),
+            runID: runID,
+            stepID: stepID
+        )
+    }
+
+    @discardableResult
     func recordSideEffect(
         runID: UUID,
         stepID: UUID? = nil,
@@ -539,6 +678,36 @@ actor AgentEvidenceRecorder {
                 privacyClass: .controlPlane,
                 trustClass: .appControl,
                 metadata: ["status": .string(status.rawValue)]
+            ),
+            runID: runID,
+            stepID: stepID
+        )
+    }
+
+    @discardableResult
+    func recordEvidenceRequirements(
+        runID: UUID,
+        stepID: UUID? = nil,
+        requirements: [AgentLocalEvidenceRequirement]
+    ) async throws -> AgentRunEvidenceRecord {
+        let data = try encoder.encode(requirements)
+        let targets = requirements.compactMap(\.targetPath)
+        let kinds = requirements.map(\.kind.rawValue)
+        return try await record(
+            AgentEvidencePacket(
+                sourceID: "evidence-requirements:\(runID.uuidString)",
+                kind: .evidenceRequirement,
+                summary: AgentRunText("Recorded \(requirements.count) local evidence requirement(s)."),
+                artifactData: data,
+                privacyClass: .controlPlane,
+                trustClass: .appControl,
+                metadata: [
+                    "requirementCount": .int(requirements.count),
+                    "requirementKinds": .string(kinds.joined(separator: ",")),
+                    "targetPaths": .string(targets.joined(separator: "\n")),
+                    "targetPath": .string(targets.first ?? ""),
+                    "targetIsDirectory": .bool(requirements.first?.targetIsDirectory ?? false)
+                ]
             ),
             runID: runID,
             stepID: stepID
@@ -793,9 +962,9 @@ nonisolated struct AgentEvidenceController: Sendable {
         switch kind {
         case .fileRead, .fileSearch, .localServer, .sideEffect:
             100
-        case .commandOutput, .processState, .folderList:
+        case .commandOutput, .processState, .temporalContext, .folderList:
             80
-        case .terminalState, .approval:
+        case .terminalState, .approval, .evidenceRequirement:
             60
         case .fileGrant, .visualContext, .finalAnswerSupport:
             40
@@ -807,7 +976,8 @@ nonisolated struct AgentEvidenceController: Sendable {
         for key in [
             "path", "paths", "topPath", "query", "command", "workingDirectory", "exitCode",
             "didTimeOut", "port", "url", "httpStatusCode", "isListening", "processID",
-            "status", "sideEffectID", "targetPath", "operation"
+            "status", "sideEffectID", "targetPath", "operation", "currentDate", "localTime",
+            "weekday", "timeZone", "utcOffset", "source"
         ] {
             if let value = record.metadata[key] {
                 fields[key] = value
@@ -858,7 +1028,10 @@ actor AgentFinalAnswerSupportRecorder {
             AgentEvidencePacket(
                 sourceID: "final-answer-support:\(answerHash)",
                 kind: .finalAnswerSupport,
-                summary: AgentRunText(draft.canAnswer ? "Final answer is deterministically supported." : "Final answer needs more evidence."),
+                // The support check verifies the answer's cited local sources exist as evidence,
+                // not that the answer's content is fully grounded in them. Keep the summary honest
+                // about that distinction so traces do not over-promise verification (RELY-006 / RC-6).
+                summary: AgentRunText(draft.canAnswer ? "Final answer's cited local sources are backed by recorded evidence." : "Final answer needs more evidence."),
                 artifactData: data,
                 privacyClass: .controlPlane,
                 trustClass: .appControl,
@@ -884,6 +1057,13 @@ actor AgentFinalAnswerSupportRecorder {
 private extension AgentRunMetadataValue {
     nonisolated var intValue: Int? {
         guard case .int(let value) = self else { return nil }
+        return value
+    }
+}
+
+private extension AgentKernelMetadataValueV2 {
+    nonisolated var stringValue: String? {
+        guard case .string(let value) = self else { return nil }
         return value
     }
 }

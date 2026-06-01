@@ -64,6 +64,10 @@ actor FixtureAgentKernelAdapterV2: AgentKernelModelAdapterV2 {
         receivedRequests.last
     }
 
+    func requests() -> [AgentKernelModelAdapterRequestV2] {
+        receivedRequests
+    }
+
     private nonisolated func events(
         for scripted: ScriptedResponse
     ) -> [AgentKernelModelAdapterEventV2] {

@@ -17,6 +17,7 @@ enum AgentSideEffectControllerFixtureHarness {
         try await testRelaunchWhileWaiting()
         try await testFailedWriteAndRollback()
         try await testCommandApproval()
+        try await testPipelineFailureUsesShellPipefail()
         try await testProcessStartStopAndRollback()
     }
 
@@ -166,6 +167,34 @@ enum AgentSideEffectControllerFixtureHarness {
         try expect(completed.status == .completed, "approved command should complete")
         try expect(completed.afterArtifactID != nil, "command execution should record output artifact")
         try expect(commandExecutor.commands == ["echo ok"], "command executor should receive approved command")
+    }
+
+    private static func testPipelineFailureUsesShellPipefail() async throws {
+        let harness = try await makeHarness(commandExecutor: AgentShellCommandExecutor())
+        let stage = try await harness.controller.stage(
+            runID: harness.run.runID,
+            draft: .command(
+                AgentCommandDraft(
+                    command: "false | cat",
+                    workingDirectory: harness.workspace.path,
+                    timeoutSeconds: 5
+                )
+            )
+        )
+        _ = try await harness.controller.resolveApproval(sideEffectID: stage.sideEffect.sideEffectID, decision: .approved)
+        let failed = try await harness.controller.executeApproved(sideEffectID: stage.sideEffect.sideEffectID)
+
+        guard let artifactID = failed.afterArtifactID else {
+            throw HarnessError(description: "failed command should still record an output artifact")
+        }
+        let output = try JSONDecoder().decode(
+            AgentCommandExecutionOutput.self,
+            from: try await harness.store.readArtifact(artifactID)
+        )
+
+        try expect(failed.status == .failed, "pipeline with an upstream failure should fail the side effect")
+        try expect(failed.errorSummary?.text.contains("non-zero status") == true, "non-zero command should record an error summary")
+        try expect(output.exitCode == 1, "pipefail should preserve the upstream non-zero pipeline status")
     }
 
     private static func testProcessStartStopAndRollback() async throws {

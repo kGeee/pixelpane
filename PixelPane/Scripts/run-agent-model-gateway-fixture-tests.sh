@@ -20,6 +20,7 @@ swiftc \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentKernel/AgentKernelModelOutputNormalizerV2.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentKernel/AgentKernelProtocolAdaptersV2.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentKernel/AgentKernelAIBackendAdapterV2.swift" \
+  "${PROJECT_ROOT}/PixelPane/PixelPane/AgentKernel/AgentKernelCloudChatAdapterV2.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentKernel/FixtureAgentKernelAdapterV2.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentModelGateway.swift" \
   "${PROJECT_ROOT}/PixelPane/Scripts/agent-model-gateway-fixture-tests.swift" \

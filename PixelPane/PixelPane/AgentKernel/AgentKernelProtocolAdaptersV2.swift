@@ -82,6 +82,18 @@ struct AgentKernelTextProtocolPromptBuilderV2: Sendable {
         let messages = request.messages.map { message in
             "\(message.role.rawValue): \(message.content)"
         }.joined(separator: "\n")
+        let attachments = request.attachments.map { attachment in
+            var lines = [
+                "- \(attachment.label) (\(attachment.modality.rawValue))"
+            ]
+            if let source = Self.metadataString(attachment.metadata["source"]), !source.isEmpty {
+                lines.append("  source: \(source)")
+            }
+            if let ocrText = Self.metadataString(attachment.metadata["ocrText"]), !ocrText.isEmpty {
+                lines.append("  ocrText: \(AgentKernelBoundedTextV2(ocrText, characterLimit: 4_000).text)")
+            }
+            return lines.joined(separator: "\n")
+        }.joined(separator: "\n")
 
         return """
         Return exactly one JSON object and no Markdown.
@@ -91,9 +103,16 @@ struct AgentKernelTextProtocolPromptBuilderV2: Sendable {
         {"type":"tool_call","name":"tool_name","arguments":{"argument":"value"},"reason":"optional reason"}
         Tool schemas:
         \(tools.isEmpty ? "- none" : tools)
+        Attachments:
+        \(attachments.isEmpty ? "- none" : attachments)
         Messages:
         \(messages)
         """
+    }
+
+    private nonisolated static func metadataString(_ value: AgentKernelMetadataValueV2?) -> String? {
+        guard case .string(let text) = value else { return nil }
+        return text
     }
 
     nonisolated func repairPrompt(

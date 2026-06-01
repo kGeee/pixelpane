@@ -16,20 +16,6 @@ nonisolated struct AgentRunProjectedSession: Codable, Equatable, Identifiable, S
     }
 }
 
-nonisolated struct AgentRunLegacyConversationTurn: Codable, Equatable, Sendable {
-    let question: String
-    let answer: String
-    let backendLabel: String
-    let createdAt: Date
-
-    init(question: String, answer: String, backendLabel: String, createdAt: Date = Date()) {
-        self.question = question
-        self.answer = answer
-        self.backendLabel = backendLabel
-        self.createdAt = createdAt
-    }
-}
-
 nonisolated struct AgentRunTraceExporter: Sendable {
     nonisolated init() {}
 
@@ -180,6 +166,8 @@ nonisolated struct AgentRunTraceExporter: Sendable {
             return "sideEffect \(sideEffect.kind.rawValue) \(sideEffect.status.rawValue)"
         case .metadata(let metadata):
             return metadataSummary(metadata)
+        case .runConfiguration(let configuration):
+            return "runConfiguration adapter=\(configuration.adapterDescriptor.id) mode=\(configuration.request.mode.rawValue) tools=\(configuration.request.tools.count)"
         }
     }
 

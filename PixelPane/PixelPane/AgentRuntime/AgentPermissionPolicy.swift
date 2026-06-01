@@ -24,7 +24,7 @@ nonisolated enum AgentPermissionScope: String, Codable, Equatable, Sendable {
     case privileged
 }
 
-nonisolated enum AgentToolOperationKind: String, Codable, Equatable, Sendable {
+nonisolated enum AgentToolOperationKind: String, Codable, Equatable, Hashable, Sendable {
     case fileGrantList
     case fileList
     case fileSearch
@@ -57,6 +57,7 @@ nonisolated enum AgentPermissionReason: String, Codable, Equatable, Sendable {
     case unknownTool
     case providerTierDisallowsTool
     case runModeDisallowsTool
+    case unsupportedOperation
     case missingRequiredArgument
     case malformedArgument
     case deniedScope
@@ -191,7 +192,7 @@ nonisolated struct AgentLocalPathResolver: Sendable {
         target: AgentLocalPathTargetIntent = .any,
         preferredDirectoryPath: String? = nil
     ) -> AgentLocalPathResolutionResult {
-        let cleaned = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = expandUserHome(rawPath.trimmingCharacters(in: .whitespacesAndNewlines))
         guard !cleaned.isEmpty else {
             return failure(.emptyPath, "The local path is empty.")
         }
@@ -234,6 +235,19 @@ nonisolated struct AgentLocalPathResolver: Sendable {
             "The requested path is outside granted local file access.",
             candidates: []
         )
+    }
+
+    private nonisolated func expandUserHome(_ path: String) -> String {
+        if path == "~" {
+            return NSHomeDirectory()
+        }
+        if path.hasPrefix("~/") {
+            return URL(fileURLWithPath: NSHomeDirectory())
+                .appendingPathComponent(String(path.dropFirst(2)))
+                .standardizedFileURL
+                .path
+        }
+        return path
     }
 
     private nonisolated func relativeCandidateGroups(
@@ -557,8 +571,24 @@ nonisolated struct AgentToolSpec: Identifiable, Sendable {
     }
 
     func isVisible(providerTier: AgentModelCapabilityTier, runMode: AgentRunPermissionMode) -> Bool {
-        visibleProviderTiers.contains(providerTier) && visibleRunModes.contains(runMode)
+        if providerTier == .tierBConstrainedStructuredText,
+           operationKind == .fileWriteDraft,
+           runMode != .proposalOnly {
+            return false
+        }
+        return visibleProviderTiers.contains(providerTier) && visibleRunModes.contains(runMode)
     }
+}
+
+nonisolated enum AgentToolExecutionCapabilities {
+    static let activeLocalRuntimeOperations: Set<AgentToolOperationKind> = [
+        .fileGrantList,
+        .fileList,
+        .fileSearch,
+        .fileRead,
+        .fileWriteDraft,
+        .finiteCommand
+    ]
 }
 
 nonisolated struct AgentPermissionRequest: Codable, Equatable, Sendable {
@@ -569,6 +599,7 @@ nonisolated struct AgentPermissionRequest: Codable, Equatable, Sendable {
     let localGrants: [AgentLocalFileGrant]
     let grantedScopes: [AgentPermissionScope]
     let deniedScopes: [AgentPermissionScope]
+    let supportedOperations: Set<AgentToolOperationKind>
     let approvalGrants: [AgentPermissionApprovalGrant]
     let now: Date
 
@@ -580,6 +611,7 @@ nonisolated struct AgentPermissionRequest: Codable, Equatable, Sendable {
         localGrants: [AgentLocalFileGrant] = [],
         grantedScopes: [AgentPermissionScope] = [],
         deniedScopes: [AgentPermissionScope] = [],
+        supportedOperations: Set<AgentToolOperationKind> = AgentToolExecutionCapabilities.activeLocalRuntimeOperations,
         approvalGrants: [AgentPermissionApprovalGrant] = [],
         now: Date = Date()
     ) {
@@ -590,6 +622,7 @@ nonisolated struct AgentPermissionRequest: Codable, Equatable, Sendable {
         self.localGrants = localGrants
         self.grantedScopes = grantedScopes
         self.deniedScopes = deniedScopes
+        self.supportedOperations = supportedOperations
         self.approvalGrants = approvalGrants
         self.now = now
     }
@@ -739,6 +772,12 @@ nonisolated struct AgentCommandClassifier: Sendable {
         guard let first = tokens.first else { return false }
 
         switch first {
+        case "date":
+            return true
+        case "ps", "lsof", "netstat", "pgrep":
+            return true
+        case "top":
+            return tokens.contains("-l")
         case "pwd", "ls", "rg", "grep", "cat", "wc", "head", "tail":
             return true
         case "sed":
@@ -748,6 +787,20 @@ nonisolated struct AgentCommandClassifier: Sendable {
         case "git":
             guard tokens.count >= 2 else { return false }
             return ["status", "diff", "show", "log", "branch", "rev-parse"].contains(tokens[1])
+        default:
+            return false
+        }
+    }
+
+    func allowsOmittedWorkingDirectory(_ command: String) -> Bool {
+        let lowercased = command.lowercased()
+        let tokens = lowercased.split { $0 == " " || $0 == "\t" }.map(String.init)
+        guard let first = tokens.first else { return false }
+        switch first {
+        case "date", "ps", "lsof", "netstat", "pgrep":
+            return true
+        case "top":
+            return tokens.contains("-l")
         default:
             return false
         }
@@ -770,11 +823,13 @@ nonisolated struct AgentToolCatalog: Sendable {
         runMode: AgentRunPermissionMode,
         localGrants: [AgentLocalFileGrant] = [],
         grantedScopes: [AgentPermissionScope] = [],
-        deniedScopes: [AgentPermissionScope] = []
+        deniedScopes: [AgentPermissionScope] = [],
+        supportedOperations: Set<AgentToolOperationKind> = AgentToolExecutionCapabilities.activeLocalRuntimeOperations
     ) -> [AgentToolSpec] {
         specsByName.values
             .filter { spec in
                 spec.isVisible(providerTier: providerTier, runMode: runMode)
+                    && supportedOperations.contains(spec.operationKind)
                     && !spec.requiredScopes.contains(where: { deniedScopes.contains($0) })
                     && hasRequiredVisibilityGrants(for: spec, localGrants: localGrants, grantedScopes: grantedScopes)
             }
@@ -786,15 +841,56 @@ nonisolated struct AgentToolCatalog: Sendable {
         runMode: AgentRunPermissionMode,
         localGrants: [AgentLocalFileGrant] = [],
         grantedScopes: [AgentPermissionScope] = [],
-        deniedScopes: [AgentPermissionScope] = []
+        deniedScopes: [AgentPermissionScope] = [],
+        supportedOperations: Set<AgentToolOperationKind> = AgentToolExecutionCapabilities.activeLocalRuntimeOperations
     ) -> [AgentKernelToolSchemaV2] {
         visibleToolSpecs(
             providerTier: providerTier,
             runMode: runMode,
             localGrants: localGrants,
             grantedScopes: grantedScopes,
-            deniedScopes: deniedScopes
+            deniedScopes: deniedScopes,
+            supportedOperations: supportedOperations
         ).map(\.schema)
+    }
+
+    func visibilityDiagnostics(
+        providerTier: AgentModelCapabilityTier,
+        runMode: AgentRunPermissionMode,
+        localGrants: [AgentLocalFileGrant] = [],
+        grantedScopes: [AgentPermissionScope] = [],
+        deniedScopes: [AgentPermissionScope] = [],
+        supportedOperations: Set<AgentToolOperationKind> = AgentToolExecutionCapabilities.activeLocalRuntimeOperations
+    ) -> [String] {
+        specsByName.values
+            .sorted { $0.name < $1.name }
+            .map { spec in
+                let reason: String
+                if !spec.visibleProviderTiers.contains(providerTier) {
+                    reason = "withheld:providerTier"
+                } else if !spec.isVisible(providerTier: providerTier, runMode: runMode) {
+                    reason = "withheld:runMode"
+                } else if !supportedOperations.contains(spec.operationKind) {
+                    reason = "withheld:unsupportedOperation"
+                } else if let deniedScope = spec.requiredScopes.first(where: { deniedScopes.contains($0) }) {
+                    reason = "withheld:deniedScope:\(deniedScope.rawValue)"
+                } else if spec.requiredScopes.contains(.fileRead), localGrants.isEmpty {
+                    reason = "withheld:missingReadGrant"
+                } else if spec.requiredScopes.contains(.fileWrite), !localGrants.contains(where: { $0.access == .readWrite }) {
+                    reason = "withheld:missingWriteGrant"
+                } else if let missingScope = spec.requiredScopes.first(where: { scope in
+                    scope != .fileRead
+                        && scope != .fileWrite
+                        && scope != .workingDirectory
+                        && scope != .localServer
+                        && !grantedScopes.contains(scope)
+                }) {
+                    reason = "withheld:missingScope:\(missingScope.rawValue)"
+                } else {
+                    reason = "visible"
+                }
+                return "tool.\(spec.name)=\(reason)"
+            }
     }
 
     private func hasRequiredVisibilityGrants(
@@ -812,7 +908,10 @@ nonisolated struct AgentToolCatalog: Sendable {
             return false
         }
         let nonGrantScopes = spec.requiredScopes.filter { scope in
-            scope != .fileRead && scope != .fileWrite && scope != .workingDirectory && scope != .localServer
+            scope != .fileRead
+                && scope != .fileWrite
+                && scope != .workingDirectory
+                && scope != .localServer
         }
         return nonGrantScopes.allSatisfy { grantedScopes.contains($0) }
     }
@@ -830,7 +929,7 @@ extension AgentToolCatalog {
             AgentToolSpec(
                 schema: toolSchema(
                     name: "list_grants",
-                    summary: "List local files and folders the user has explicitly granted."
+                    summary: "List local files and folders the user has explicitly granted access to."
                 ),
                 operationKind: .fileGrantList,
                 risk: .readOnly,
@@ -852,8 +951,12 @@ extension AgentToolCatalog {
             AgentToolSpec(
                 schema: toolSchema(
                     name: "search_files",
-                    summary: "Search text-like files inside granted local locations.",
-                    arguments: [argument("query", summary: "Search query.")]
+                    summary: "Search or find text-like files inside granted local folders and locations.",
+                    arguments: [
+                        argument("query", summary: "Search query."),
+                        argument("rootPath", isRequired: false, summary: "Optional granted folder path or grant name to scope the search."),
+                        argument("filenameOnly", type: .boolean, isRequired: false, summary: "When true, match only file names and paths without reading file contents.")
+                    ]
                 ),
                 operationKind: .fileSearch,
                 risk: .localRead,
@@ -876,7 +979,7 @@ extension AgentToolCatalog {
             AgentToolSpec(
                 schema: toolSchema(
                     name: "stage_write_proposal",
-                    summary: "Stage a proposed write inside a granted local location without writing it to disk.",
+                    summary: "Stage a proposed create, write, save, modify, change, update, edit, replace, or append inside a granted local location without writing it to disk.",
                     arguments: [
                         argument("operation", summary: "One of create, replace, or append."),
                         argument("targetPath", summary: "Granted target file path or path relative to a granted folder."),
@@ -905,18 +1008,18 @@ extension AgentToolCatalog {
             AgentToolSpec(
                 schema: toolSchema(
                     name: "run_finite_command",
-                    summary: "Run a bounded terminal command that is expected to finish.",
+                    summary: "Run a bounded local shell command for terminal, process, system, file, and build observations. Read-only commands may run directly; risky or mutating commands require user approval before execution.",
                     arguments: [
                         argument("command", summary: "Shell command to run."),
-                        argument("workingDirectory", summary: "Validated working directory."),
+                        argument("workingDirectory", isRequired: false, summary: "Optional granted working directory. Omit only for system-state commands that do not read local files."),
                         argument("timeoutSeconds", type: .integer, isRequired: false, summary: "Optional timeout in seconds.")
                     ]
                 ),
                 operationKind: .finiteCommand,
                 risk: .command,
                 requiredScopes: [.workingDirectory],
-                visibleRunModes: readFull,
-                visibleProviderTiers: tierA
+                visibleRunModes: readProposalFull,
+                visibleProviderTiers: tierAB
             ),
             AgentToolSpec(
                 schema: toolSchema(
@@ -969,33 +1072,6 @@ extension AgentToolCatalog {
                 operationKind: .processOutput,
                 risk: .readOnly,
                 requiredScopes: [.processControl],
-                visibleRunModes: readFull,
-                visibleProviderTiers: tierA
-            ),
-            AgentToolSpec(
-                schema: toolSchema(
-                    name: "probe_local_server",
-                    summary: "Probe a localhost URL or port for listener and HTTP-response evidence.",
-                    arguments: [
-                        argument("url", isRequired: false, summary: "Optional loopback URL."),
-                        argument("port", type: .integer, isRequired: false, summary: "Optional localhost TCP port.")
-                    ]
-                ),
-                operationKind: .localServerProbe,
-                risk: .readOnly,
-                requiredScopes: [.localServer],
-                visibleRunModes: readProposalFull,
-                visibleProviderTiers: tierAB
-            ),
-            AgentToolSpec(
-                schema: toolSchema(
-                    name: "discover_local_servers",
-                    summary: "Discover bounded loopback HTTP servers and match them to granted local folders when possible.",
-                    arguments: [argument("maxCandidates", type: .integer, isRequired: false, summary: "Optional maximum number of listener candidates to inspect.")]
-                ),
-                operationKind: .localServerDiscovery,
-                risk: .processControl,
-                requiredScopes: [.processControl, .localServer],
                 visibleRunModes: readFull,
                 visibleProviderTiers: tierA
             )
@@ -1052,6 +1128,16 @@ nonisolated struct AgentPermissionPolicy: Sendable {
             )
         }
 
+        guard request.supportedOperations.contains(spec.operationKind) else {
+            return deny(
+                reason: .unsupportedOperation,
+                summary: "The active runtime does not support this tool operation.",
+                toolName: spec.name,
+                risk: spec.risk,
+                metadata: ["operation": .string(spec.operationKind.rawValue)]
+            )
+        }
+
         guard spec.visibleProviderTiers.contains(request.providerTier) else {
             return deny(
                 reason: .providerTierDisallowsTool,
@@ -1060,7 +1146,7 @@ nonisolated struct AgentPermissionPolicy: Sendable {
                 risk: spec.risk
             )
         }
-        guard spec.visibleRunModes.contains(request.runMode) else {
+        guard spec.isVisible(providerTier: request.providerTier, runMode: request.runMode) else {
             return deny(
                 reason: .runModeDisallowsTool,
                 summary: "The current run mode cannot use this tool.",
@@ -1118,6 +1204,10 @@ nonisolated struct AgentPermissionPolicy: Sendable {
             toolName: spec.name,
             risk: spec.risk
         )
+    }
+
+    func referencesSensitivePath(_ value: String) -> Bool {
+        sensitivePathRules.contains { $0.matches(value) }
     }
 
     static func approvalDigest(toolName: String, arguments: [String: String]) -> String {
@@ -1347,6 +1437,16 @@ nonisolated struct AgentPermissionPolicy: Sendable {
 
         switch classification.commandClass {
         case .safeRead:
+            let workingDirectory = request.arguments["workingDirectory"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if workingDirectory.isEmpty && !commandClassifier.allowsOmittedWorkingDirectory(command) {
+                return deny(
+                    reason: .missingRequiredArgument,
+                    summary: "A granted working directory is required for file-oriented read commands.",
+                    toolName: spec.name,
+                    risk: spec.risk,
+                    metadata: ["argument": .string("workingDirectory")]
+                )
+            }
             return allow(
                 reason: .allowed,
                 summary: classification.summary.text,
@@ -1490,6 +1590,8 @@ nonisolated struct AgentPermissionPolicy: Sendable {
         switch spec.operationKind {
         case .fileRead, .fileList:
             return arguments["path"]
+        case .fileSearch:
+            return arguments["rootPath"]
         case .fileWriteDraft:
             return arguments["targetPath"]
         case .finiteCommand, .processStart:
@@ -1501,13 +1603,10 @@ nonisolated struct AgentPermissionPolicy: Sendable {
 
     private func pathLikeArgumentValues(for spec: AgentToolSpec, arguments: [String: String]) -> [String] {
         var values: [String] = []
-        for key in ["path", "targetPath", "preferredDirectoryPath", "workingDirectory", "command"] {
+        for key in ["path", "rootPath", "targetPath", "preferredDirectoryPath", "workingDirectory", "command"] {
             if let value = arguments[key] {
                 values.append(value)
             }
-        }
-        if spec.operationKind == .fileSearch, let query = arguments["query"] {
-            values.append(query)
         }
         return values
     }

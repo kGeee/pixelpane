@@ -201,6 +201,25 @@ nonisolated struct AgentCommandExecutionOutput: Codable, Equatable, Sendable {
     let stderr: AgentRunText
     let durationSeconds: Double
     let didTimeOut: Bool
+
+    var succeeded: Bool {
+        !didTimeOut && exitCode == 0
+    }
+
+    var summary: AgentRunText {
+        if didTimeOut {
+            return AgentRunText("Command timed out.")
+        }
+        return AgentRunText("Command exited with \(exitCode.map(String.init) ?? "unknown").")
+    }
+
+    var failureSummary: AgentRunText? {
+        if didTimeOut {
+            return AgentRunText("Command timed out.")
+        }
+        guard exitCode != 0 else { return nil }
+        return AgentRunText("Command exited with non-zero status \(exitCode.map(String.init) ?? "unknown").")
+    }
 }
 
 nonisolated struct AgentProcessExecutionOutput: Codable, Equatable, Sendable {
@@ -246,7 +265,7 @@ nonisolated struct AgentShellCommandExecutor: AgentCommandExecuting {
         let collector = AgentSideEffectCommandOutputCollector(maxBytes: maxOutputBytes)
 
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-lc", command]
+        process.arguments = ["-lc", Self.shellScript(for: command)]
         process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory).standardizedFileURL
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
@@ -292,6 +311,13 @@ nonisolated struct AgentShellCommandExecutor: AgentCommandExecuting {
             durationSeconds: Date().timeIntervalSince(startedAt),
             didTimeOut: didTimeOut
         )
+    }
+
+    private static func shellScript(for command: String) -> String {
+        """
+        set -o pipefail
+        \(command)
+        """
     }
 }
 
@@ -395,6 +421,12 @@ actor AgentSideEffectController {
         }
         let wait = try await store.waitRecord(waitID: waitID)
         guard wait.status == .pending else {
+            if decision == .approved, wait.status == .approved, sideEffect.status == .approved {
+                return sideEffect
+            }
+            if decision == .denied, wait.status == .denied, sideEffect.status == .denied {
+                return sideEffect
+            }
             throw AgentSideEffectError.duplicateApproval(waitID)
         }
 
@@ -589,14 +621,14 @@ actor AgentSideEffectController {
                 mimeType: "application/json",
                 fileExtension: "json",
                 data: outputData,
-                summary: AgentRunText("Command exited with \(output.exitCode.map(String.init) ?? "timeout").")
+                summary: output.summary
             )
             return try await store.updateSideEffect(
                 sideEffectID: sideEffect.sideEffectID,
-                status: output.didTimeOut ? .failed : .completed,
+                status: output.succeeded ? .completed : .failed,
                 afterArtifactID: artifact.artifactID,
                 completedAt: Date(),
-                errorSummary: output.didTimeOut ? AgentRunText("Command timed out.") : nil,
+                errorSummary: output.failureSummary,
                 updatedAt: Date()
             )
         } catch {

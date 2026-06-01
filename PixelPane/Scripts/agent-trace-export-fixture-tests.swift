@@ -14,8 +14,7 @@ enum AgentTraceExportFixtureHarness {
     @MainActor
     static func run() async throws {
         try await testTraceExportRedactsAndSummarizes()
-        try await testRecentSessionsAndClearHistory()
-        try await testLegacyImport()
+        try await testRefreshKeepsRecentSessionsOutOfRunProjection()
     }
 
     @MainActor
@@ -72,7 +71,7 @@ enum AgentTraceExportFixtureHarness {
     }
 
     @MainActor
-    private static func testRecentSessionsAndClearHistory() async throws {
+    private static func testRefreshKeepsRecentSessionsOutOfRunProjection() async throws {
         let (store, viewModel) = try await makeHarness()
         for index in 0..<2 {
             let session = try await store.createSession(title: "Session \(index)", contextID: "session-\(index)", contextKind: "assistant")
@@ -82,32 +81,10 @@ enum AgentTraceExportFixtureHarness {
         }
 
         await viewModel.refresh()
-        try expect(viewModel.state.recentSessions.count == 2, "recent sessions should project from store")
+        try expect(viewModel.state.recentSessions.isEmpty, "run projection should not expose universal recent sessions")
         try await viewModel.clearHistory()
-        try expect(viewModel.state.recentSessions.isEmpty, "clear history should clear projected sessions")
         let sessionsAfterClear = await store.allSessions()
         try expect(sessionsAfterClear.isEmpty, "clear history should clear store sessions")
-    }
-
-    @MainActor
-    private static func testLegacyImport() async throws {
-        let (_, viewModel) = try await makeHarness()
-        try await viewModel.importLegacyConversation(
-            context: AgentRunViewContext(title: "Legacy", contextID: "legacy", contextKind: "assistant"),
-            turns: [
-                AgentRunLegacyConversationTurn(
-                    question: "Legacy question",
-                    answer: "Legacy answer",
-                    backendLabel: "MLX Text"
-                )
-            ]
-        )
-        try await viewModel.loadOrCreateSession(
-            context: AgentRunViewContext(title: "Legacy", contextID: "legacy", contextKind: "assistant")
-        )
-
-        try expect(viewModel.state.messages.map(\.text.text) == ["Legacy question", "Legacy answer"], "legacy turns should import as durable messages")
-        try expect(viewModel.state.activeStatus == .completed, "legacy import should create completed run")
     }
 
     @MainActor

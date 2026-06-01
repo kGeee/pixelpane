@@ -22,6 +22,7 @@ swiftc \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentModelGateway.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentPermissionPolicy.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentSideEffectController.swift" \
+  "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentLocalEvidencePlanner.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentEvidencePackets.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentToolOrchestrator.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentRunTraceExport.swift" \

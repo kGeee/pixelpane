@@ -19,7 +19,11 @@ enum AgentModelGatewayFixtureHarness {
         try await testContextOverflow()
         try await testGatewayTimeoutAndCancellation()
         try await testToolCallValidation()
+        try await testWrappedProtocolPayloadsNormalize()
         try await testAIBackendBridgeUsesRawProtocolText()
+        try await testCloudChatAdapterIsPlainChatOnly()
+        try await testCloudChatAdapterSupportsToolProtocolWhenEnabled()
+        try await testTierCCloudRouteRejectsToolsBeforeAdapterCall()
     }
 
     private static func testTierClassification() async throws {
@@ -182,6 +186,146 @@ enum AgentModelGatewayFixtureHarness {
         try expect(call.arguments["content"]?.contains(" necho") == false, "tool content should not use display-normalized newline artifacts")
     }
 
+    private static func testCloudChatAdapterIsPlainChatOnly() async throws {
+        let backend = FixtureCloudChatBackend(responseText: "cloud answer")
+        let descriptor = AgentKernelModelDescriptorV2(
+            id: "fixture.cloud-chat",
+            providerKind: .pixelPaneCloud,
+            route: .cloud,
+            displayName: "Fixture Cloud"
+        )
+        let adapter = AgentKernelCloudChatAdapterV2(
+            descriptor: descriptor,
+            backend: backend,
+            backendCapabilities: await backend.capabilities()
+        )
+        try expect(AgentModelGateway.tier(for: adapter.capabilities) == .tierCPlainChat, "cloud chat adapter should be Tier C")
+
+        let gateway = AgentModelGateway(adapters: [adapter])
+        let result = await gateway.response(
+            adapterID: descriptor.id,
+            request: AgentModelGatewayRequest(
+                mode: .plainChat,
+                messages: [
+                    AgentKernelMessageV2(role: .system, content: "local-only system prompt"),
+                    AgentKernelMessageV2(role: .user, content: "hello"),
+                    AgentKernelMessageV2(role: .assistant, content: "hi"),
+                    AgentKernelMessageV2(role: .observation, content: "local file evidence"),
+                    AgentKernelMessageV2(role: .user, content: "answer from cloud")
+                ],
+                requestedMaxOutputTokens: 256
+            )
+        )
+        let captured = backend.lastRequest()
+
+        try expect(result.response?.events == [.finalAnswer("cloud answer")], "cloud chat should return display text as a final answer")
+        try expect(captured?.actionKind == .chat, "cloud chat adapter should call the chat action")
+        try expect(captured?.cloudQuestion == "answer from cloud", "cloud chat adapter should send the latest user message as question")
+        try expect(captured?.prompt == "answer from cloud", "cloud chat adapter should not send an AGENTR protocol prompt")
+        try expect(captured?.cloudConversation.count == 2, "cloud chat adapter should send only prior user/assistant turns")
+        try expect(captured?.cloudConversation.map(\.content) == ["hello", "hi"], "cloud chat adapter should omit system and observation messages")
+    }
+
+    private static func testCloudChatAdapterSupportsToolProtocolWhenEnabled() async throws {
+        let backend = FixtureCloudChatBackend(
+            responseText: ##"{"type":"tool_call","name":"read_file","arguments":{"path":"notes.txt"},"reason":"Need local evidence."}"##
+        )
+        let descriptor = AgentKernelModelDescriptorV2(
+            id: "fixture.cloud-tools",
+            providerKind: .pixelPaneCloud,
+            route: .cloud,
+            displayName: "Fixture Cloud Tools"
+        )
+        let adapter = AgentKernelCloudChatAdapterV2(
+            descriptor: descriptor,
+            backend: backend,
+            backendCapabilities: await backend.capabilities(),
+            supportsLocalToolProtocol: true
+        )
+        try expect(AgentModelGateway.tier(for: adapter.capabilities) == .tierBConstrainedStructuredText, "cloud tool adapter should be Tier B")
+
+        let gateway = AgentModelGateway(adapters: [adapter])
+        let result = await gateway.response(
+            adapterID: descriptor.id,
+            request: AgentModelGatewayRequest(
+                mode: .constrainedStructuredText,
+                messages: [AgentKernelMessageV2(role: .user, content: "read notes")],
+                tools: [readFileTool()],
+                requestedMaxOutputTokens: 256
+            )
+        )
+        let captured = backend.lastRequest()
+
+        guard case .toolCall(let call)? = result.response?.events.first else {
+            throw HarnessError(description: "cloud tool adapter should parse text-protocol tool call")
+        }
+        try expect(call.name == "read_file", "cloud tool adapter should return the requested tool call")
+        try expect(call.arguments["path"] == "notes.txt", "cloud tool adapter should preserve tool arguments")
+        try expect(captured?.actionKind == .chat, "cloud tool adapter should still use the cloud chat endpoint")
+        try expect(captured?.cloudQuestion?.contains("Valid tool call format") == true, "cloud tool adapter should send the AGENTR protocol prompt as the cloud question")
+        try expect(captured?.prompt == captured?.cloudQuestion, "cloud prompt and question should carry the same protocol text")
+        try expect(captured?.cloudConversation.isEmpty == true, "cloud tool protocol should keep observations inside the protocol prompt")
+    }
+
+    private static func testTierCCloudRouteRejectsToolsBeforeAdapterCall() async throws {
+        let cloud = fixtureAdapter(
+            id: "fixture.cloud-route-guard",
+            route: .cloud,
+            toolCallingMode: .none,
+            structured: .unsupported,
+            responses: [.finalAnswer("should not execute")]
+        )
+        let gateway = AgentModelGateway(adapters: [cloud])
+        let result = await gateway.response(
+            adapterID: cloud.descriptor.id,
+            request: AgentModelGatewayRequest(
+                mode: .constrainedStructuredText,
+                messages: [AgentKernelMessageV2(role: .user, content: "read local file")],
+                tools: [readFileTool()]
+            )
+        )
+        let lastRequest = await cloud.lastRequest()
+
+        try expect(result.failure?.kind == .unsupportedToolMode, "Tier C cloud route should reject local tool mode")
+        try expect(lastRequest == nil, "Tier C cloud route should fail before adapter execution")
+    }
+
+    private static func testWrappedProtocolPayloadsNormalize() async throws {
+        let rawProtocol = ##"""
+        ```json
+        {"type":"final_answer","text":"Wrapped answer"}
+        ```<|im_end|>
+        """##
+        let backend = FixtureRawProtocolBackend(rawText: rawProtocol, displayText: rawProtocol)
+        let descriptor = AgentKernelModelDescriptorV2(
+            id: "fixture.wrapped-protocol",
+            providerKind: .fixture,
+            route: .local,
+            displayName: "Fixture Wrapped Protocol"
+        )
+        let adapter = AgentKernelAIBackendAdapterV2(
+            descriptor: descriptor,
+            backend: backend,
+            capabilities: AgentKernelModelAdapterCapabilitiesV2(
+                descriptor: descriptor,
+                toolCallingMode: .textProtocol,
+                structuredOutputReliability: .bestEffort,
+                streamingMode: .snapshots
+            )
+        )
+        let gateway = AgentModelGateway(adapters: [adapter])
+        let result = await gateway.response(
+            adapterID: descriptor.id,
+            request: AgentModelGatewayRequest(
+                mode: .constrainedStructuredText,
+                messages: [AgentKernelMessageV2(role: .user, content: "answer")],
+                tools: [readFileTool()]
+            )
+        )
+
+        try expect(result.response?.events == [.finalAnswer("Wrapped answer")], "fenced protocol JSON with stop tokens should normalize")
+    }
+
     private static func request(
         mode: AgentModelGatewayMode,
         tools: [AgentKernelToolSchemaV2] = [],
@@ -218,6 +362,7 @@ enum AgentModelGatewayFixtureHarness {
 
     private static func fixtureAdapter(
         id: String = UUID().uuidString,
+        route: AgentKernelModelRouteV2 = .local,
         toolCallingMode: AgentKernelToolCallingModeV2 = .native,
         structured: AgentKernelStructuredOutputReliabilityV2 = .strict,
         limits: AgentKernelModelLimitsV2 = AgentKernelModelLimitsV2(contextWindowTokens: 8_192),
@@ -227,7 +372,7 @@ enum AgentModelGatewayFixtureHarness {
         let descriptor = AgentKernelModelDescriptorV2(
             id: id,
             providerKind: .fixture,
-            route: .local,
+            route: route,
             displayName: id
         )
         let capabilities = AgentKernelModelAdapterCapabilitiesV2(
@@ -284,6 +429,47 @@ final class FixtureRawProtocolBackend: AIBackend, @unchecked Sendable {
             continuation.yield(.completed)
             continuation.finish()
         }
+    }
+}
+
+final class FixtureCloudChatBackend: AIBackend, @unchecked Sendable {
+    let id = "fixture-cloud-chat"
+    let displayName = "Fixture Cloud Chat"
+
+    private let responseText: String
+    private let lock = NSLock()
+    private var capturedRequests: [AIBackendRequest] = []
+
+    init(responseText: String) {
+        self.responseText = responseText
+    }
+
+    func capabilities() async -> AIBackendCapabilities {
+        AIBackendCapabilities(
+            text: .available(.pixelPaneCloud),
+            image: .unavailable(.cloudImageConsentMissing),
+            contextWindowTokens: nil,
+            maxPromptCharacters: 80_000,
+            maxOutputTokens: 1_024
+        )
+    }
+
+    func streamResponse(for request: AIBackendRequest) -> AsyncThrowingStream<AIBackendStreamEvent, Error> {
+        lock.lock()
+        capturedRequests.append(request)
+        lock.unlock()
+        let responseText = self.responseText
+        return AsyncThrowingStream { continuation in
+            continuation.yield(.snapshot(responseText))
+            continuation.yield(.completed)
+            continuation.finish()
+        }
+    }
+
+    func lastRequest() -> AIBackendRequest? {
+        lock.lock()
+        defer { lock.unlock() }
+        return capturedRequests.last
     }
 }
 

@@ -5,11 +5,18 @@ nonisolated struct AgentRunViewContext: Codable, Equatable, Sendable {
     let title: String
     let contextID: String?
     let contextKind: String?
+    let selectedAction: String?
 
-    init(title: String, contextID: String? = nil, contextKind: String? = nil) {
+    init(
+        title: String,
+        contextID: String? = nil,
+        contextKind: String? = nil,
+        selectedAction: String? = nil
+    ) {
         self.title = title
         self.contextID = contextID
         self.contextKind = contextKind
+        self.selectedAction = selectedAction
     }
 }
 
@@ -113,6 +120,11 @@ nonisolated struct AgentRunRecoveryProjection: Codable, Equatable, Sendable {
         interruptedRunIDs = result.interruptedRuns.map(\.runID)
         pendingWaitIDs = result.pendingWaits.map(\.waitID)
     }
+
+    init(interruptedRunIDs: [UUID], pendingWaitIDs: [UUID]) {
+        self.interruptedRunIDs = interruptedRunIDs
+        self.pendingWaitIDs = pendingWaitIDs
+    }
 }
 
 nonisolated struct AgentRunViewState: Codable, Equatable, Sendable {
@@ -120,6 +132,7 @@ nonisolated struct AgentRunViewState: Codable, Equatable, Sendable {
     let activeRunID: UUID?
     let activeStatus: AgentRunStatus?
     let latestProgress: AgentRunText?
+    let terminalSummary: AgentRunText?
     let messages: [AgentRunProjectedMessage]
     let pendingApprovals: [AgentRunProjectedApproval]
     let recentSessions: [AgentRunProjectedSession]
@@ -132,6 +145,7 @@ nonisolated struct AgentRunViewState: Codable, Equatable, Sendable {
         activeRunID: nil,
         activeStatus: nil,
         latestProgress: nil,
+        terminalSummary: nil,
         messages: [],
         pendingApprovals: [],
         recentSessions: [],
@@ -154,7 +168,15 @@ nonisolated struct AgentRunViewState: Codable, Equatable, Sendable {
     }
 
     var statusSummary: String {
-        if let latestProgress, !latestProgress.text.isEmpty {
+        if activeStatus?.isTerminal == true,
+           let terminalSummary,
+           !terminalSummary.text.isEmpty {
+            return terminalSummary.text
+        }
+
+        if activeStatus?.isTerminal != true,
+           let latestProgress,
+           !latestProgress.text.isEmpty {
             return latestProgress.text
         }
 
@@ -185,9 +207,11 @@ nonisolated struct AgentRunViewState: Codable, Equatable, Sendable {
     }
 }
 
-nonisolated enum AgentRunViewModelError: Error, Equatable, CustomStringConvertible {
+nonisolated enum AgentRunViewModelError: Error, CustomStringConvertible {
     case activeRunInProgress(UUID)
     case missingActiveRun
+    case missingRunConfiguration(UUID)
+    case adapterChanged(expected: AgentKernelModelDescriptorV2, actual: AgentKernelModelDescriptorV2)
 
     var description: String {
         switch self {
@@ -195,6 +219,10 @@ nonisolated enum AgentRunViewModelError: Error, Equatable, CustomStringConvertib
             return "Agent run \(runID) is already active."
         case .missingActiveRun:
             return "No active agent run is loaded."
+        case .missingRunConfiguration(let runID):
+            return "Agent run \(runID) is missing its saved model and tool configuration."
+        case .adapterChanged(let expected, let actual):
+            return "Agent run was staged with \(expected.displayName), but the current adapter is \(actual.displayName)."
         }
     }
 }
@@ -267,61 +295,6 @@ final class AgentRunViewModel: ObservableObject {
         await refresh()
     }
 
-    func importLegacyConversation(
-        context: AgentRunViewContext,
-        turns: [AgentRunLegacyConversationTurn]
-    ) async throws {
-        guard !turns.isEmpty else { return }
-        if let existing = await store.sessions(contextID: context.contextID, contextKind: context.contextKind).first {
-            let messages = await store.visibleMessages(sessionID: existing.id)
-            if !messages.isEmpty {
-                return
-            }
-        }
-
-        let session = try await store.createSession(
-            title: context.title,
-            contextID: context.contextID,
-            contextKind: context.contextKind,
-            createdAt: turns.first?.createdAt ?? Date()
-        )
-        let run = try await store.createRun(sessionID: session.id, status: .queued, createdAt: turns.first?.createdAt ?? Date())
-        for turn in turns {
-            let question = turn.question.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !question.isEmpty {
-                try await store.appendEvent(
-                    runID: run.runID,
-                    kind: .userMessage,
-                    payload: .text(AgentRunText(question)),
-                    createdAt: turn.createdAt
-                )
-            }
-            let answer = turn.answer.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !answer.isEmpty {
-                try await store.appendEvent(
-                    runID: run.runID,
-                    kind: .assistantMessage,
-                    payload: .text(AgentRunText(answer)),
-                    createdAt: turn.createdAt
-                )
-            }
-            if !turn.backendLabel.isEmpty {
-                try await store.appendEvent(
-                    runID: run.runID,
-                    kind: .providerDiagnostic,
-                    payload: .metadata(["legacyBackend": .string(turn.backendLabel)]),
-                    createdAt: turn.createdAt
-                )
-            }
-        }
-        _ = try await store.updateRunStatus(
-            runID: run.runID,
-            status: .completed,
-            reason: AgentRunText("Imported from legacy chat history.")
-        )
-        await refresh()
-    }
-
     @discardableResult
     func startRun(
         userMessage: String,
@@ -358,12 +331,20 @@ final class AgentRunViewModel: ObservableObject {
             attachments: attachments,
             requestedMaxOutputTokens: maxOutputTokens,
             timeout: timeout,
-            metadata: [
-                "sessionID": .string(session.id.uuidString),
-                "runID": .string(run.runID.uuidString)
-            ]
+            metadata: Self.requestMetadata(sessionID: session.id, runID: run.runID, context: context)
         )
         let adapterID = adapter.descriptor.id
+        try await store.appendEvent(
+            runID: run.runID,
+            kind: .custom,
+            payload: .runConfiguration(
+                AgentRunModelConfigurationRecord(
+                    adapterDescriptor: adapter.descriptor,
+                    request: request,
+                    toolContext: toolContext
+                )
+            )
+        )
         let gateway = AgentModelGateway(adapters: [adapter])
         let orchestrator = AgentToolOrchestrator(
             store: store,
@@ -387,16 +368,19 @@ final class AgentRunViewModel: ObservableObject {
                     reason: AgentRunText("Runner canceled.")
                 )
             } catch {
-                _ = try? await self.store.updateRunStatus(
-                    runID: run.runID,
-                    status: .failed,
-                    reason: AgentRunText(String(describing: error))
-                )
-                _ = try? await self.store.appendEvent(
-                    runID: run.runID,
-                    kind: .failure,
-                    payload: .diagnostic(AgentRunText(String(describing: error)))
-                )
+                if let current = try? await self.store.runRecord(runID: run.runID),
+                   !current.status.isTerminal {
+                    _ = try? await self.store.updateRunStatus(
+                        runID: run.runID,
+                        status: .failed,
+                        reason: AgentRunText(String(describing: error))
+                    )
+                    _ = try? await self.store.appendEvent(
+                        runID: run.runID,
+                        kind: .failure,
+                        payload: .diagnostic(AgentRunText(String(describing: error)))
+                    )
+                }
             }
             self.activeTask = nil
             await self.refresh()
@@ -446,6 +430,20 @@ final class AgentRunViewModel: ObservableObject {
 
     func approveWait(
         _ waitID: UUID,
+        adapter: any AgentKernelModelAdapterV2
+    ) async throws {
+        try await approveWait(
+            waitID,
+            adapter: adapter,
+            context: AgentRunViewContext(title: "Assistant"),
+            mode: .plainChat,
+            tools: [],
+            toolContext: .plainChat
+        )
+    }
+
+    func approveWait(
+        _ waitID: UUID,
         adapter: any AgentKernelModelAdapterV2,
         context: AgentRunViewContext,
         mode: AgentModelGatewayMode,
@@ -459,21 +457,37 @@ final class AgentRunViewModel: ObservableObject {
         let wait = try await store.waitRecord(waitID: waitID)
         sessionID = wait.sessionID
         activeRunID = wait.runID
-        let request = AgentModelGatewayRequest(
-            mode: mode,
-            messages: Self.modelMessages(
-                from: await store.visibleMessages(sessionID: wait.sessionID),
-                systemPrompt: systemPrompt
-            ),
-            tools: tools,
-            attachments: attachments,
-            requestedMaxOutputTokens: maxOutputTokens,
-            timeout: timeout,
-            metadata: [
-                "sessionID": .string(wait.sessionID.uuidString),
-                "runID": .string(wait.runID.uuidString),
-                "approvalWaitID": .string(waitID.uuidString)
-            ]
+        try await projectApprovalDecision(
+            wait,
+            decision: .approved,
+            immediateStatus: .running,
+            progress: AgentRunText("Approved. Running approved action.")
+        )
+        await refresh()
+        let configuration = try await continuationConfiguration(
+            for: wait,
+            adapter: adapter,
+            fallback: AgentRunModelConfigurationRecord(
+                adapterDescriptor: adapter.descriptor,
+                request: AgentModelGatewayRequest(
+                    mode: mode,
+                    messages: Self.modelMessages(
+                        from: await store.visibleMessages(sessionID: wait.sessionID),
+                        systemPrompt: systemPrompt
+                    ),
+                    tools: tools,
+                    attachments: attachments,
+                    requestedMaxOutputTokens: maxOutputTokens,
+                    timeout: timeout,
+                    metadata: Self.requestMetadata(
+                        sessionID: wait.sessionID,
+                        runID: wait.runID,
+                        context: context,
+                        approvalWaitID: waitID
+                    )
+                ),
+                toolContext: toolContext
+            )
         )
         let gateway = AgentModelGateway(adapters: [adapter])
         let orchestrator = AgentToolOrchestrator(
@@ -484,8 +498,8 @@ final class AgentRunViewModel: ObservableObject {
         try await orchestrator.continueAfterApproval(
             waitID: waitID,
             runID: wait.runID,
-            request: request,
-            context: toolContext,
+            request: request(configuration.request, approvalWaitID: waitID),
+            context: configuration.toolContext,
             approved: true
         )
         await refresh()
@@ -508,6 +522,20 @@ final class AgentRunViewModel: ObservableObject {
 
     func denyWait(
         _ waitID: UUID,
+        adapter: any AgentKernelModelAdapterV2
+    ) async throws {
+        try await denyWait(
+            waitID,
+            adapter: adapter,
+            context: AgentRunViewContext(title: "Assistant"),
+            mode: .plainChat,
+            tools: [],
+            toolContext: .plainChat
+        )
+    }
+
+    func denyWait(
+        _ waitID: UUID,
         adapter: any AgentKernelModelAdapterV2,
         context: AgentRunViewContext,
         mode: AgentModelGatewayMode,
@@ -521,21 +549,37 @@ final class AgentRunViewModel: ObservableObject {
         let wait = try await store.waitRecord(waitID: waitID)
         sessionID = wait.sessionID
         activeRunID = wait.runID
-        let request = AgentModelGatewayRequest(
-            mode: mode,
-            messages: Self.modelMessages(
-                from: await store.visibleMessages(sessionID: wait.sessionID),
-                systemPrompt: systemPrompt
-            ),
-            tools: tools,
-            attachments: attachments,
-            requestedMaxOutputTokens: maxOutputTokens,
-            timeout: timeout,
-            metadata: [
-                "sessionID": .string(wait.sessionID.uuidString),
-                "runID": .string(wait.runID.uuidString),
-                "approvalWaitID": .string(waitID.uuidString)
-            ]
+        try await projectApprovalDecision(
+            wait,
+            decision: .denied,
+            immediateStatus: .blocked,
+            progress: AgentRunText("Denied. The proposed action will not run.")
+        )
+        await refresh()
+        let configuration = try await continuationConfiguration(
+            for: wait,
+            adapter: adapter,
+            fallback: AgentRunModelConfigurationRecord(
+                adapterDescriptor: adapter.descriptor,
+                request: AgentModelGatewayRequest(
+                    mode: mode,
+                    messages: Self.modelMessages(
+                        from: await store.visibleMessages(sessionID: wait.sessionID),
+                        systemPrompt: systemPrompt
+                    ),
+                    tools: tools,
+                    attachments: attachments,
+                    requestedMaxOutputTokens: maxOutputTokens,
+                    timeout: timeout,
+                    metadata: Self.requestMetadata(
+                        sessionID: wait.sessionID,
+                        runID: wait.runID,
+                        context: context,
+                        approvalWaitID: waitID
+                    )
+                ),
+                toolContext: toolContext
+            )
         )
         let gateway = AgentModelGateway(adapters: [adapter])
         let orchestrator = AgentToolOrchestrator(
@@ -546,12 +590,71 @@ final class AgentRunViewModel: ObservableObject {
         try await orchestrator.continueAfterApproval(
             waitID: waitID,
             runID: wait.runID,
-            request: request,
-            context: toolContext,
+            request: request(configuration.request, approvalWaitID: waitID),
+            context: configuration.toolContext,
             approved: false
         )
         await refresh()
     }
+
+    private func projectApprovalDecision(
+        _ wait: AgentRunWaitRecord,
+        decision: AgentSideEffectApprovalDecision,
+        immediateStatus: AgentRunStatus,
+        progress: AgentRunText
+    ) async throws {
+        if let sideEffect = await store.sideEffects(runID: wait.runID).first(where: { $0.approvalWaitID == wait.waitID }) {
+            _ = try await AgentSideEffectController(store: store).resolveApproval(
+                sideEffectID: sideEffect.sideEffectID,
+                decision: decision,
+                summary: progress
+            )
+        } else {
+            _ = try await store.resolveWait(
+                waitID: wait.waitID,
+                status: decision == .approved ? .approved : .denied,
+                summary: progress
+            )
+        }
+        try await store.updateRunStatus(
+            runID: wait.runID,
+            status: immediateStatus,
+            reason: progress
+        )
+        try await store.appendEvent(
+            runID: wait.runID,
+            kind: .progress,
+            payload: .progress(progress)
+        )
+    }
+
+#if DEBUG
+    func debugTraceExportsForCurrentSession() async -> [String] {
+        guard let currentSessionID = state.sessionID ?? sessionID else { return [] }
+        let runs = await store.runs(sessionID: currentSessionID)
+            .sorted { lhs, rhs in
+                if lhs.createdAt == rhs.createdAt {
+                    lhs.runID.uuidString < rhs.runID.uuidString
+                } else {
+                    lhs.createdAt < rhs.createdAt
+                }
+            }
+        let visibleMessages = await store.visibleMessages(sessionID: currentSessionID)
+        let exporter = AgentRunTraceExporter()
+
+        var exports: [String] = []
+        for run in runs {
+            guard let trace = try? await store.traceProjection(runID: run.runID) else { continue }
+            exports.append(
+                exporter.export(
+                    trace: trace,
+                    visibleMessages: visibleMessages.filter { $0.runID == run.runID }
+                )
+            )
+        }
+        return exports
+    }
+#endif
 
     func retryInterruptedRun() async throws {
         guard let runID = state.activeRunID ?? activeRunID else {
@@ -622,15 +725,21 @@ final class AgentRunViewModel: ObservableObject {
     private func refresh(recovery: AgentRunRecoveryProjection?) async {
         let session = await currentSession()
         let run = await currentRun(sessionID: session?.id)
-        let rawMessages = await store.visibleMessages(sessionID: session?.id)
+        let rawMessages: [AgentRunVisibleMessage]
+        if let session {
+            rawMessages = await store.visibleMessages(sessionID: session.id)
+        } else {
+            rawMessages = []
+        }
         let messages = rawMessages.map(AgentRunProjectedMessage.init)
-        let recentSessions = await projectedRecentSessions()
 
         let latestProgress: AgentRunText?
+        let terminalSummary: AgentRunText?
         let pendingApprovals: [AgentRunProjectedApproval]
         let traceExport: String?
         if let run {
             latestProgress = await store.latestProgress(runID: run.runID)
+            terminalSummary = await store.latestTerminalSummary(runID: run.runID)
             let sideEffects = await store.sideEffects(runID: run.runID)
             pendingApprovals = await store.pendingWaits(runID: run.runID).map { wait in
                 AgentRunProjectedApproval(
@@ -648,6 +757,7 @@ final class AgentRunViewModel: ObservableObject {
             }
         } else {
             latestProgress = nil
+            terminalSummary = nil
             let sideEffects = await store.sideEffects()
             pendingApprovals = await store.pendingWaits().map { wait in
                 AgentRunProjectedApproval(
@@ -663,22 +773,39 @@ final class AgentRunViewModel: ObservableObject {
             activeRunID: run?.runID,
             activeStatus: run?.status,
             latestProgress: latestProgress,
+            terminalSummary: terminalSummary,
             messages: messages,
             pendingApprovals: pendingApprovals,
-            recentSessions: recentSessions,
+            recentSessions: [],
             traceExport: traceExport,
-            recovery: recovery,
+            recovery: await filteredRecovery(recovery),
             updatedAt: run?.updatedAt ?? session?.updatedAt
         )
+    }
+
+    private func filteredRecovery(_ recovery: AgentRunRecoveryProjection?) async -> AgentRunRecoveryProjection? {
+        guard let recovery else { return nil }
+        var interrupted: [UUID] = []
+        for runID in recovery.interruptedRunIDs {
+            guard let run = try? await store.runRecord(runID: runID),
+                  run.status == .interrupted || !run.status.isTerminal else { continue }
+            interrupted.append(runID)
+        }
+        var waits: [UUID] = []
+        for waitID in recovery.pendingWaitIDs {
+            guard let wait = try? await store.waitRecord(waitID: waitID),
+                  wait.status == .pending else { continue }
+            waits.append(waitID)
+        }
+        guard !interrupted.isEmpty || !waits.isEmpty else { return nil }
+        return AgentRunRecoveryProjection(interruptedRunIDs: interrupted, pendingWaitIDs: waits)
     }
 
     private func currentSession() async -> AgentRunSessionRecord? {
         if let sessionID, let session = try? await store.sessionRecord(sessionID: sessionID) {
             return session
         }
-        let session = await store.allSessions().first
-        sessionID = session?.id
-        return session
+        return nil
     }
 
     private func currentRun(sessionID: UUID?) async -> AgentRunRecord? {
@@ -691,27 +818,68 @@ final class AgentRunViewModel: ObservableObject {
         return run
     }
 
-    private func projectedRecentSessions(limit: Int = 8) async -> [AgentRunProjectedSession] {
-        var projected: [AgentRunProjectedSession] = []
-        let sessions = await store.allSessions()
-        for session in sessions.prefix(limit) {
-            let latestRun = await store.latestRun(sessionID: session.id)
-            let messageCount = await store.visibleMessages(sessionID: session.id).count
-            guard messageCount > 0 || latestRun != nil else { continue }
-            projected.append(
-                AgentRunProjectedSession(
-                    id: session.id,
-                    title: session.title,
-                    contextID: session.contextID,
-                    contextKind: session.contextKind,
-                    updatedAt: session.updatedAt,
-                    latestRunID: latestRun?.runID,
-                    latestStatus: latestRun?.status,
-                    messageCount: messageCount
-                )
+    private func continuationConfiguration(
+        for wait: AgentRunWaitRecord,
+        adapter: any AgentKernelModelAdapterV2,
+        fallback: AgentRunModelConfigurationRecord
+    ) async throws -> AgentRunModelConfigurationRecord {
+        let configuration = (try? await store.traceProjection(runID: wait.runID).events.reversed().compactMap { event -> AgentRunModelConfigurationRecord? in
+            guard case .runConfiguration(let configuration) = event.payload else { return nil }
+            return configuration
+        }.first) ?? fallback
+
+        guard configuration.adapterDescriptor == adapter.descriptor else {
+            throw AgentRunViewModelError.adapterChanged(
+                expected: configuration.adapterDescriptor,
+                actual: adapter.descriptor
             )
         }
-        return projected
+
+        return configuration
+    }
+
+    private nonisolated func request(
+        _ baseRequest: AgentModelGatewayRequest,
+        approvalWaitID: UUID
+    ) -> AgentModelGatewayRequest {
+        var metadata = baseRequest.metadata
+        metadata["approvalWaitID"] = .string(approvalWaitID.uuidString)
+        return AgentModelGatewayRequest(
+            id: baseRequest.id,
+            mode: baseRequest.mode,
+            messages: baseRequest.messages,
+            tools: baseRequest.tools,
+            attachments: baseRequest.attachments,
+            requestedMaxOutputTokens: baseRequest.requestedMaxOutputTokens,
+            timeout: baseRequest.timeout,
+            metadata: metadata
+        )
+    }
+
+    private nonisolated static func requestMetadata(
+        sessionID: UUID,
+        runID: UUID,
+        context: AgentRunViewContext,
+        approvalWaitID: UUID? = nil
+    ) -> [String: AgentRunMetadataValue] {
+        var metadata: [String: AgentRunMetadataValue] = [
+            "sessionID": .string(sessionID.uuidString),
+            "runID": .string(runID.uuidString),
+            "contextTitle": .string(context.title)
+        ]
+        if let contextID = context.contextID {
+            metadata["contextID"] = .string(contextID)
+        }
+        if let contextKind = context.contextKind {
+            metadata["contextKind"] = .string(contextKind)
+        }
+        if let selectedAction = context.selectedAction {
+            metadata["selectedAction"] = .string(selectedAction)
+        }
+        if let approvalWaitID {
+            metadata["approvalWaitID"] = .string(approvalWaitID.uuidString)
+        }
+        return metadata
     }
 
     private nonisolated static func modelMessages(

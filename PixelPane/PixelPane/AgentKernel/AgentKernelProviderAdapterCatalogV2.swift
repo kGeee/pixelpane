@@ -45,22 +45,20 @@ enum AgentKernelProviderAdapterCatalogV2 {
 
     nonisolated static func pixelPaneCloudAdapter(
         backend: CloudAIBackend
-    ) async -> AgentKernelAIBackendAdapterV2 {
+    ) async -> AgentKernelCloudChatAdapterV2 {
         let descriptor = AgentKernelModelDescriptorV2(
             id: "pixel-pane-cloud.v2",
             providerKind: .pixelPaneCloud,
             route: .cloud,
             displayName: backend.displayName
         )
-        let capabilities = AgentKernelModelAdapterCapabilitiesV2.aiBackendBridge(
-            descriptor: descriptor,
-            backendCapabilities: await backend.capabilities()
-        )
-        return AgentKernelAIBackendAdapterV2(
+        let capabilities = await backend.capabilities()
+        return AgentKernelCloudChatAdapterV2(
             descriptor: descriptor,
             backend: backend,
-            capabilities: capabilities,
-            preferredProvider: .pixelPaneCloud
+            backendCapabilities: capabilities,
+            preferredProvider: .pixelPaneCloud,
+            supportsLocalToolProtocol: true
         )
     }
 

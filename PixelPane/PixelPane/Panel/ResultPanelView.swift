@@ -234,31 +234,9 @@ struct ResultPanelView: View {
         guard !didLoadAgentRunProjection else { return }
         didLoadAgentRunProjection = true
         Task {
-            await importLegacyChatHistoryIfNeeded()
             try? await agentRunViewModel.loadOrCreateSession(context: agentRunViewContext())
             _ = try? await agentRunViewModel.recoverOnLaunch()
             applyAgentRunProjectionChange()
-        }
-    }
-
-    private func importLegacyChatHistoryIfNeeded() async {
-        let legacySessions = chatHistory.recentSessions(limit: 60)
-        for session in legacySessions {
-            try? await agentRunViewModel.importLegacyConversation(
-                context: AgentRunViewContext(
-                    title: session.displayTitle,
-                    contextID: session.contextID,
-                    contextKind: session.contextKind.rawValue
-                ),
-                turns: session.turns.map { turn in
-                    AgentRunLegacyConversationTurn(
-                        question: turn.question,
-                        answer: turn.answer,
-                        backendLabel: turn.backendLabel,
-                        createdAt: turn.createdAt
-                    )
-                }
-            )
         }
     }
 
@@ -266,7 +244,8 @@ struct ResultPanelView: View {
         AgentRunViewContext(
             title: chatContextKind.displayName,
             contextID: chatContextID,
-            contextKind: chatContextKind.rawValue
+            contextKind: chatContextKind.rawValue,
+            selectedAction: selectedAction.rawValue
         )
     }
 
@@ -283,6 +262,8 @@ struct ResultPanelView: View {
             "You are Pixel Pane's local-first macOS assistant.",
             "When Pixel Pane exposes local tools, use those tools instead of asking the user to run terminal commands or paste file listings.",
             "Answer the user's latest message directly. Do not claim that files, commands, or processes changed unless Pixel Pane records an approved side effect.",
+            "Treat this chat as isolated from previous chats. Use only messages visible in this chat as conversation history.",
+            "If asked about previous chats or sessions and this chat does not contain them, say that no previous chat context is available here.",
             "If the available context is insufficient, say what is missing instead of inventing details."
         ]
 
@@ -322,6 +303,28 @@ struct ResultPanelView: View {
         }
 
         return sections.joined(separator: "\n\n")
+    }
+
+    private func agentModelAttachmentsForAsk() -> [AgentKernelModelAttachmentV2] {
+        guard let visualContext = assistantToolState.activeVisualContext else {
+            return []
+        }
+        var metadata: [String: AgentKernelMetadataValueV2] = [
+            "source": .string(visualContext.source.rawValue),
+            "hasImageInput": .bool(visualContext.hasImageInput),
+            "hasOCRText": .bool(visualContext.hasOCRText)
+        ]
+        if let ocrExcerpt = visualContext.ocrExcerpt, !ocrExcerpt.isEmpty {
+            metadata["ocrText"] = .string(ocrExcerpt)
+        }
+        return [
+            AgentKernelModelAttachmentV2(
+                modality: visualContext.hasImageInput ? .image : .text,
+                label: visualContext.label,
+                transientOnly: true,
+                metadata: metadata
+            )
+        ]
     }
 
     @ViewBuilder
@@ -1056,16 +1059,10 @@ struct ResultPanelView: View {
                         grants: localFileAccess.grants,
                         isDisabled: !loadingActions.isEmpty || isAskRunning,
                         onGrantFolder: localFileAccess.grantFolder,
+                        onGrantWritableFolder: localFileAccess.grantWritableFolder,
                         onGrantFile: localFileAccess.grantFile,
                         onRemove: localFileAccess.removeGrant,
                         onClear: localFileAccess.clearGrants
-                    )
-
-                    AgentRunHistoryMenuButton(
-                        sessions: agentRunViewModel.state.recentSessions,
-                        isDisabled: !loadingActions.isEmpty || isAskRunning,
-                        onSelect: loadAgentRunSession,
-                        onClearHistory: clearChatHistory
                     )
 
                     OverlayPillButton(
@@ -1137,17 +1134,15 @@ struct ResultPanelView: View {
     }
 
     private func copyChatTranscript() {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(chatTranscriptExportText(), forType: .string)
-        showConfirmation("Chat copied")
+        Task { @MainActor in
+            let transcript = await chatTranscriptExportText()
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(transcript, forType: .string)
+            showConfirmation("Chat copied")
+        }
     }
 
-    private func chatTranscriptExportText() -> String {
-        if let traceExport = agentRunViewModel.state.traceExport,
-           !traceExport.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return traceExport
-        }
-
+    private func chatTranscriptExportText() async -> String {
         var sections: [String] = []
         sections.append(
             """
@@ -1233,6 +1228,18 @@ struct ResultPanelView: View {
         if !toolStateText.isEmpty {
             sections.append("## Agent Tool State Snapshot\n\(toolStateText)")
         }
+
+#if DEBUG
+        let debugAppendix = await debugChatExportAppendix()
+        if !debugAppendix.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            sections.append(debugAppendix)
+        }
+#else
+        if let traceExport = agentRunViewModel.state.traceExport,
+           !traceExport.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            sections.append("## Latest Run Trace\n\(traceExport)")
+        }
+#endif
 
         return sections
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -1345,6 +1352,262 @@ struct ResultPanelView: View {
 
         return lines.joined(separator: "\n")
     }
+
+#if DEBUG
+    private func debugChatExportAppendix() async -> String {
+        let model = await makeAgentKernelModelAdapter()
+        let toolConfiguration = agentToolRunConfiguration(for: model)
+        var sections: [String] = [
+            """
+            ## Debug Appendix (DEBUG only)
+            Build Scope: DEBUG builds only; Release builds keep the normal transcript export.
+            Removal: delete this DEBUG-only appendix builder and its call site in `chatTranscriptExportText()`.
+            """
+        ]
+
+        sections.append(debugSessionProjectionSnapshot())
+        sections.append(debugModelAndProviderSnapshot(model: model))
+        sections.append(debugToolConfigurationSnapshot(toolConfiguration))
+        sections.append(debugPromptAndContextSnapshot())
+        sections.append(await debugAllRunTracesSnapshot())
+
+        return sections
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
+    }
+
+    private func debugSessionProjectionSnapshot() -> String {
+        let state = agentRunViewModel.state
+        let projectedRunIDs = Array(Set(state.messages.map { $0.runID.uuidString })).sorted()
+        var lines: [String] = [
+            "- Session ID: \(state.sessionID?.uuidString ?? "none")",
+            "- Active Run ID: \(state.activeRunID?.uuidString ?? "none")",
+            "- Active Status: \(state.activeStatus?.rawValue ?? "none")",
+            "- Status Summary: \(state.statusSummary)",
+            "- Updated At: \(state.updatedAt.map { Self.chatExportDateString($0) } ?? "none")",
+            "- Visible Durable Messages: \(state.messages.count)",
+            "- Displayed Ask Turns: \(displayedAskTurns.count)",
+            "- Projected Run IDs: \(Self.debugJoinedList(projectedRunIDs))",
+            "- Pending Approvals: \(state.pendingApprovals.count)"
+        ]
+
+        if let recovery = state.recovery {
+            lines.append("- Recovery Interrupted Runs: \(Self.debugJoinedList(recovery.interruptedRunIDs.map(\.uuidString)))")
+            lines.append("- Recovery Pending Waits: \(Self.debugJoinedList(recovery.pendingWaitIDs.map(\.uuidString)))")
+        }
+
+        if !state.pendingApprovals.isEmpty {
+            lines.append("- Pending Approval Details:")
+            lines.append(
+                contentsOf: state.pendingApprovals.prefix(12).map { approval in
+                    "  - \(approval.kind.rawValue) wait=\(approval.waitID.uuidString) run=\(approval.runID.uuidString) title=\(approval.title)"
+                }
+            )
+            if state.pendingApprovals.count > 12 {
+                lines.append("  - ... \(state.pendingApprovals.count - 12) more")
+            }
+        }
+
+        return "### Session And UI Projection\n\(lines.joined(separator: "\n"))"
+    }
+
+    private func debugModelAndProviderSnapshot(model: any AgentKernelModelAdapterV2) -> String {
+        let descriptor = model.descriptor
+        let capabilities = model.capabilities
+        let tier = AgentModelGateway.tier(for: capabilities)
+        let selectedModel = mlxModelStore.selectedModel
+        let cloudModels = debugStatisticValues(named: "Cloud model")
+        var lines: [String] = [
+            "- Effective Model Being Used: \(debugEffectiveModelLabel(model: model))",
+            "- Selected Backend ID: \(selectedAIBackend.id)",
+            "- Selected Backend Display Name: \(selectedAIBackend.displayName)",
+            "- Current Backend Label: \(actionBackendLabel ?? "none")",
+            "- Next Ask Backend Label: \(askBackendLabelForNextTurn())",
+            "- Adapter Descriptor ID: \(descriptor.id)",
+            "- Adapter Display Name: \(descriptor.displayName)",
+            "- Adapter Provider Kind: \(descriptor.providerKind.rawValue)",
+            "- Adapter Route: \(descriptor.route.rawValue)",
+            "- Adapter Model Name: \(descriptor.modelName ?? "none")",
+            "- Capability Tier: \(tier.rawValue)",
+            "- Cloud-Assisted Local Tools: \(descriptor.route == .cloud && tier != .tierCPlainChat ? "enabled" : "disabled")",
+            "- Tool Calling Mode: \(capabilities.toolCallingMode.rawValue)",
+            "- Structured Output Reliability: \(capabilities.structuredOutputReliability.rawValue)",
+            "- Streaming Mode: \(capabilities.streamingMode.rawValue)",
+            "- Input Modalities: \(Self.debugJoinedList(capabilities.inputModalities.map(\.rawValue).sorted()))",
+            "- Output Modalities: \(Self.debugJoinedList(capabilities.outputModalities.map(\.rawValue).sorted()))",
+            "- Adapter Available: \(capabilities.isAvailable ? "yes" : "no")",
+            "- Adapter Unavailable Reason: \(capabilities.unavailableReason?.text ?? "none")",
+            "- Context Window Tokens: \(capabilities.limits.contextWindowTokens.map(String.init) ?? "unknown")",
+            "- Max Prompt Characters: \(capabilities.limits.maxPromptCharacters)",
+            "- Max Output Tokens: \(capabilities.limits.maxOutputTokens)",
+            "- Reported Cloud Model Statistics: \(Self.debugJoinedList(cloudModels))",
+            "- Local Text Capability: \(Self.debugCapabilityStatus(localAICapabilities.text))",
+            "- Local Image Capability: \(Self.debugCapabilityStatus(localAICapabilities.image))",
+            "- MLX Setup State: \(mlxModelStore.setupState.rawValue)",
+            "- MLX Setup Failure: \(mlxModelStore.setupFailure ?? "none")",
+            "- Selected MLX Repository: \(selectedModel?.repositoryID ?? "none")",
+            "- Selected MLX Local Path: \(selectedModel?.localPath ?? "none")",
+            "- Selected MLX Smoke Tested At: \(selectedModel.map { Self.chatExportDateString($0.smokeTestedAt) } ?? "none")"
+        ]
+
+        if let modelName = selectedModelName {
+            lines.append("- Compact Selected Model Name: \(modelName)")
+        }
+
+        return "### Model And Provider Snapshot\n\(lines.joined(separator: "\n"))"
+    }
+
+    private func debugToolConfigurationSnapshot(
+        _ configuration: (
+            mode: AgentModelGatewayMode,
+            tools: [AgentKernelToolSchemaV2],
+            context: AgentToolRunContext
+        )
+    ) -> String {
+        let tools = configuration.tools.map(\.name).sorted()
+        let grants = configuration.context.localGrants
+        var lines: [String] = [
+            "- Gateway Mode: \(configuration.mode.rawValue)",
+            "- Run Permission Mode: \(configuration.context.runMode.rawValue)",
+            "- Active Tool Capability: \(configuration.mode == .plainChat || tools.isEmpty ? "plain-chat" : "agent-tools")",
+            "- Visible Tool Count: \(tools.count)",
+            "- Visible Tools: \(Self.debugJoinedList(tools, maxVisible: 40))",
+            "- Supported Operations: \(Self.debugJoinedList(configuration.context.supportedOperations.map(\.rawValue).sorted()))",
+            "- Granted Scopes: \(Self.debugJoinedList(configuration.context.grantedScopes.map(\.rawValue).sorted()))",
+            "- Denied Scopes: \(Self.debugJoinedList(configuration.context.deniedScopes.map(\.rawValue).sorted()))",
+            "- Runtime Local Grants: \(grants.count)",
+            "- Runtime Read/Write Grants: \(grants.filter { $0.access == .readWrite }.count)"
+        ]
+
+        if !grants.isEmpty {
+            lines.append("- Runtime Local Grant Details:")
+            lines.append(
+                contentsOf: grants.prefix(20).map { grant in
+                    let kind = grant.isDirectory ? "folder" : "file"
+                    return "  - \(kind) \(grant.access.rawValue): \(grant.path)"
+                }
+            )
+            if grants.count > 20 {
+                lines.append("  - ... \(grants.count - 20) more")
+            }
+        }
+
+        return "### Tool And Permission Snapshot\n\(lines.joined(separator: "\n"))"
+    }
+
+    private func debugPromptAndContextSnapshot() -> String {
+        let latestUserMessage = latestAgentUserMessage()
+        var lines: [String] = [
+            "- Response Detail: \(responseDetail.title)",
+            "- Ask Max Output Tokens: \(responseDetail.maxOutputTokens(for: .ask))",
+            "- Latest User Message Characters: \(latestUserMessage.count)",
+            "- Ask Draft Characters: \(askInput.count)",
+            "- Active Text Characters: \(activeText.count)",
+            "- Capture Context Attached: \(hasCaptureContext ? "yes" : "no")",
+            "- Assistant Image Context Attached: \(assistantImageContext == nil ? "no" : "yes")",
+            "- Active Visual Tool Context Attached: \(assistantToolState.activeVisualContext == nil ? "no" : "yes")",
+            "- Recent Tool Results: \(assistantToolState.recentToolResults.count)",
+            "- Recent File Sources: \(assistantToolState.lastFileSources.count)",
+            "- Granted Sources Used: \(assistantToolState.grantedSourcesUsed.count)",
+            "- Recent File Snippets: \(assistantToolState.lastFileSnippets.count)"
+        ]
+
+        if !latestUserMessage.isEmpty {
+            lines.append("- Latest User Message Excerpt:")
+            lines.append(Self.truncatedForDebugExport(latestUserMessage, limit: 2_000))
+        }
+
+        if let imageContext = assistantImageContext {
+            lines.append("- Assistant Image Source: \(Self.displayName(for: imageContext.source))")
+            lines.append("- Assistant Image Label: \(imageContext.label)")
+            lines.append("- Assistant Image OCR Characters: \(imageContext.ocrText?.count ?? 0)")
+        }
+
+        if let visualContext = assistantToolState.activeVisualContext {
+            lines.append("- Visual Tool Source: \(visualContext.source.rawValue)")
+            lines.append("- Visual Tool Label: \(visualContext.label)")
+            lines.append("- Visual Tool Has Image Input: \(visualContext.hasImageInput ? "yes" : "no")")
+            lines.append("- Visual Tool Has OCR Text: \(visualContext.hasOCRText ? "yes" : "no")")
+            lines.append("- Visual Tool Updated At: \(Self.chatExportDateString(visualContext.updatedAt))")
+        }
+
+        return "### Prompt And Context Snapshot\n\(lines.joined(separator: "\n"))"
+    }
+
+    private func debugAllRunTracesSnapshot() async -> String {
+        let traceExports = await agentRunViewModel.debugTraceExportsForCurrentSession()
+        guard !traceExports.isEmpty else {
+            return "### All Run Traces\nTrace Count: 0"
+        }
+
+        let traceSections = traceExports.enumerated().map { index, traceExport in
+            """
+            #### Run Trace \(index + 1)
+            \(Self.truncatedForDebugExport(traceExport, limit: 60_000))
+            """
+        }
+
+        return """
+        ### All Run Traces
+        Trace Count: \(traceExports.count)
+
+        \(traceSections.joined(separator: "\n\n"))
+        """
+    }
+
+    private func debugEffectiveModelLabel(model: any AgentKernelModelAdapterV2) -> String {
+        let descriptor = model.descriptor
+        if descriptor.route == .cloud {
+            let cloudModels = debugStatisticValues(named: "Cloud model")
+            if !cloudModels.isEmpty {
+                return "Pixel Pane Cloud - \(Self.debugJoinedList(cloudModels))"
+            }
+            return descriptor.modelName.map { "\(descriptor.displayName) - \($0)" }
+                ?? "\(descriptor.displayName) (exact upstream model not reported yet)"
+        }
+        switch descriptor.providerKind {
+        case .appleLocal:
+            return descriptor.modelName.map { "Apple Foundation Models - \($0)" } ?? "Apple Foundation Models"
+        case .mlxLocal:
+            if let selection = mlxModelStore.selectedModel {
+                return "\(selection.repositoryID) [MLX] at \(selection.localPath)"
+            }
+            return descriptor.modelName.map { "\($0) [MLX]" } ?? "MLX local model (selection unavailable)"
+        case .pixelPaneCloud:
+            return descriptor.modelName.map { "Pixel Pane Cloud - \($0)" } ?? "Pixel Pane Cloud"
+        case .fixture, .openAICompatible, .custom:
+            return descriptor.modelName.map { "\(descriptor.displayName) - \($0)" } ?? descriptor.displayName
+        }
+    }
+
+    private func debugStatisticValues(named label: String) -> [String] {
+        let activeValues = outputStatistics
+            .filter { $0.label == label }
+            .map(\.value)
+        let turnValues = displayedAskTurns.flatMap { turn in
+            turn.statistics
+                .filter { $0.label == label }
+                .map(\.value)
+        }
+        return Array(Set(activeValues + turnValues)).sorted()
+    }
+
+    private static func debugCapabilityStatus(_ status: AIBackendCapabilityStatus) -> String {
+        "\(status.label) - \(status.detail)"
+    }
+
+    private static func debugJoinedList(_ values: [String], maxVisible: Int = 20) -> String {
+        let cleaned = values
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !cleaned.isEmpty else { return "none" }
+        let visibleCount = min(cleaned.count, max(1, maxVisible))
+        let visible = cleaned.prefix(visibleCount).joined(separator: ", ")
+        let remaining = cleaned.count - visibleCount
+        return remaining > 0 ? "\(visible), ... (+\(remaining) more)" : visible
+    }
+#endif
 
     private func exportText() {
         let panel = NSSavePanel()
@@ -1532,7 +1795,14 @@ struct ResultPanelView: View {
         if let index = turns.indices.last,
            turns[index].answer.isEmpty,
            agentRunViewModel.state.activeStatus != .completed {
-            turns[index].runtimeProgressSummary = agentRunViewModel.state.statusSummary
+            switch agentRunViewModel.state.activeStatus {
+            case .queued, .running, .waitingForApproval, .waitingForUserInput, .interrupted:
+                turns[index].runtimeProgressSummary = agentRunViewModel.state.statusSummary
+            case .blocked, .failed, .canceled:
+                turns[index].answer = agentRunViewModel.state.statusSummary
+            case .draft, .completed, .none:
+                break
+            }
         }
 
         return turns
@@ -2009,7 +2279,7 @@ struct ResultPanelView: View {
 
         Task {
             do {
-                let model = await makeAgentKernelModelAdapter()
+                let model = await makeAgentKernelModelAdapter(userMessage: question)
                 let toolConfiguration = agentToolRunConfiguration(for: model)
                 try await agentRunViewModel.startRun(
                     userMessage: question,
@@ -2018,6 +2288,7 @@ struct ResultPanelView: View {
                     mode: toolConfiguration.mode,
                     tools: toolConfiguration.tools,
                     toolContext: toolConfiguration.context,
+                    attachments: agentModelAttachmentsForAsk(),
                     systemPrompt: durableAgentSystemPrompt(),
                     maxOutputTokens: responseDetail.maxOutputTokens(for: .ask)
                 )
@@ -2045,24 +2316,90 @@ struct ResultPanelView: View {
         }
     }
 
-    private func makeAgentKernelModelAdapter() async -> AgentKernelAIBackendAdapterV2 {
+    private func makeAgentKernelModelAdapter(userMessage: String? = nil) async -> any AgentKernelModelAdapterV2 {
         let backend = selectedAIBackend
         let capabilities = await backend.capabilities()
         let modeID: String = routingSettings.effectiveMode == .cloud ? "cloud" : "local"
+        let provider = effectiveAskProvider(capabilities: capabilities)
+        let providerKind = agentProviderKind(for: provider)
+        let modelName = agentModelName(for: provider)
+        let displayName = agentDisplayName(for: provider, fallback: askBackendLabelForNextTurn())
         let descriptor = AgentKernelModelDescriptorV2(
             id: "\(modeID).\(backend.id).chat",
-            providerKind: routingSettings.effectiveMode == .cloud ? .pixelPaneCloud : .custom,
+            providerKind: providerKind,
             route: routingSettings.effectiveMode == .cloud ? .cloud : .local,
-            displayName: askBackendLabelForNextTurn()
+            displayName: displayName,
+            modelName: modelName
         )
+        if routingSettings.effectiveMode == .cloud {
+            return AgentKernelCloudChatAdapterV2(
+                descriptor: descriptor,
+                backend: backend,
+                backendCapabilities: capabilities,
+                preferredProvider: provider,
+                supportsLocalToolProtocol: true
+            )
+        }
         return AgentKernelAIBackendAdapterV2(
             descriptor: descriptor,
             backend: backend,
             capabilities: .aiBackendBridge(
                 descriptor: descriptor,
                 backendCapabilities: capabilities
-            )
+            ),
+            preferredProvider: provider
         )
+    }
+
+    private func effectiveAskProvider(capabilities: AIBackendCapabilities) -> AIBackendProvider? {
+        if routingSettings.effectiveMode == .cloud {
+            return .pixelPaneCloud
+        }
+        if case .available(let provider) = capabilities.text {
+            return provider
+        }
+        return nil
+    }
+
+    private func agentProviderKind(for provider: AIBackendProvider?) -> AgentKernelModelProviderKindV2 {
+        switch provider {
+        case .appleFoundationModels:
+            return .appleLocal
+        case .mlxText, .mlxVision:
+            return .mlxLocal
+        case .pixelPaneCloud:
+            return .pixelPaneCloud
+        case .none:
+            return routingSettings.effectiveMode == .cloud ? .pixelPaneCloud : .custom
+        }
+    }
+
+    private func agentModelName(for provider: AIBackendProvider?) -> String? {
+        switch provider {
+        case .mlxText, .mlxVision:
+            return mlxModelStore.selectedModel?.repositoryID
+        case .appleFoundationModels:
+            return nil
+        case .pixelPaneCloud:
+            return debugStatisticValues(named: "Cloud model").last
+        case .none:
+            return nil
+        }
+    }
+
+    private func agentDisplayName(for provider: AIBackendProvider?, fallback: String) -> String {
+        switch provider {
+        case .appleFoundationModels:
+            return Self.appleTextBackendLabel
+        case .mlxText:
+            return Self.mlxTextBackendLabel
+        case .mlxVision:
+            return Self.mlxVisionBackendLabel
+        case .pixelPaneCloud:
+            return Self.cloudBackendLabel
+        case .none:
+            return fallback
+        }
     }
 
     private func agentToolRunConfiguration(
@@ -2071,10 +2408,12 @@ struct ResultPanelView: View {
         let providerTier = AgentModelGateway.tier(for: model.capabilities)
         let grants = agentRuntimeLocalGrants()
         let runMode: AgentRunPermissionMode
-        if providerTier == .tierCPlainChat || grants.isEmpty {
+        if providerTier == .tierCPlainChat {
             runMode = .plainChat
+        } else if grants.isEmpty {
+            runMode = .readOnly
         } else if grants.contains(where: { $0.access == .readWrite }) {
-            runMode = .proposalOnly
+            runMode = providerTier == .tierAFullAgent ? .fullAgent : .proposalOnly
         } else {
             runMode = .readOnly
         }
@@ -2083,7 +2422,8 @@ struct ResultPanelView: View {
             runMode: runMode,
             localGrants: grants,
             grantedScopes: [],
-            deniedScopes: [.network, .processControl, .privileged]
+            deniedScopes: [.network, .processControl, .privileged],
+            supportedOperations: AgentToolExecutionCapabilities.activeLocalRuntimeOperations
         )
         guard runMode != .plainChat else {
             return (.plainChat, [], context)
@@ -2094,7 +2434,8 @@ struct ResultPanelView: View {
             runMode: runMode,
             localGrants: grants,
             grantedScopes: context.grantedScopes,
-            deniedScopes: context.deniedScopes
+            deniedScopes: context.deniedScopes,
+            supportedOperations: context.supportedOperations
         )
         guard !tools.isEmpty else {
             return (.plainChat, [], context)
@@ -2110,25 +2451,26 @@ struct ResultPanelView: View {
             AgentLocalFileGrant(
                 path: grant.path,
                 isDirectory: grant.isDirectory,
-                access: grant.isDirectory ? .readWrite : .readOnly
+                access: grant.access
             )
         }
+    }
+
+    private func latestAgentUserMessage() -> String {
+        agentRunViewModel.state.messages
+            .reversed()
+            .first { $0.role == .user }?
+            .text
+            .text ?? ""
     }
 
     private func approveAgentRunApproval(_ approval: AgentRunProjectedApproval) {
         Task {
             do {
                 let model = await makeAgentKernelModelAdapter()
-                let toolConfiguration = agentToolRunConfiguration(for: model)
                 try await agentRunViewModel.approveWait(
                     approval.waitID,
-                    adapter: model,
-                    context: agentRunViewContext(),
-                    mode: toolConfiguration.mode,
-                    tools: toolConfiguration.tools,
-                    toolContext: toolConfiguration.context,
-                    systemPrompt: durableAgentSystemPrompt(),
-                    maxOutputTokens: responseDetail.maxOutputTokens(for: .ask)
+                    adapter: model
                 )
                 showConfirmation("Approved")
                 setOutputState(askOutputState(), for: .ask)
@@ -2145,16 +2487,9 @@ struct ResultPanelView: View {
         Task {
             do {
                 let model = await makeAgentKernelModelAdapter()
-                let toolConfiguration = agentToolRunConfiguration(for: model)
                 try await agentRunViewModel.denyWait(
                     approval.waitID,
-                    adapter: model,
-                    context: agentRunViewContext(),
-                    mode: toolConfiguration.mode,
-                    tools: toolConfiguration.tools,
-                    toolContext: toolConfiguration.context,
-                    systemPrompt: durableAgentSystemPrompt(),
-                    maxOutputTokens: responseDetail.maxOutputTokens(for: .ask)
+                    adapter: model
                 )
                 showConfirmation("Denied")
                 setOutputState(askOutputState(), for: .ask)
@@ -3102,63 +3437,6 @@ private struct OverlayPillButton: View {
     }
 }
 
-// MARK: - Text field
-
-private struct AgentRunHistoryMenuButton: View {
-    let sessions: [AgentRunProjectedSession]
-    let isDisabled: Bool
-    let onSelect: (AgentRunProjectedSession) -> Void
-    let onClearHistory: () -> Void
-
-    var body: some View {
-        Menu {
-            if sessions.isEmpty {
-                Text("No recent chats")
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(sessions) { session in
-                    Button {
-                        onSelect(session)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(session.displayTitle)
-                            Text(session.updatedAt, style: .relative)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .disabled(isDisabled)
-                }
-
-                Divider()
-
-                Button(role: .destructive) {
-                    onClearHistory()
-                } label: {
-                    Label("Clear Chat History", systemImage: "trash")
-                }
-                .disabled(isDisabled)
-            }
-        } label: {
-            HStack(spacing: 0) {
-                Image(systemName: "clock")
-                    .font(.system(size: 12, weight: .semibold))
-            }
-            .foregroundStyle(sessions.isEmpty ? .tertiary : .secondary)
-            .frame(width: 40)
-            .frame(height: 40)
-            .background(.black.opacity(0.24), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .stroke(.white.opacity(0.08), lineWidth: 1)
-            }
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .disabled(isDisabled || sessions.isEmpty)
-        .help(sessions.isEmpty ? "No recent chats yet" : "Open a recent chat")
-    }
-}
-
 private struct ChatHistoryMenuButton: View {
     let sessions: [StoredChatSession]
     let isDisabled: Bool
@@ -3218,6 +3496,7 @@ private struct FileSourceMenuButton: View {
     let grants: [LocalFileGrant]
     let isDisabled: Bool
     let onGrantFolder: () -> Void
+    let onGrantWritableFolder: () -> Void
     let onGrantFile: () -> Void
     let onRemove: (LocalFileGrant) -> Void
     let onClear: () -> Void
@@ -3228,6 +3507,12 @@ private struct FileSourceMenuButton: View {
                 onGrantFolder()
             } label: {
                 Label("Choose Folder", systemImage: "folder.badge.plus")
+            }
+
+            Button {
+                onGrantWritableFolder()
+            } label: {
+                Label("Choose Writable Folder", systemImage: "square.and.pencil")
             }
 
             Button {
@@ -3253,7 +3538,7 @@ private struct FileSourceMenuButton: View {
                         Label {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(grant.displayName)
-                                Text(grant.path)
+                                Text("\(grant.access == .readWrite ? "Read/write" : "Read-only"): \(grant.path)")
                                     .foregroundStyle(.secondary)
                             }
                         } icon: {

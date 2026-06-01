@@ -14,6 +14,7 @@ enum AgentPermissionPolicyFixtureHarness {
     static func run() throws {
         try testCatalogFiltering()
         try testCanonicalPathResolverPrioritizesSpecificGrants()
+        try testPathResolverExpandsUserHome()
         try testFileReadAndSensitivePathPolicy()
         try testWriteProposalApprovalPolicy()
         try testCommandPolicy()
@@ -35,13 +36,30 @@ enum AgentPermissionPolicyFixtureHarness {
 
         let tierBNames = catalog.visibleModelSchemas(
             providerTier: .tierBConstrainedStructuredText,
+            runMode: .fullAgent,
+            localGrants: grants,
+            grantedScopes: [.visualContext]
+        ).map(\.name)
+        try expect(tierBNames.contains("read_file"), "Tier B full-agent mode should expose read tools")
+        try expect(!tierBNames.contains("stage_write_proposal"), "Tier B full-agent mode should not expose write proposal staging")
+        try expect(tierBNames.contains("run_finite_command"), "Tier B full-agent mode should expose the generic finite command tool")
+
+        let tierBProposalNames = catalog.visibleModelSchemas(
+            providerTier: .tierBConstrainedStructuredText,
             runMode: .proposalOnly,
             localGrants: grants,
             grantedScopes: [.visualContext]
         ).map(\.name)
-        try expect(tierBNames.contains("read_file"), "Tier B proposal mode should expose read tools")
-        try expect(tierBNames.contains("stage_write_proposal"), "Tier B proposal mode should expose write proposal staging")
-        try expect(!tierBNames.contains("run_finite_command"), "Tier B should not expose raw command tools")
+        try expect(tierBProposalNames.contains("stage_write_proposal"), "Tier B proposal mode should expose write proposal staging")
+
+        let readOnlyGrantNames = catalog.visibleModelSchemas(
+            providerTier: .tierBConstrainedStructuredText,
+            runMode: .proposalOnly,
+            localGrants: [grant("/Users/test/read-only-project", isDirectory: true, access: .readOnly)],
+            grantedScopes: [.visualContext]
+        ).map(\.name)
+        try expect(readOnlyGrantNames.contains("read_file"), "read-only folder grants should expose read tools")
+        try expect(!readOnlyGrantNames.contains("stage_write_proposal"), "read-only folder grants should not expose write proposal staging")
 
         let tierANames = catalog.visibleModelSchemas(
             providerTier: .tierAFullAgent,
@@ -50,7 +68,6 @@ enum AgentPermissionPolicyFixtureHarness {
             grantedScopes: [.processControl, .visualContext]
         ).map(\.name)
         try expect(tierANames.contains("run_finite_command"), "Tier A full agent should expose finite commands")
-        try expect(tierANames.contains("discover_local_servers"), "Tier A with process scope should expose local server discovery")
 
         let deniedProcessNames = catalog.visibleModelSchemas(
             providerTier: .tierAFullAgent,
@@ -60,6 +77,35 @@ enum AgentPermissionPolicyFixtureHarness {
             deniedScopes: [.processControl]
         ).map(\.name)
         try expect(!deniedProcessNames.contains("start_process"), "denied process scope should filter process tools")
+
+        let executableNames = catalog.visibleModelSchemas(
+            providerTier: .tierAFullAgent,
+            runMode: .fullAgent,
+            localGrants: grants,
+            grantedScopes: [.processControl, .visualContext],
+            supportedOperations: AgentToolExecutionCapabilities.activeLocalRuntimeOperations
+        ).map(\.name)
+        try expect(!executableNames.contains("start_process"), "unsupported process start should not be model-visible")
+        try expect(!executableNames.contains("describe_visual_context"), "unsupported visual context should not be model-visible")
+        try expect(executableNames.contains("run_finite_command"), "supported command executor should remain model-visible")
+
+        let noWriteOperationNames = catalog.visibleModelSchemas(
+            providerTier: .tierBConstrainedStructuredText,
+            runMode: .proposalOnly,
+            localGrants: grants,
+            supportedOperations: [.fileGrantList, .fileList, .fileSearch, .fileRead, .finiteCommand]
+        ).map(\.name)
+        try expect(!noWriteOperationNames.contains("stage_write_proposal"), "missing write executor support should withhold write proposal staging")
+
+        let visibilityDiagnostics = catalog.visibilityDiagnostics(
+            providerTier: .tierBConstrainedStructuredText,
+            runMode: .proposalOnly,
+            localGrants: [grant("/Users/test/read-only-project", isDirectory: true, access: .readOnly)]
+        )
+        try expect(
+            visibilityDiagnostics.contains("tool.stage_write_proposal=withheld:missingWriteGrant"),
+            "tool visibility diagnostics should explain why write staging was withheld"
+        )
     }
 
     private static func testCanonicalPathResolverPrioritizesSpecificGrants() throws {
@@ -101,6 +147,20 @@ enum AgentPermissionPolicyFixtureHarness {
             target: .writeTarget(requiresExistingParent: true)
         )
         try expect(ambiguous.failure?.code == .ambiguousRelativePath, "bare relative write target should be ambiguous across multiple writable grants")
+    }
+
+    private static func testPathResolverExpandsUserHome() throws {
+        let home = URL(fileURLWithPath: NSHomeDirectory()).standardizedFileURL
+        let workspace = home.appendingPathComponent("Documents/random-tests", isDirectory: true)
+        let resolver = AgentLocalPathResolver()
+        let result = resolver.resolve(
+            "~/Documents/random-tests/notes.txt",
+            grants: [grant(workspace.path, isDirectory: true, access: .readWrite)],
+            access: .read,
+            target: .any
+        )
+
+        try expect(result.resolution?.path == workspace.appendingPathComponent("notes.txt").path, "tilde paths should resolve against the user home before grant checks")
     }
 
     private static func testFileReadAndSensitivePathPolicy() throws {
@@ -283,25 +343,25 @@ enum AgentPermissionPolicyFixtureHarness {
         let policy = AgentPermissionPolicy()
         let grants = [grant("/Users/test/project", isDirectory: true, access: .readWrite)]
 
-        let probe = policy.decision(
+        let topProcesses = policy.decision(
             for: request(
                 providerTier: .tierBConstrainedStructuredText,
-                toolName: "probe_local_server",
-                arguments: ["port": "3000"],
-                localGrants: grants
+                toolName: "run_finite_command",
+                arguments: ["command": "ps -axo pid,pcpu,pmem,comm -r"],
+                localGrants: []
             )
         )
-        try expect(probe.kind == .allow, "localhost probe should be allowed without process scope")
+        try expect(topProcesses.kind == .allow, "top-process inspection should emerge from the generic command tool")
 
-        let discoverDenied = policy.decision(
+        let localhostListeners = policy.decision(
             for: request(
-                toolName: "discover_local_servers",
-                arguments: ["maxCandidates": "8"],
-                localGrants: grants,
-                deniedScopes: [.processControl]
+                providerTier: .tierBConstrainedStructuredText,
+                toolName: "run_finite_command",
+                arguments: ["command": "lsof -nP -iTCP -sTCP:LISTEN"],
+                localGrants: []
             )
         )
-        try expect(discoverDenied.kind == .deny && discoverDenied.reason == .deniedScope, "denied process scope should deny discovery")
+        try expect(localhostListeners.kind == .allow, "localhost listener inspection should emerge from the generic command tool")
 
         let startProcess = policy.decision(
             for: request(
@@ -312,7 +372,8 @@ enum AgentPermissionPolicyFixtureHarness {
                     "workingDirectory": "/Users/test/project"
                 ],
                 localGrants: grants,
-                grantedScopes: [.processControl]
+                grantedScopes: [.processControl],
+                supportedOperations: AgentToolExecutionCapabilities.activeLocalRuntimeOperations.union([.processStart])
             )
         )
         try expect(startProcess.kind == .ask && startProcess.reason == .approvalRequired, "process start should ask for approval")
@@ -330,8 +391,8 @@ enum AgentPermissionPolicyFixtureHarness {
         let malformedInteger = policy.decision(
             for: request(
                 providerTier: .tierBConstrainedStructuredText,
-                toolName: "probe_local_server",
-                arguments: ["port": "not-a-port"],
+                toolName: "run_finite_command",
+                arguments: ["command": "ps -axo pid,pcpu,pmem,comm -r", "timeoutSeconds": "not-a-timeout"],
                 localGrants: grants
             )
         )
@@ -351,10 +412,30 @@ enum AgentPermissionPolicyFixtureHarness {
             for: request(
                 toolName: "describe_visual_context",
                 arguments: [:],
-                localGrants: grants
+                localGrants: grants,
+                supportedOperations: AgentToolExecutionCapabilities.activeLocalRuntimeOperations.union([.visualContext])
             )
         )
         try expect(visualMissingScope.kind == .ask && visualMissingScope.reason == .approvalRequired, "visual context without scope should ask")
+
+        let unsupportedOperation = policy.decision(
+            for: request(
+                runMode: .proposalOnly,
+                providerTier: .tierBConstrainedStructuredText,
+                toolName: "stage_write_proposal",
+                arguments: [
+                    "operation": "create",
+                    "targetPath": "/Users/test/project/new.md",
+                    "content": "hello"
+                ],
+                localGrants: [grant("/Users/test/project", isDirectory: true, access: .readWrite)],
+                supportedOperations: [.fileGrantList, .fileList, .fileSearch, .fileRead, .finiteCommand]
+            )
+        )
+        try expect(
+            unsupportedOperation.kind == .deny && unsupportedOperation.reason == .unsupportedOperation,
+            "permission policy should deny tool calls whose operation is not supported by the active executor"
+        )
     }
 
     private static func request(
@@ -365,6 +446,7 @@ enum AgentPermissionPolicyFixtureHarness {
         localGrants: [AgentLocalFileGrant],
         grantedScopes: [AgentPermissionScope] = [],
         deniedScopes: [AgentPermissionScope] = [],
+        supportedOperations: Set<AgentToolOperationKind> = AgentToolExecutionCapabilities.activeLocalRuntimeOperations,
         approvalGrants: [AgentPermissionApprovalGrant] = []
     ) -> AgentPermissionRequest {
         AgentPermissionRequest(
@@ -375,6 +457,7 @@ enum AgentPermissionPolicyFixtureHarness {
             localGrants: localGrants,
             grantedScopes: grantedScopes,
             deniedScopes: deniedScopes,
+            supportedOperations: supportedOperations,
             approvalGrants: approvalGrants,
             now: Date(timeIntervalSince1970: 1_800_000_000)
         )

@@ -14,7 +14,7 @@ struct AgentKernelToolProtocolDecoderV2: Sendable {
         tools: [AgentKernelToolSchemaV2],
         requiresProtocolEnvelope: Bool
     ) -> AgentKernelToolProtocolDecodeResultV2 {
-        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = protocolPayload(from: text)
         guard !cleaned.isEmpty else {
             return .event(.emptyOutput)
         }
@@ -58,7 +58,7 @@ struct AgentKernelToolProtocolDecoderV2: Sendable {
         _ text: String,
         tools: [AgentKernelToolSchemaV2]
     ) -> AgentKernelToolCallV2? {
-        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleaned = protocolPayload(from: text)
         guard let data = cleaned.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data),
               let json = object as? [String: Any],
@@ -266,6 +266,76 @@ struct AgentKernelToolProtocolDecoderV2: Sendable {
             summary: AgentKernelBoundedTextV2(summary),
             metadata: metadata
         )
+    }
+
+    private nonisolated func protocolPayload(from text: String) -> String {
+        var cleaned = stripBoundaryProtocolMarkers(from: text)
+        if let fenced = markdownFencePayload(from: cleaned) {
+            cleaned = stripBoundaryProtocolMarkers(from: fenced)
+        }
+        return cleaned
+    }
+
+    private nonisolated func stripBoundaryProtocolMarkers(from text: String) -> String {
+        var cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let leadingMarkers = [
+            "<|im_start|>assistant",
+            "<im_start>assistant",
+            "<lim_start>assistant",
+            "<|assistant|>",
+            "<assistant>",
+            "Assistant:"
+        ]
+        let trailingMarkers = [
+            "<|im_end|>",
+            "<|end|>",
+            "<|endoftext|>",
+            "<lim_end>"
+        ]
+
+        var changed = true
+        while changed {
+            changed = false
+            cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            for marker in leadingMarkers {
+                if cleaned.range(of: marker, options: [.caseInsensitive, .anchored]) != nil {
+                    cleaned.removeFirst(marker.count)
+                    changed = true
+                    break
+                }
+            }
+            if changed {
+                continue
+            }
+
+            for marker in trailingMarkers {
+                if cleaned.range(of: marker, options: [.caseInsensitive, .backwards, .anchored]) != nil {
+                    cleaned.removeLast(marker.count)
+                    changed = true
+                    break
+                }
+            }
+        }
+
+        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private nonisolated func markdownFencePayload(from text: String) -> String? {
+        let cleaned = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard cleaned.hasPrefix("```") else {
+            return nil
+        }
+        let afterOpeningFence = cleaned.dropFirst(3)
+        guard let firstLineBreak = afterOpeningFence.firstIndex(where: { $0.isNewline }) else {
+            return nil
+        }
+        let bodyStart = afterOpeningFence.index(after: firstLineBreak)
+        let body = String(afterOpeningFence[bodyStart...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard body.hasSuffix("```") else {
+            return nil
+        }
+        return String(body.dropLast(3)).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 

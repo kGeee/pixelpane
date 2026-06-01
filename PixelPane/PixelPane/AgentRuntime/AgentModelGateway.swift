@@ -51,7 +51,7 @@ nonisolated struct AgentModelGatewayFailure: Error, Codable, Equatable, Sendable
     }
 }
 
-nonisolated struct AgentModelGatewayRequest: Identifiable, Sendable {
+nonisolated struct AgentModelGatewayRequest: Identifiable, Codable, Sendable {
     let id: UUID
     let mode: AgentModelGatewayMode
     let messages: [AgentKernelMessageV2]
@@ -298,7 +298,8 @@ actor AgentModelGateway {
             return AgentModelGatewayFailure(
                 kind: kind,
                 adapterID: adapterID,
-                message: AgentRunText(malformed)
+                message: malformedOutputMessage(kind: kind),
+                metadata: ["rawOutput": .string(malformed)]
             )
         }
 
@@ -423,6 +424,17 @@ actor AgentModelGateway {
             }
         }
         return nil
+    }
+
+    private nonisolated func malformedOutputMessage(kind: AgentModelGatewayFailureKind) -> AgentRunText {
+        switch kind {
+        case .structuredOutputInvalid:
+            return AgentRunText("Model returned invalid structured output. Try again or switch to a provider with reliable tool/JSON support.")
+        case .transportError:
+            return AgentRunText("Model transport returned output that Pixel Pane could not use.")
+        default:
+            return AgentRunText("Model returned unusable output.")
+        }
     }
 
     private nonisolated func kernelMetadataValue(from value: AgentRunMetadataValue) -> AgentKernelMetadataValueV2 {

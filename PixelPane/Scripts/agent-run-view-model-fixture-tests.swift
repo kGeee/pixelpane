@@ -15,9 +15,14 @@ enum AgentRunViewModelFixtureHarness {
     static func run() async throws {
         try await testSendProjectsDurableMessages()
         try await testPendingApprovalProjectionAndDecisions()
+        try await testApprovalContinuationProjectsImmediately()
+        try await testApprovalContinuationRequiresSavedAdapter()
         try await testCancelUpdatesRunStatus()
+        try await testTerminalFailureProjectionDoesNotReuseProgress()
         try await testLaunchRecoveryProjectsInterruptedRun()
+        try await testTerminalHandledRecoveryProjectionClears()
         try await testLoadSessionRestoresProjection()
+        try await testRefreshDoesNotAutoLoadPreviousSession()
     }
 
     @MainActor
@@ -100,6 +105,106 @@ enum AgentRunViewModelFixtureHarness {
     }
 
     @MainActor
+    private static func testApprovalContinuationProjectsImmediately() async throws {
+        let (store, viewModel) = try await makeHarness()
+        let context = AgentRunViewContext(title: "Immediate Approval", contextID: "ctx-immediate-approval", contextKind: "assistant")
+        try await viewModel.loadOrCreateSession(context: context)
+        guard let sessionID = viewModel.state.sessionID else {
+            throw HarnessError(description: "session should be loaded")
+        }
+
+        let run = try await store.createRun(sessionID: sessionID, status: .queued)
+        let sideEffects = AgentSideEffectController(store: store)
+        let stage = try await sideEffects.stage(
+            runID: run.runID,
+            draft: .command(
+                AgentCommandDraft(
+                    command: "sleep 1; echo ok",
+                    workingDirectory: FileManager.default.temporaryDirectory.path,
+                    timeoutSeconds: 5
+                )
+            )
+        )
+
+        try await viewModel.loadSession(sessionID: sessionID)
+        try expect(viewModel.state.pendingApprovals.count == 1, "command approval should initially project")
+
+        let adapter = FixtureAgentModelAdapter(events: [.finalAnswer("Done.")])
+        let approvalTask = Task {
+            try await viewModel.approveWait(
+                stage.wait.waitID,
+                adapter: adapter,
+                context: context,
+                mode: .plainChat,
+                tools: [],
+                toolContext: .plainChat,
+                timeout: 2
+            )
+        }
+
+        try await Task.sleep(nanoseconds: 100_000_000)
+        try expect(viewModel.state.pendingApprovals.isEmpty, "approved command should immediately leave no pending approval card")
+        try expect(viewModel.state.activeStatus == .running, "approved command should immediately project a running state")
+        try expect(viewModel.state.latestProgress?.text == "Approved. Running approved action.", "approved command should immediately project progress")
+
+        try await approvalTask.value
+        try expect(viewModel.state.activeStatus == .completed, "approved command continuation should still complete")
+    }
+
+    @MainActor
+    private static func testApprovalContinuationRequiresSavedAdapter() async throws {
+        let (store, viewModel) = try await makeHarness()
+        let context = AgentRunViewContext(title: "Saved Config", contextID: "ctx-saved-config", contextKind: "assistant")
+        try await viewModel.loadOrCreateSession(context: context)
+        guard let sessionID = viewModel.state.sessionID else {
+            throw HarnessError(description: "session should be loaded")
+        }
+        let run = try await store.createRun(sessionID: sessionID, status: .waitingForApproval)
+        let firstAdapter = FixtureAgentModelAdapter(id: "fixture.first", events: [.finalAnswer("Done.")])
+        try await store.appendEvent(
+            runID: run.runID,
+            kind: .custom,
+            payload: .runConfiguration(
+                AgentRunModelConfigurationRecord(
+                    adapterDescriptor: firstAdapter.descriptor,
+                    request: AgentModelGatewayRequest(
+                        mode: .plainChat,
+                        messages: [AgentKernelMessageV2(role: .user, content: "approve saved config")],
+                        metadata: [
+                            "sessionID": .string(sessionID.uuidString),
+                            "runID": .string(run.runID.uuidString)
+                        ]
+                    ),
+                    toolContext: .plainChat
+                )
+            )
+        )
+        let wait = try await store.createWait(
+            runID: run.runID,
+            kind: .approval,
+            prompt: AgentRunText("Approve saved config"),
+            risk: "test"
+        )
+        _ = try await store.recordSideEffect(
+            runID: run.runID,
+            kind: .fileWrite,
+            status: .proposed,
+            approvalWaitID: wait.waitID,
+            metadata: ["targetPath": .string("/tmp/saved-config.txt")]
+        )
+        try await viewModel.loadSession(sessionID: sessionID)
+        try expect(viewModel.state.pendingApprovals.count == 1, "saved config approval should project")
+
+        let changedAdapter = FixtureAgentModelAdapter(id: "fixture.changed", events: [.finalAnswer("Done.")])
+        do {
+            try await viewModel.approveWait(wait.waitID, adapter: changedAdapter)
+            throw HarnessError(description: "approval continuation should reject an adapter changed after staging")
+        } catch AgentRunViewModelError.adapterChanged(_, _) {
+            try expect(true, "adapter change should be rejected")
+        }
+    }
+
+    @MainActor
     private static func testCancelUpdatesRunStatus() async throws {
         let (_, viewModel) = try await makeHarness()
         let adapter = FixtureAgentModelAdapter(events: [.finalAnswer("late")], delayNanoseconds: 500_000_000)
@@ -112,6 +217,24 @@ enum AgentRunViewModelFixtureHarness {
 
         await viewModel.cancelRun()
         try expect(viewModel.state.activeStatus == .canceled, "cancel should checkpoint canceled status")
+    }
+
+    @MainActor
+    private static func testTerminalFailureProjectionDoesNotReuseProgress() async throws {
+        let (_, viewModel) = try await makeHarness()
+        let adapter = FixtureAgentModelAdapter(events: [.malformedOutput("```json\n{\"type\":\"final_answer\",\"text\":\"Bad wrapper\"}\n```<|im_end|>")])
+        _ = try await viewModel.startRun(
+            userMessage: "Do not spin forever",
+            context: AgentRunViewContext(title: "Failure", contextID: "ctx-failure", contextKind: "assistant"),
+            adapter: adapter
+        )
+        try await viewModel.waitForIdle(timeout: 3)
+
+        try expect(viewModel.state.activeStatus == .failed, "malformed provider output should fail the run")
+        try expect(!viewModel.state.isBusy, "failed run should not remain busy")
+        try expect(viewModel.state.messages.map(\.role) == [.user], "failed run should not synthesize a fake assistant answer")
+        try expect(viewModel.state.statusSummary != "Preparing model route.", "terminal status should not reuse stale progress")
+        try expect(viewModel.state.statusSummary.contains("could not use"), "terminal status should project a usable failure reason")
     }
 
     @MainActor
@@ -128,6 +251,21 @@ enum AgentRunViewModelFixtureHarness {
     }
 
     @MainActor
+    private static func testTerminalHandledRecoveryProjectionClears() async throws {
+        let (store, viewModel) = try await makeHarness()
+        let session = try await store.createSession(title: "Recovery Clear", contextID: "ctx-recovery-clear", contextKind: "assistant")
+        let run = try await store.createRun(sessionID: session.id, status: .running)
+        _ = try await store.beginStep(runID: run.runID, kind: .modelRequest)
+
+        _ = try await viewModel.recoverOnLaunch()
+        try expect(viewModel.state.recovery?.interruptedRunIDs == [run.runID], "interrupted recovery should initially project")
+
+        await viewModel.cancelRun()
+        try expect(viewModel.state.activeStatus == .canceled, "terminal handling should cancel the recovered run")
+        try expect(viewModel.state.recovery == nil, "terminally handled recovery should clear stale recovery projection")
+    }
+
+    @MainActor
     private static func testLoadSessionRestoresProjection() async throws {
         let (store, viewModel) = try await makeHarness()
         let session = try await store.createSession(title: "Reload", contextID: "ctx-reload", contextKind: "assistant")
@@ -141,6 +279,22 @@ enum AgentRunViewModelFixtureHarness {
         )
         try expect(viewModel.state.sessionID == session.id, "context load should find existing session")
         try expect(viewModel.state.messages.map(\.text.text) == ["Reload question", "Reload answer"], "reload should project existing messages")
+    }
+
+    @MainActor
+    private static func testRefreshDoesNotAutoLoadPreviousSession() async throws {
+        let (store, viewModel) = try await makeHarness()
+        let oldSession = try await store.createSession(title: "Old", contextID: "ctx-old", contextKind: "assistant")
+        let oldRun = try await store.createRun(sessionID: oldSession.id, status: .queued)
+        try await store.appendEvent(runID: oldRun.runID, kind: .userMessage, payload: .text(AgentRunText("Old question")))
+        try await store.appendEvent(runID: oldRun.runID, kind: .assistantMessage, payload: .text(AgentRunText("Old answer")))
+        try await store.updateRunStatus(runID: oldRun.runID, status: .completed)
+
+        await viewModel.refresh()
+
+        try expect(viewModel.state.sessionID == nil, "blank view model should not auto-load the latest stored session")
+        try expect(viewModel.state.messages.isEmpty, "blank view model should not project previous session messages")
+        try expect(viewModel.state.recentSessions.isEmpty, "blank view model should not expose universal recent sessions")
     }
 
     @MainActor
