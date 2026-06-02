@@ -47,14 +47,19 @@ enum AgentToolCallingFixtureHarness {
         try await testBroadSearchObservationIsBudgeted()
         try await testContextOverflowRepackagesBeforeFailure()
         try await testWriteProposalApprovalExecutesAndContinues()
+        try await testApprovalContinuationUsesDurableReplayContext()
         try await testWriteRequestCannotCompleteFromReadEvidenceOnly()
         try await testRequiredWriteToolNonAdherenceBlocksBeforeIterationCap()
         try await testWriteProposalCanStillBeStagedWithoutPreclassifiedEditIntent()
         try await testStructuredOutputFailureBlocksWithRecoveryGuidance()
+        try await testInvalidToolCallRetriesBeforeEvidence()
+        try await testInvalidToolCallAfterEvidenceRecoversToFinalAnswer()
+        try await testUnobservedFinalAnswerPathsRepairThroughTools()
         try await testSpecificGrantBeatsBroadGrantForRandomTests()
         try await testMissingWriteParentIsRejectedBeforeApproval()
         try await testApprovedWriteFailureContinuesWithObservation()
         try await testDeniedWriteDoesNotExecute()
+        try await testDeniedCommandUsesGenericSideEffectProjection()
         try await testApprovedFiniteCommandExecutesAndContinues()
         try await testApprovedFiniteCommandFailureContinuesWithObservation()
     }
@@ -1510,6 +1515,77 @@ enum AgentToolCallingFixtureHarness {
     }
 
     @MainActor
+    private static func testApprovalContinuationUsesDurableReplayContext() async throws {
+        let harness = try await makeHarness(prefix: "tool-approval-replay")
+        try "alpha".write(to: harness.workspace.appendingPathComponent("alpha.txt"), atomically: true, encoding: .utf8)
+        let target = harness.workspace.appendingPathComponent("notes.txt")
+        let adapter = FixtureAgentKernelAdapterV2(
+            responses: [
+                .toolCall(
+                    name: "list_folder",
+                    arguments: ["path": harness.workspace.path],
+                    reason: "Inspect the folder before writing."
+                ),
+                .toolCall(
+                    name: "stage_write_proposal",
+                    arguments: [
+                        "operation": "create",
+                        "targetPath": target.path,
+                        "content": "noted"
+                    ],
+                    reason: "Create the requested notes file."
+                ),
+                .finalAnswer("Done after inspecting alpha.txt and creating notes.txt.")
+            ]
+        )
+        let config = toolConfig(grant: harness.grant, runMode: .proposalOnly, adapter: adapter)
+
+        let runID = try await harness.viewModel.startRun(
+            userMessage: "Inspect the folder, then create a notes file.",
+            context: AgentRunViewContext(title: "Approval Replay", contextID: "tool-approval-replay", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use tools when available.",
+            timeout: 2
+        )
+        try await harness.viewModel.waitForIdle(timeout: 3)
+        await harness.viewModel.refresh()
+
+        let approval = try expectOne(harness.viewModel.state.pendingApprovals, "write proposal should create one approval after folder inspection")
+        try await harness.viewModel.approveWait(
+            approval.waitID,
+            adapter: adapter,
+            context: AgentRunViewContext(title: "Approval Replay", contextID: "tool-approval-replay", contextKind: "assistant"),
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use tools when available.",
+            timeout: 2
+        )
+        try await harness.viewModel.waitForIdle(timeout: 3)
+        await harness.viewModel.refresh()
+
+        let requests = await adapter.requests()
+        let finalRequest = requests.last
+        let finalObservations = finalRequest?.messages.filter { $0.role == .observation }.map(\.content).joined(separator: "\n") ?? ""
+        let trace = try await harness.store.traceProjection(runID: runID)
+        let modelRequests = trace.controlRecords.compactMap { record -> AgentModelGatewayRequest? in
+            guard case .modelRequest(let request) = record.payload else { return nil }
+            return request
+        }
+
+        try expect(harness.viewModel.state.activeStatus == .completed, "approved write should complete after replay continuation")
+        try expect(requests.count >= 3, "approval continuation should issue a post-approval model request")
+        try expect(finalObservations.contains("alpha.txt"), "post-approval request should keep the pre-approval folder observation")
+        try expect(finalObservations.contains("stage_write_proposal") && finalObservations.contains("status: succeeded"), "post-approval request should include the approved write result observation")
+        try expect(trace.controlRecords.contains(where: { $0.kind == .approvalResultObservation }), "approval result observation should be durable")
+        try expect(trace.controlRecords.contains(where: { $0.kind == .toolResult && $0.metadata["source"] == .string("approval_continuation") }), "approval continuation should record a durable tool result")
+        try expect(modelRequests.last?.messages.contains(where: { $0.role == .observation && $0.content.contains("alpha.txt") }) == true, "latest durable model request should preserve hidden replay context")
+    }
+
+    @MainActor
     private static func testWriteRequestCannotCompleteFromReadEvidenceOnly() async throws {
         let harness = try await makeHarness(prefix: "tool-write-skip")
         let target = harness.workspace.appendingPathComponent("report.txt")
@@ -1685,6 +1761,175 @@ enum AgentToolCallingFixtureHarness {
         try expect(
             !harness.viewModel.state.messages.contains(where: { $0.role == .assistant }),
             "structured-output failure should not project malformed output as assistant chat"
+        )
+    }
+
+    @MainActor
+    private static func testInvalidToolCallRetriesBeforeEvidence() async throws {
+        let harness = try await makeHarness(prefix: "tool-invalid-call-before-evidence")
+        try "Recoverable note content.".write(
+            to: harness.workspace.appendingPathComponent("note.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let adapter = FixtureAgentKernelAdapterV2(
+            responses: [
+                .toolCall(name: "read_file", arguments: [:], reason: nil),
+                .toolCall(name: "read_file", arguments: ["path": "note.txt"], reason: nil),
+                .finalAnswer("The note says Recoverable note content.")
+            ]
+        )
+        let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
+
+        let runID = try await harness.viewModel.startRun(
+            userMessage: "Use local tools to inspect the accessible note and summarize it.",
+            context: AgentRunViewContext(title: "Invalid Tool Call", contextID: "tool-invalid-call-before-evidence", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use tools when available.",
+            timeout: 2
+        )
+        try await harness.viewModel.waitForIdle(timeout: 3)
+        await harness.viewModel.refresh()
+
+        let trace = try await harness.store.traceProjection(runID: runID)
+        let recoveryRecords = trace.controlRecords.filter { $0.kind == .toolCallInvalidRecoveryObservation }
+        let recoveryRequests = trace.controlRecords.compactMap { record -> AgentModelGatewayRequest? in
+            guard record.metadata["phase"]?.stringValue == "tool_call_invalid_recovery",
+                  case .modelRequest(let request) = record.payload else {
+                return nil
+            }
+            return request
+        }
+        try expect(harness.viewModel.state.activeStatus == .completed, "invalid tool call should recover before evidence exists")
+        try expect(harness.viewModel.state.messages.last?.text.text.contains("Recoverable note content") == true, "final answer should come from the repaired tool path")
+        try expect(trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.fileRead.rawValue }), "repaired tool call should record file-read evidence")
+        try expect(recoveryRecords.contains(where: { $0.metadata["hasRecordedEvidence"]?.boolValue == false }), "recovery should record that no substantive evidence existed yet")
+        try expect(recoveryRequests.contains(where: { !$0.tools.isEmpty && $0.mode == config.mode }), "no-evidence recovery should keep the tool catalog available")
+        try expect(!harness.viewModel.state.statusSummary.contains("missing required arguments"), "validation error should not be the completed user-facing answer")
+    }
+
+    @MainActor
+    private static func testInvalidToolCallAfterEvidenceRecoversToFinalAnswer() async throws {
+        let harness = try await makeHarness(prefix: "tool-invalid-call-after-evidence")
+        try "Recorded evidence can answer this request.".write(
+            to: harness.workspace.appendingPathComponent("note.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let adapter = FixtureAgentKernelAdapterV2(
+            responses: [
+                .toolCall(name: "read_file", arguments: ["path": "note.txt"], reason: nil),
+                .toolCall(name: "read_file", arguments: [:], reason: nil),
+                .finalAnswer("The note says Recorded evidence can answer this request.")
+            ]
+        )
+        let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
+
+        let runID = try await harness.viewModel.startRun(
+            userMessage: "Use local tools to inspect the accessible note and summarize it.",
+            context: AgentRunViewContext(title: "Invalid Tool Call After Evidence", contextID: "tool-invalid-call-after-evidence", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use tools when available.",
+            timeout: 2
+        )
+        try await harness.viewModel.waitForIdle(timeout: 3)
+        await harness.viewModel.refresh()
+
+        let trace = try await harness.store.traceProjection(runID: runID)
+        let recoveryRecords = trace.controlRecords.filter { $0.kind == .toolCallInvalidRecoveryObservation }
+        let recoveryRequests = trace.controlRecords.compactMap { record -> AgentModelGatewayRequest? in
+            guard record.metadata["phase"]?.stringValue == "tool_call_invalid_recovery",
+                  case .modelRequest(let request) = record.payload else {
+                return nil
+            }
+            return request
+        }
+        try expect(harness.viewModel.state.activeStatus == .completed, "invalid tool call should recover after evidence exists")
+        try expect(harness.viewModel.state.messages.last?.text.text.contains("Recorded evidence") == true, "final answer should be synthesized from recorded evidence")
+        try expect(trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.fileRead.rawValue }), "initial tool call should record file-read evidence")
+        try expect(recoveryRecords.contains(where: { $0.metadata["hasRecordedEvidence"]?.boolValue == true }), "recovery should record that substantive evidence existed")
+        try expect(recoveryRecords.contains(where: { $0.metadata["toolsDisabled"]?.boolValue == false }), "partial evidence should not close the tool catalog")
+        try expect(recoveryRequests.contains(where: { !$0.tools.isEmpty && $0.mode == config.mode }), "partial-evidence recovery should keep tools available unless requirements are satisfied")
+        try expect(!harness.viewModel.state.statusSummary.contains("missing required arguments"), "validation error should not be projected after successful recovery")
+    }
+
+    @MainActor
+    private static func testUnobservedFinalAnswerPathsRepairThroughTools() async throws {
+        let harness = try await makeHarness(prefix: "tool-unobserved-answer-paths")
+        let details = harness.workspace.appendingPathComponent("details", isDirectory: true)
+        try FileManager.default.createDirectory(at: details, withIntermediateDirectories: true)
+        let first = details.appendingPathComponent("first.txt")
+        let second = details.appendingPathComponent("second.txt")
+        let instructions = harness.workspace.appendingPathComponent("instructions.md")
+        try "Alpha value.".write(to: first, atomically: true, encoding: .utf8)
+        try "Beta value.".write(to: second, atomically: true, encoding: .utf8)
+        try "Use details/first.txt and details/second.txt for the answer.".write(
+            to: instructions,
+            atomically: true,
+            encoding: .utf8
+        )
+        let adapter = FixtureAgentKernelAdapterV2(
+            responses: [
+                .toolCall(name: "list_folder", arguments: ["path": harness.workspace.path], reason: nil),
+                .toolCall(name: "read_file", arguments: ["path": "instructions.md"], reason: nil),
+                .toolCall(name: "read_file", arguments: [:], reason: nil),
+                .finalAnswer("I still need details/first.txt and details/second.txt."),
+                .toolCall(name: "read_file", arguments: ["path": "details/first.txt"], reason: nil),
+                .toolCall(name: "read_file", arguments: ["path": "details/second.txt"], reason: nil),
+                .finalAnswer("Alpha value. Beta value.")
+            ]
+        )
+        let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
+
+        let runID = try await harness.viewModel.startRun(
+            userMessage: "Use local tools to follow the workspace instructions and summarize the result.",
+            context: AgentRunViewContext(title: "Unobserved Answer Paths", contextID: "tool-unobserved-answer-paths", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use tools when available.",
+            timeout: 2
+        )
+        try await harness.viewModel.waitForIdle(timeout: 3)
+        await harness.viewModel.refresh()
+
+        let trace = try await harness.store.traceProjection(runID: runID)
+        let readPaths = Set(
+            trace.evidence
+                .filter { $0.kind == AgentEvidenceKind.fileRead.rawValue }
+                .compactMap { $0.metadata["path"]?.stringValue }
+                .map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+        )
+        let repairRecords = trace.controlRecords.filter { $0.kind == .finalAnswerRepairObservation }
+        let recoveryRequests = trace.controlRecords.compactMap { record -> AgentModelGatewayRequest? in
+            guard record.metadata["phase"]?.stringValue == "tool_call_invalid_recovery",
+                  case .modelRequest(let request) = record.payload else {
+                return nil
+            }
+            return request
+        }
+        let assistantMessages = harness.viewModel.state.messages.filter { $0.role == .assistant }.map(\.text.text)
+
+        try expect(harness.viewModel.state.activeStatus == .completed, "run should complete after observing referenced local paths")
+        try expect(harness.viewModel.state.messages.last?.text.text.contains("Alpha value. Beta value.") == true, "final answer should use the observed file contents")
+        try expect(readPaths.contains(URL(fileURLWithPath: instructions.path).standardizedFileURL.path), "instructions file should be read")
+        try expect(readPaths.contains(URL(fileURLWithPath: first.path).standardizedFileURL.path), "first referenced file should be read after repair")
+        try expect(readPaths.contains(URL(fileURLWithPath: second.path).standardizedFileURL.path), "second referenced file should be read after repair")
+        try expect(recoveryRequests.contains(where: { !$0.tools.isEmpty && $0.mode == config.mode }), "invalid-tool recovery should keep tools available while evidence is incomplete")
+        try expect(
+            repairRecords.contains(where: { $0.metadata["rejectionKind"]?.stringValue == "unsupportedLocalReferences" }),
+            "premature final answer should be repaired because referenced paths lacked evidence"
+        )
+        try expect(
+            !assistantMessages.contains(where: { $0.contains("I still need details/first.txt") }),
+            "premature unsupported answer should not be projected to chat"
         )
     }
 
@@ -1899,6 +2144,59 @@ enum AgentToolCallingFixtureHarness {
 
         try expect(!FileManager.default.fileExists(atPath: target.path), "denied write should not create file")
         try expect(harness.viewModel.state.activeStatus == .blocked, "denied write should block the run")
+        try expect(harness.viewModel.state.messages.last?.text.text == "User denied the proposed file write.", "denied write should use typed side-effect denial text")
+        try expect(!harness.viewModel.state.messages.contains(where: { $0.text.text.contains("proposed file change") }), "denied write should not project the old file-specific canned answer")
+    }
+
+    @MainActor
+    private static func testDeniedCommandUsesGenericSideEffectProjection() async throws {
+        let harness = try await makeHarness(prefix: "tool-command-deny")
+        let adapter = FixtureAgentKernelAdapterV2(
+            responses: [
+                .toolCall(
+                    name: "run_finite_command",
+                    arguments: [
+                        "command": "echo no",
+                        "workingDirectory": harness.workspace.path,
+                        "timeoutSeconds": "5"
+                    ],
+                    reason: nil
+                )
+            ]
+        )
+        let config = toolConfig(grant: harness.grant, runMode: .fullAgent, adapter: adapter)
+
+        _ = try await harness.viewModel.startRun(
+            userMessage: "run a command I will deny",
+            context: AgentRunViewContext(title: "Tool Command Deny", contextID: "tool-command-deny", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use tools when available.",
+            timeout: 2
+        )
+        try await harness.viewModel.waitForIdle(timeout: 3)
+        await harness.viewModel.refresh()
+
+        let approval = try expectOne(harness.viewModel.state.pendingApprovals, "command denial should create one approval")
+        try expect(approval.kind == .command, "command denial fixture should stage a command approval")
+
+        try await harness.viewModel.denyWait(
+            approval.waitID,
+            adapter: adapter,
+            context: AgentRunViewContext(title: "Tool Command Deny", contextID: "tool-command-deny", contextKind: "assistant"),
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use tools when available.",
+            timeout: 2
+        )
+        await harness.viewModel.refresh()
+
+        try expect(harness.viewModel.state.activeStatus == .blocked, "denied command should block the run")
+        try expect(harness.viewModel.state.messages.last?.text.text == "User denied the proposed command.", "denied command should project command-specific denial text")
+        try expect(!harness.viewModel.state.messages.contains(where: { $0.text.text.contains("proposed file change") }), "denied command should not use file-write denial wording")
     }
 
     @MainActor

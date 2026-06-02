@@ -14,6 +14,7 @@ swiftc \
   "${PROJECT_ROOT}/PixelPane/PixelPane/Actions/AIBackend.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/Actions/ModelDisplayTextNormalizer.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/Actions/ModelOutputFormatter.swift" \
+  "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentToolContracts.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentPermissionPolicy.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentRunTypes.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentKernel/AgentKernelV2Types.swift" \

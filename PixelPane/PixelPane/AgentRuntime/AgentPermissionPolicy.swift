@@ -529,6 +529,7 @@ nonisolated struct AgentToolSpec: Identifiable, Sendable {
     var id: String { schema.name }
 
     let schema: AgentKernelToolSchemaV2
+    let contract: AgentToolContract
     let operationKind: AgentToolOperationKind
     let risk: AgentToolRisk
     let requiredScopes: [AgentPermissionScope]
@@ -546,6 +547,25 @@ nonisolated struct AgentToolSpec: Identifiable, Sendable {
         requiresApproval: Bool = false
     ) {
         self.schema = schema
+        self.contract = AgentToolContract(
+            name: schema.name,
+            summary: schema.summary,
+            operationKind: operationKind,
+            risk: risk,
+            requiredScopes: requiredScopes,
+            visibleRunModes: visibleRunModes,
+            visibleProviderTiers: visibleProviderTiers,
+            requiresApproval: requiresApproval,
+            executorBinding: .localRuntime,
+            arguments: schema.arguments.map {
+                AgentToolArgumentContract(
+                    $0.name,
+                    type: $0.type,
+                    isRequired: $0.isRequired,
+                    summary: $0.summary
+                )
+            }
+        )
         self.operationKind = operationKind
         self.risk = risk
         self.requiredScopes = requiredScopes
@@ -556,6 +576,17 @@ nonisolated struct AgentToolSpec: Identifiable, Sendable {
 
     var name: String {
         schema.name
+    }
+
+    init(contract: AgentToolContract) {
+        self.schema = contract.schema
+        self.contract = contract
+        self.operationKind = contract.operationKind
+        self.risk = contract.risk
+        self.requiredScopes = contract.requiredScopes
+        self.visibleRunModes = contract.visibleRunModes
+        self.visibleProviderTiers = contract.visibleProviderTiers
+        self.requiresApproval = contract.requiresApproval
     }
 
     func isVisible(providerTier: AgentModelCapabilityTier, runMode: AgentRunPermissionMode) -> Bool {
@@ -615,6 +646,21 @@ nonisolated struct AgentPermissionRequest: Codable, Equatable, Sendable {
         self.supportedOperations = supportedOperations
         self.approvalGrants = approvalGrants
         self.now = now
+    }
+
+    func replacingArguments(_ arguments: [String: String]) -> AgentPermissionRequest {
+        AgentPermissionRequest(
+            runMode: runMode,
+            providerTier: providerTier,
+            toolName: toolName,
+            arguments: arguments,
+            localGrants: localGrants,
+            grantedScopes: grantedScopes,
+            deniedScopes: deniedScopes,
+            supportedOperations: supportedOperations,
+            approvalGrants: approvalGrants,
+            now: now
+        )
     }
 }
 
@@ -856,214 +902,7 @@ nonisolated struct AgentToolCatalog: Sendable {
 
 extension AgentToolCatalog {
     nonisolated static var defaultSpecs: [AgentToolSpec] {
-        let tierAB: [AgentModelCapabilityTier] = [.tierAFullAgent, .tierBConstrainedStructuredText]
-        let tierA: [AgentModelCapabilityTier] = [.tierAFullAgent]
-        let readProposalFull: [AgentRunPermissionMode] = [.readOnly, .proposalOnly, .fullAgent]
-        let proposalFull: [AgentRunPermissionMode] = [.proposalOnly, .fullAgent]
-        let fullOnly: [AgentRunPermissionMode] = [.fullAgent]
-        let readFull: [AgentRunPermissionMode] = [.readOnly, .fullAgent]
-
-        return [
-            AgentToolSpec(
-                schema: toolSchema(
-                    name: "list_grants",
-                    summary: "List local files and folders the user has explicitly granted access to."
-                ),
-                operationKind: .fileGrantList,
-                risk: .readOnly,
-                visibleRunModes: readProposalFull,
-                visibleProviderTiers: tierAB
-            ),
-            AgentToolSpec(
-                schema: toolSchema(
-                    name: "list_folder",
-                    summary: "List entries in a granted folder or list granted roots when no path is provided.",
-                    arguments: [argument("path", isRequired: false, summary: "Granted folder path, grant name, or path relative to a granted folder.")]
-                ),
-                operationKind: .fileList,
-                risk: .localRead,
-                requiredScopes: [.fileRead],
-                visibleRunModes: readProposalFull,
-                visibleProviderTiers: tierAB
-            ),
-            AgentToolSpec(
-                schema: toolSchema(
-                    name: "search_files",
-                    summary: "Search or find text-like files inside granted local folders and locations.",
-                    arguments: [
-                        argument("query", summary: "Search query."),
-                        argument("rootPath", isRequired: false, summary: "Optional granted folder path or grant name to scope the search."),
-                        argument("filenameOnly", type: .boolean, isRequired: false, summary: "When true, match only file names and paths without reading file contents.")
-                    ]
-                ),
-                operationKind: .fileSearch,
-                risk: .localRead,
-                requiredScopes: [.fileRead],
-                visibleRunModes: readProposalFull,
-                visibleProviderTiers: tierAB
-            ),
-            AgentToolSpec(
-                schema: toolSchema(
-                    name: "read_file",
-                    summary: "Read a bounded text view of a granted local file.",
-                    arguments: [argument("path", summary: "Granted file path, grant name, or path relative to a granted folder.")]
-                ),
-                operationKind: .fileRead,
-                risk: .localRead,
-                requiredScopes: [.fileRead],
-                visibleRunModes: readProposalFull,
-                visibleProviderTiers: tierAB
-            ),
-            AgentToolSpec(
-                schema: toolSchema(
-                    name: "stage_write_proposal",
-                    summary: "Stage a proposed create, write, save, modify, change, update, edit, replace, or append inside a granted local location without writing it to disk.",
-                    arguments: [
-                        argument("operation", summary: "One of create, replace, or append."),
-                        argument("targetPath", summary: "Granted target file path or path relative to a granted folder."),
-                        argument("content", summary: "Proposed file content."),
-                        argument("preferredDirectoryPath", isRequired: false, summary: "Optional granted directory to prefer when resolving relative paths.")
-                    ]
-                ),
-                operationKind: .fileWriteDraft,
-                risk: .localWriteDraft,
-                requiredScopes: [.fileWrite],
-                visibleRunModes: proposalFull,
-                visibleProviderTiers: tierAB,
-                requiresApproval: true
-            ),
-            AgentToolSpec(
-                schema: toolSchema(
-                    name: "describe_visual_context",
-                    summary: "Describe active screenshot, attachment, clipboard image, and OCR context without persisting pixels."
-                ),
-                operationKind: .visualContext,
-                risk: .readOnly,
-                requiredScopes: [.visualContext],
-                visibleRunModes: readProposalFull,
-                visibleProviderTiers: tierAB
-            ),
-            AgentToolSpec(
-                schema: toolSchema(
-                    name: "get_process_snapshot",
-                    summary: "Read a bounded snapshot of currently running local processes, returning PID, CPU, memory, and executable name only.",
-                    arguments: [
-                        argument("limit", type: .integer, isRequired: false, summary: "Optional row limit from 1 to 20. Defaults to 8.")
-                    ]
-                ),
-                operationKind: .processSnapshot,
-                risk: .readOnly,
-                visibleRunModes: readProposalFull,
-                visibleProviderTiers: tierAB
-            ),
-            AgentToolSpec(
-                schema: toolSchema(
-                    name: "get_local_listener_snapshot",
-                    summary: "Read a bounded snapshot of local listening ports, returning port, address, PID, executable name, and granted working directory only.",
-                    arguments: [
-                        argument("port", type: .integer, isRequired: false, summary: "Optional port to inspect."),
-                        argument("rootPath", isRequired: false, summary: "Optional granted folder path or grant name used to filter listener working directories."),
-                        argument("limit", type: .integer, isRequired: false, summary: "Optional row limit from 1 to 20. Defaults to 8.")
-                    ]
-                ),
-                operationKind: .localServerDiscovery,
-                risk: .readOnly,
-                visibleRunModes: readProposalFull,
-                visibleProviderTiers: tierAB
-            ),
-            AgentToolSpec(
-                schema: toolSchema(
-                    name: "run_finite_command",
-                    summary: "Request a bounded local shell command for terminal, file, build, or system work. Raw shell is available only in full-agent mode and requires app-owned approval or a matching approval grant.",
-                    arguments: [
-                        argument("command", summary: "Shell command to run."),
-                        argument("workingDirectory", summary: "Granted working directory for the command."),
-                        argument("timeoutSeconds", type: .integer, isRequired: false, summary: "Optional timeout in seconds.")
-                    ]
-                ),
-                operationKind: .finiteCommand,
-                risk: .command,
-                requiredScopes: [.workingDirectory],
-                visibleRunModes: fullOnly,
-                visibleProviderTiers: tierA
-            ),
-            AgentToolSpec(
-                schema: toolSchema(
-                    name: "start_process",
-                    summary: "Start a long-running local process with lifecycle tracking.",
-                    arguments: [
-                        argument("command", summary: "Shell command to start."),
-                        argument("workingDirectory", summary: "Validated working directory."),
-                        argument("processID", isRequired: false, summary: "Optional stable process ID.")
-                    ]
-                ),
-                operationKind: .processStart,
-                risk: .processControl,
-                requiredScopes: [.workingDirectory, .processControl],
-                visibleRunModes: [.fullAgent],
-                visibleProviderTiers: tierA,
-                requiresApproval: true
-            ),
-            AgentToolSpec(
-                schema: toolSchema(
-                    name: "process_status",
-                    summary: "Read the current status of a managed process.",
-                    arguments: [argument("processID", summary: "Managed process ID.")]
-                ),
-                operationKind: .processStatus,
-                risk: .readOnly,
-                requiredScopes: [.processControl],
-                visibleRunModes: readFull,
-                visibleProviderTiers: tierA
-            ),
-            AgentToolSpec(
-                schema: toolSchema(
-                    name: "stop_process",
-                    summary: "Stop a managed long-running process.",
-                    arguments: [argument("processID", summary: "Managed process ID.")]
-                ),
-                operationKind: .processStop,
-                risk: .processControl,
-                requiredScopes: [.processControl],
-                visibleRunModes: [.fullAgent],
-                visibleProviderTiers: tierA,
-                requiresApproval: true
-            ),
-            AgentToolSpec(
-                schema: toolSchema(
-                    name: "tail_process_output",
-                    summary: "Read the bounded stdout and stderr tail for a managed process.",
-                    arguments: [argument("processID", summary: "Managed process ID.")]
-                ),
-                operationKind: .processOutput,
-                risk: .readOnly,
-                requiredScopes: [.processControl],
-                visibleRunModes: readFull,
-                visibleProviderTiers: tierA
-            )
-        ]
-    }
-
-    private nonisolated static func toolSchema(
-        name: String,
-        summary: String,
-        arguments: [AgentKernelToolArgumentSchemaV2] = []
-    ) -> AgentKernelToolSchemaV2 {
-        AgentKernelToolSchemaV2(name: name, summary: summary, arguments: arguments)
-    }
-
-    private nonisolated static func argument(
-        _ name: String,
-        type: AgentKernelToolArgumentTypeV2 = .string,
-        isRequired: Bool = true,
-        summary: String
-    ) -> AgentKernelToolArgumentSchemaV2 {
-        AgentKernelToolArgumentSchemaV2(
-            name: name,
-            type: type,
-            isRequired: isRequired,
-            summary: summary
-        )
+        AgentToolContractLibrary.defaultContracts.map(AgentToolSpec.init(contract:))
     }
 }
 
@@ -1085,16 +924,16 @@ nonisolated struct AgentPermissionPolicy: Sendable {
         self.pathResolver = pathResolver
     }
 
-    func decision(for request: AgentPermissionRequest) -> AgentPermissionDecision {
-        guard let spec = catalog.spec(named: request.toolName) else {
+    func decision(for rawRequest: AgentPermissionRequest) -> AgentPermissionDecision {
+        guard let spec = catalog.spec(named: rawRequest.toolName) else {
             return deny(
                 reason: .unknownTool,
                 summary: "The requested tool is not registered.",
-                toolName: request.toolName
+                toolName: rawRequest.toolName
             )
         }
 
-        guard request.supportedOperations.contains(spec.operationKind) else {
+        guard rawRequest.supportedOperations.contains(spec.operationKind) else {
             return deny(
                 reason: .unsupportedOperation,
                 summary: "The active runtime does not support this tool operation.",
@@ -1104,7 +943,7 @@ nonisolated struct AgentPermissionPolicy: Sendable {
             )
         }
 
-        guard spec.visibleProviderTiers.contains(request.providerTier) else {
+        guard spec.visibleProviderTiers.contains(rawRequest.providerTier) else {
             return deny(
                 reason: .providerTierDisallowsTool,
                 summary: "The selected provider tier cannot use this tool.",
@@ -1112,7 +951,7 @@ nonisolated struct AgentPermissionPolicy: Sendable {
                 risk: spec.risk
             )
         }
-        guard spec.isVisible(providerTier: request.providerTier, runMode: request.runMode) else {
+        guard spec.isVisible(providerTier: rawRequest.providerTier, runMode: rawRequest.runMode) else {
             return deny(
                 reason: .runModeDisallowsTool,
                 summary: "The current run mode cannot use this tool.",
@@ -1121,9 +960,21 @@ nonisolated struct AgentPermissionPolicy: Sendable {
             )
         }
 
-        if let argumentFailure = argumentFailure(spec: spec, arguments: request.arguments) {
-            return argumentFailure
+        let invocation: AgentToolInvocation
+        do {
+            invocation = try spec.contract.normalizedInvocation(rawArguments: rawRequest.arguments)
+        } catch let error as AgentToolContractError {
+            return argumentFailure(spec: spec, error: error)
+        } catch {
+            return deny(
+                reason: .malformedArgument,
+                summary: "The tool call arguments could not be normalized.",
+                toolName: spec.name,
+                risk: spec.risk
+            )
         }
+        let request = rawRequest.replacingArguments(invocation.normalizedArguments)
+
         if let deniedScope = spec.requiredScopes.first(where: { request.deniedScopes.contains($0) }) {
             return deny(
                 reason: .deniedScope,
@@ -1184,63 +1035,50 @@ nonisolated struct AgentPermissionPolicy: Sendable {
         return "\(toolName):\(serialized)"
     }
 
-    private func argumentFailure(spec: AgentToolSpec, arguments: [String: String]) -> AgentPermissionDecision? {
-        let knownArguments = Set(spec.schema.arguments.map(\.name))
-        let unknownArguments = Set(arguments.keys).subtracting(knownArguments)
-        if let unknown = unknownArguments.sorted().first {
+    private func argumentFailure(spec: AgentToolSpec, error: AgentToolContractError) -> AgentPermissionDecision {
+        switch error {
+        case .unknownTool(let tool):
+            return deny(
+                reason: .unknownTool,
+                summary: "The requested tool is not registered.",
+                toolName: tool,
+                risk: spec.risk
+            )
+        case .unknownArgument(let argument):
             return deny(
                 reason: .malformedArgument,
                 summary: "The tool call included an argument that is not in the schema.",
                 toolName: spec.name,
                 risk: spec.risk,
-                metadata: ["argument": .string(unknown)]
+                metadata: ["argument": .string(argument)]
             )
-        }
-
-        for argument in spec.schema.arguments where argument.isRequired {
-            if (arguments[argument.name] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return deny(
-                    reason: .missingRequiredArgument,
-                    summary: "The tool call is missing a required argument.",
-                    toolName: spec.name,
-                    risk: spec.risk,
-                    metadata: ["argument": .string(argument.name)]
-                )
-            }
-        }
-
-        for argument in spec.schema.arguments {
-            guard let value = arguments[argument.name], !value.isEmpty else { continue }
-            if !isValidArgumentValue(value, type: argument.type) {
-                return deny(
-                    reason: .malformedArgument,
-                    summary: "The tool call argument does not match its declared type.",
-                    toolName: spec.name,
-                    risk: spec.risk,
-                    metadata: [
-                        "argument": .string(argument.name),
-                        "type": .string(argument.type.rawValue)
-                    ]
-                )
-            }
-        }
-
-        return nil
-    }
-
-    private func isValidArgumentValue(_ value: String, type: AgentKernelToolArgumentTypeV2) -> Bool {
-        switch type.rawValue {
-        case "integer":
-            return Int(value) != nil
-        case "number":
-            return Double(value) != nil
-        case "boolean":
-            return value == "true" || value == "false"
-        case "jsonString":
-            guard let data = value.data(using: .utf8) else { return false }
-            return (try? JSONSerialization.jsonObject(with: data)) != nil
-        default:
-            return true
+        case .missingRequiredArgument(let argument):
+            return deny(
+                reason: .missingRequiredArgument,
+                summary: "The tool call is missing a required argument.",
+                toolName: spec.name,
+                risk: spec.risk,
+                metadata: ["argument": .string(argument)]
+            )
+        case .malformedArgument(let argument, let type, _):
+            return deny(
+                reason: .malformedArgument,
+                summary: "The tool call argument does not match its declared type.",
+                toolName: spec.name,
+                risk: spec.risk,
+                metadata: [
+                    "argument": .string(argument),
+                    "type": .string(type.rawValue)
+                ]
+            )
+        case .constraintViolation(let argument, let summary):
+            return deny(
+                reason: .malformedArgument,
+                summary: summary,
+                toolName: spec.name,
+                risk: spec.risk,
+                metadata: ["argument": .string(argument)]
+            )
         }
     }
 
@@ -1547,13 +1385,7 @@ nonisolated struct AgentPermissionPolicy: Sendable {
     }
 
     private func pathLikeArgumentValues(for spec: AgentToolSpec, arguments: [String: String]) -> [String] {
-        var values: [String] = []
-        for key in ["path", "rootPath", "targetPath", "preferredDirectoryPath", "workingDirectory", "command"] {
-            if let value = arguments[key] {
-                values.append(value)
-            }
-        }
-        return values
+        spec.contract.pathLikeArgumentValues(in: arguments)
     }
 
     private func allow(

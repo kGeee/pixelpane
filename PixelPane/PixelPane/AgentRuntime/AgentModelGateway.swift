@@ -600,7 +600,7 @@ nonisolated struct AgentModelGatewayFailure: Error, Codable, Equatable, Sendable
     }
 }
 
-nonisolated struct AgentModelGatewayRequest: Identifiable, Codable, Sendable {
+nonisolated struct AgentModelGatewayRequest: Identifiable, Codable, Equatable, Sendable {
     let id: UUID
     let mode: AgentModelGatewayMode
     let messages: [AgentKernelMessageV2]

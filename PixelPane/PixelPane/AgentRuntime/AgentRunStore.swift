@@ -9,6 +9,7 @@ nonisolated enum AgentRunStoreError: Error, Equatable, CustomStringConvertible {
     case missingSideEffect(UUID)
     case unsupportedSchemaVersion(Int)
     case invalidArtifactPath(String)
+    case persistence(String)
 
     var description: String {
         switch self {
@@ -28,6 +29,8 @@ nonisolated enum AgentRunStoreError: Error, Equatable, CustomStringConvertible {
             "Unsupported agent run store schema version \(version)."
         case .invalidArtifactPath(let path):
             "Invalid agent artifact path \(path)."
+        case .persistence(let summary):
+            "Agent run store persistence failed: \(summary)"
         }
     }
 }
@@ -36,8 +39,8 @@ actor AgentRunStore {
     private let rootDirectory: URL
     private let snapshotURL: URL
     private let artifactsDirectory: URL
+    private let persistence: AgentRunStorePersistenceBackend
     private var snapshot: AgentRunStoreSnapshot
-    private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
     init(rootDirectory: URL? = nil) throws {
@@ -45,27 +48,23 @@ actor AgentRunStore {
         self.rootDirectory = resolvedRoot
         snapshotURL = resolvedRoot.appendingPathComponent("store.json", isDirectory: false)
         artifactsDirectory = resolvedRoot.appendingPathComponent("Artifacts", isDirectory: true)
+        persistence = try AgentRunSQLitePersistenceBackend(rootDirectory: resolvedRoot)
 
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        self.encoder = encoder
         decoder = JSONDecoder()
 
         try FileManager.default.createDirectory(at: resolvedRoot, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: artifactsDirectory, withIntermediateDirectories: true)
 
-        if FileManager.default.fileExists(atPath: snapshotURL.path) {
+        if try persistence.hasStoredSnapshot() {
+            snapshot = try Self.migratedSnapshot(persistence.loadSnapshot())
+        } else if FileManager.default.fileExists(atPath: snapshotURL.path) {
             let data = try Data(contentsOf: snapshotURL)
             let decoded = try decoder.decode(AgentRunStoreSnapshot.self, from: data)
             snapshot = try Self.migratedSnapshot(decoded)
-            if snapshot.schemaVersion != decoded.schemaVersion {
-                let persisted = try encoder.encode(snapshot)
-                try persisted.write(to: snapshotURL, options: .atomic)
-            }
+            try persistence.saveSnapshot(snapshot)
         } else {
             snapshot = AgentRunStoreSnapshot()
-            let data = try encoder.encode(snapshot)
-            try data.write(to: snapshotURL, options: .atomic)
+            try persistence.saveSnapshot(snapshot)
         }
     }
 
@@ -212,10 +211,18 @@ actor AgentRunStore {
         runID: UUID,
         status: AgentRunStatus,
         reason: AgentRunText? = nil,
-        createdAt: Date = Date()
-    ) throws -> AgentRunEventRecord {
+        createdAt: Date = Date(),
+        allowsTerminalTransition: Bool = false
+    ) throws -> AgentRunEventRecord? {
         guard let runIndex = snapshot.runs.firstIndex(where: { $0.runID == runID }) else {
             throw AgentRunStoreError.missingRun(runID)
+        }
+
+        let currentStatus = snapshot.runs[runIndex].status
+        if currentStatus.isTerminal,
+           currentStatus != status,
+           !allowsTerminalTransition {
+            return nil
         }
 
         snapshot.runs[runIndex].status = status
@@ -410,6 +417,42 @@ actor AgentRunStore {
         )
         try persist()
         return evidence
+    }
+
+    @discardableResult
+    func recordControl(
+        runID: UUID,
+        stepID: UUID? = nil,
+        kind: AgentRunControlRecordKind,
+        payload: AgentRunControlPayload,
+        metadata: [String: AgentRunMetadataValue] = [:],
+        createdAt: Date = Date()
+    ) throws -> AgentRunControlRecord {
+        guard let run = snapshot.runs.first(where: { $0.runID == runID }) else {
+            throw AgentRunStoreError.missingRun(runID)
+        }
+        if let stepID, !snapshot.steps.contains(where: { $0.stepID == stepID }) {
+            throw AgentRunStoreError.missingStep(stepID)
+        }
+
+        let sequence = (snapshot.controlRecords
+            .filter { $0.runID == runID }
+            .map(\.sequence)
+            .max() ?? -1) + 1
+        let record = AgentRunControlRecord(
+            sessionID: run.sessionID,
+            runID: runID,
+            stepID: stepID,
+            sequence: sequence,
+            kind: kind,
+            payload: payload,
+            createdAt: createdAt,
+            metadata: metadata
+        )
+        snapshot.controlRecords.append(record)
+        touchRun(runID, at: createdAt)
+        try persist()
+        return record
     }
 
     func recordSideEffect(
@@ -639,6 +682,34 @@ actor AgentRunStore {
         )
     }
 
+    func controlRecords(runID: UUID? = nil) -> [AgentRunControlRecord] {
+        snapshot.controlRecords
+            .filter { record in runID == nil || record.runID == runID }
+            .sorted { lhs, rhs in
+                if lhs.runID == rhs.runID {
+                    return lhs.sequence < rhs.sequence
+                }
+                if lhs.createdAt == rhs.createdAt {
+                    return lhs.recordID.uuidString < rhs.recordID.uuidString
+                }
+                return lhs.createdAt < rhs.createdAt
+            }
+    }
+
+    func latestModelRequest(runID: UUID) -> AgentModelGatewayRequest? {
+        controlRecords(runID: runID)
+            .reversed()
+            .compactMap { record -> AgentModelGatewayRequest? in
+                guard case .modelRequest(let request) = record.payload else { return nil }
+                return request
+            }
+            .first
+    }
+
+    func replayMessages(runID: UUID) -> [AgentKernelMessageV2] {
+        latestModelRequest(runID: runID)?.messages ?? []
+    }
+
     func traceProjection(runID: UUID) throws -> AgentRunTraceProjection {
         guard let run = snapshot.runs.first(where: { $0.runID == runID }) else {
             throw AgentRunStoreError.missingRun(runID)
@@ -652,6 +723,7 @@ actor AgentRunStore {
             artifacts: snapshot.artifacts.filter { $0.runID == runID }.sorted { $0.createdAt < $1.createdAt },
             evidence: snapshot.evidence.filter { $0.runID == runID }.sorted { $0.createdAt < $1.createdAt },
             sideEffects: snapshot.sideEffects.filter { $0.runID == runID }.sorted { $0.createdAt < $1.createdAt },
+            controlRecords: snapshot.controlRecords.filter { $0.runID == runID }.sorted { $0.sequence < $1.sequence },
             events: snapshot.events.filter { $0.runID == runID }.sorted { $0.sequence < $1.sequence }
         )
     }
@@ -703,7 +775,7 @@ actor AgentRunStore {
             try FileManager.default.removeItem(at: artifactsDirectory)
         }
         try FileManager.default.createDirectory(at: artifactsDirectory, withIntermediateDirectories: true)
-        try persist()
+        try persistence.clearSnapshot()
     }
 
     func runRecord(runID: UUID) throws -> AgentRunRecord {
@@ -748,8 +820,7 @@ actor AgentRunStore {
 
     private func persist() throws {
         snapshot.schemaVersion = AgentRunStoreSchema.currentVersion
-        let data = try encoder.encode(snapshot)
-        try data.write(to: snapshotURL, options: .atomic)
+        try persistence.saveSnapshot(snapshot)
     }
 
     private func touchSession(_ sessionID: UUID, at date: Date) {

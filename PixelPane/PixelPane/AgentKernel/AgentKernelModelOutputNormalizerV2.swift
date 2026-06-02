@@ -119,24 +119,11 @@ struct AgentKernelToolProtocolDecoderV2: Sendable {
             rawArguments = [:]
         }
 
-        let repairedArguments = repairArguments(rawArguments, for: tool)
-        let knownArguments = tool.knownArgumentNames
-        guard repairedArguments.keys.allSatisfy({ knownArguments.contains($0) }) else {
+        let arguments: [String: String]
+        do {
+            arguments = try AgentToolCallArgumentNormalizer.normalizedArguments(rawArguments: rawArguments, tool: tool)
+        } catch {
             return nil
-        }
-
-        var arguments: [String: String] = [:]
-        for (key, value) in repairedArguments {
-            arguments[key] = stringArgument(from: value)
-        }
-
-        for argument in tool.arguments {
-            guard let value = arguments[argument.name] else {
-                continue
-            }
-            guard isValid(value: value, for: argument.type) else {
-                return nil
-            }
         }
 
         return AgentKernelToolCallV2(
@@ -165,52 +152,13 @@ struct AgentKernelToolProtocolDecoderV2: Sendable {
         } else {
             rawArguments = [:]
         }
-        let repairedArguments = repairArguments(rawArguments, for: tool)
-
-        let knownArguments = tool.knownArgumentNames
-        if let unknown = repairedArguments.keys.filter({ !knownArguments.contains($0) }).sorted().first {
-            return .failure(
-                reason(
-                    code: "text_protocol_unknown_tool_argument",
-                    summary: "Tool call output included an argument that is not in the tool schema.",
-                    metadata: ["tool": .string(name), "argument": .string(unknown)]
-                )
-            )
-        }
-
-        var arguments: [String: String] = [:]
-        for (key, value) in repairedArguments {
-            arguments[key] = stringArgument(from: value)
-        }
-
-        let missing = tool.requiredArguments.filter { (arguments[$0] ?? "").isEmpty }
-        guard missing.isEmpty else {
-            return .failure(
-                reason(
-                    code: "text_protocol_missing_tool_argument",
-                    summary: "Tool call output is missing required argument(s).",
-                    metadata: ["tool": .string(name), "missing": .string(missing.joined(separator: ","))]
-                )
-            )
-        }
-
-        for argument in tool.arguments {
-            guard let value = arguments[argument.name] else {
-                continue
-            }
-            guard isValid(value: value, for: argument.type) else {
-                return .failure(
-                    reason(
-                        code: "text_protocol_malformed_tool_argument",
-                        summary: "Tool call output included an argument with the wrong type.",
-                        metadata: [
-                            "tool": .string(name),
-                            "argument": .string(argument.name),
-                            "type": .string(argument.type.rawValue)
-                        ]
-                    )
-                )
-            }
+        let arguments: [String: String]
+        do {
+            arguments = try AgentToolCallArgumentNormalizer.normalizedArguments(rawArguments: rawArguments, tool: tool)
+        } catch let error as AgentToolContractError {
+            return .failure(toolArgumentFailure(error, toolName: name))
+        } catch {
+            return .failure(reason(code: "text_protocol_malformed_tool_argument", summary: "Tool call output included malformed arguments."))
         }
 
         return .event(
@@ -224,75 +172,45 @@ struct AgentKernelToolProtocolDecoderV2: Sendable {
         )
     }
 
-    private nonisolated func repairArguments(
-        _ rawArguments: [String: Any],
-        for tool: AgentKernelToolSchemaV2
-    ) -> [String: Any] {
-        guard tool.name == "stage_write_proposal" else {
-            return rawArguments
-        }
-
-        var repaired = rawArguments
-        if (stringValue(repaired["targetPath"]) ?? "").isEmpty,
-           let path = stringValue(repaired["path"]),
-           !path.isEmpty {
-            repaired["targetPath"] = path
-            repaired.removeValue(forKey: "path")
-        }
-
-        if (stringValue(repaired["operation"]) ?? "").isEmpty,
-           !(stringValue(repaired["targetPath"]) ?? "").isEmpty,
-           !(stringValue(repaired["content"]) ?? "").isEmpty {
-            repaired["operation"] = "create"
-        }
-
-        return repaired
-    }
-
-    private nonisolated func stringValue(_ value: Any?) -> String? {
-        guard let value else { return nil }
-        return stringArgument(from: value)
-    }
-
-    private nonisolated func stringArgument(from value: Any) -> String {
-        if let string = value as? String {
-            return string
-        }
-        if let bool = value as? Bool {
-            return bool ? "true" : "false"
-        }
-        if let int = value as? Int {
-            return "\(int)"
-        }
-        if let double = value as? Double {
-            return "\(double)"
-        }
-        if JSONSerialization.isValidJSONObject(value),
-           let encoded = try? JSONSerialization.data(withJSONObject: value),
-           let encodedString = String(data: encoded, encoding: .utf8) {
-            return encodedString
-        }
-        return "\(value)"
-    }
-
-    private nonisolated func isValid(
-        value: String,
-        for type: AgentKernelToolArgumentTypeV2
-    ) -> Bool {
-        switch type {
-        case .string:
-            return true
-        case .integer:
-            return Int(value) != nil
-        case .number:
-            return Double(value) != nil
-        case .boolean:
-            return value == "true" || value == "false"
-        case .jsonString:
-            guard let data = value.data(using: .utf8) else {
-                return false
-            }
-            return (try? JSONSerialization.jsonObject(with: data)) != nil
+    private nonisolated func toolArgumentFailure(
+        _ error: AgentToolContractError,
+        toolName: String
+    ) -> AgentKernelTerminalReasonV2 {
+        switch error {
+        case .unknownTool(let name):
+            return reason(
+                code: "text_protocol_unknown_tool",
+                summary: "Tool call output requested a tool that is not available.",
+                metadata: ["tool": .string(name)]
+            )
+        case .unknownArgument(let argument):
+            return reason(
+                code: "text_protocol_unknown_tool_argument",
+                summary: "Tool call output included an argument that is not in the tool schema.",
+                metadata: ["tool": .string(toolName), "argument": .string(argument)]
+            )
+        case .missingRequiredArgument(let argument):
+            return reason(
+                code: "text_protocol_missing_tool_argument",
+                summary: "Tool call output is missing required argument(s).",
+                metadata: ["tool": .string(toolName), "missing": .string(argument)]
+            )
+        case .malformedArgument(let argument, let type, _):
+            return reason(
+                code: "text_protocol_malformed_tool_argument",
+                summary: "Tool call output included an argument with the wrong type.",
+                metadata: [
+                    "tool": .string(toolName),
+                    "argument": .string(argument),
+                    "type": .string(type.rawValue)
+                ]
+            )
+        case .constraintViolation(let argument, let summary):
+            return reason(
+                code: "text_protocol_malformed_tool_argument",
+                summary: summary,
+                metadata: ["tool": .string(toolName), "argument": .string(argument)]
+            )
         }
     }
 

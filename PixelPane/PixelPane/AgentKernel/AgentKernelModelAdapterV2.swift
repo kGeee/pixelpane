@@ -57,7 +57,7 @@ struct AgentKernelModelLimitsV2: Codable, Equatable, Sendable {
     }
 }
 
-struct AgentKernelModelDescriptorV2: Codable, Equatable, Identifiable, Sendable {
+nonisolated struct AgentKernelModelDescriptorV2: Codable, Equatable, Identifiable, Sendable {
     let id: String
     let providerKind: AgentKernelModelProviderKindV2
     let route: AgentKernelModelRouteV2
@@ -114,7 +114,7 @@ struct AgentKernelModelAdapterCapabilitiesV2: Codable, Equatable, Sendable {
 
 }
 
-struct AgentKernelModelAttachmentV2: Codable, Equatable, Identifiable, Sendable {
+nonisolated struct AgentKernelModelAttachmentV2: Codable, Equatable, Identifiable, Sendable {
     let id: UUID
     let modality: AgentKernelModelInputModalityV2
     let label: String
@@ -165,7 +165,7 @@ struct AgentKernelModelAdapterRequestV2: Codable, Equatable, Identifiable, Senda
 
 }
 
-enum AgentKernelModelAdapterEventV2: Codable, Equatable, Sendable {
+nonisolated enum AgentKernelModelAdapterEventV2: Codable, Equatable, Sendable {
     case snapshot(String)
     case finalAnswer(AgentKernelFinalAnswerV2)
     case toolCall(AgentKernelToolCallV2)

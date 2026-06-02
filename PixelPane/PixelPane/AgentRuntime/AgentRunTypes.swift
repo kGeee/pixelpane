@@ -1,7 +1,7 @@
 import Foundation
 
 nonisolated enum AgentRunStoreSchema {
-    static let currentVersion = 1
+    static let currentVersion = 2
 }
 
 nonisolated enum AgentRunStatus: String, Codable, Equatable, Sendable {
@@ -438,6 +438,119 @@ nonisolated enum AgentRunEventPayload: Codable, Equatable, Sendable {
     case runConfiguration(AgentRunModelConfigurationRecord)
 }
 
+nonisolated enum AgentRunControlRecordKind: String, Codable, Equatable, Sendable {
+    case modelRequest
+    case modelResponse
+    case modelFailure
+    case toolCall
+    case toolResult
+    case preflightObservation
+    case toolObservation
+    case finalAnswerRepairObservation
+    case bestEffortSynthesisObservation
+    case structuredOutputRecoveryObservation
+    case toolCallInvalidRecoveryObservation
+    case contextRepackObservation
+    case approvalResultObservation
+}
+
+nonisolated struct AgentRunModelResponseRecord: Codable, Equatable, Sendable {
+    let requestID: UUID
+    let adapterID: String
+    let descriptor: AgentKernelModelDescriptorV2
+    let tier: AgentModelCapabilityTier
+    let responseFormat: AgentKernelToolCallingModeV2
+    let events: [AgentKernelModelAdapterEventV2]
+    let diagnostics: AgentRunText?
+
+    init(
+        requestID: UUID,
+        adapterID: String,
+        descriptor: AgentKernelModelDescriptorV2,
+        tier: AgentModelCapabilityTier,
+        responseFormat: AgentKernelToolCallingModeV2,
+        events: [AgentKernelModelAdapterEventV2],
+        diagnostics: AgentRunText? = nil
+    ) {
+        self.requestID = requestID
+        self.adapterID = adapterID
+        self.descriptor = descriptor
+        self.tier = tier
+        self.responseFormat = responseFormat
+        self.events = events
+        self.diagnostics = diagnostics
+    }
+
+    init(response: AgentModelGatewayResponse) {
+        self.init(
+            requestID: response.requestID,
+            adapterID: response.adapterID,
+            descriptor: response.descriptor,
+            tier: response.tier,
+            responseFormat: response.responseFormat,
+            events: response.events,
+            diagnostics: response.diagnostics
+        )
+    }
+}
+
+nonisolated struct AgentRunToolResultRecord: Codable, Equatable, Sendable {
+    let status: String
+    let toolName: String
+    let summary: AgentRunText
+    let observation: AgentRunText
+    let evidenceIDs: [UUID]
+    let artifactIDs: [UUID]
+    let waitID: UUID?
+    let sideEffectID: UUID?
+}
+
+nonisolated enum AgentRunControlPayload: Codable, Equatable, Sendable {
+    case modelRequest(AgentModelGatewayRequest)
+    case modelResponse(AgentRunModelResponseRecord)
+    case modelFailure(AgentModelGatewayFailure)
+    case modelMessage(AgentKernelMessageV2)
+    case toolCall(AgentKernelToolCallV2)
+    case toolResult(AgentRunToolResultRecord)
+    case metadata([String: AgentRunMetadataValue])
+}
+
+nonisolated struct AgentRunControlRecord: Codable, Equatable, Identifiable, Sendable {
+    var id: UUID { recordID }
+
+    let sessionID: UUID
+    let runID: UUID
+    let stepID: UUID?
+    let recordID: UUID
+    let sequence: Int
+    let kind: AgentRunControlRecordKind
+    let payload: AgentRunControlPayload
+    let createdAt: Date
+    let metadata: [String: AgentRunMetadataValue]
+
+    init(
+        sessionID: UUID,
+        runID: UUID,
+        stepID: UUID? = nil,
+        recordID: UUID = UUID(),
+        sequence: Int,
+        kind: AgentRunControlRecordKind,
+        payload: AgentRunControlPayload,
+        createdAt: Date = Date(),
+        metadata: [String: AgentRunMetadataValue] = [:]
+    ) {
+        self.sessionID = sessionID
+        self.runID = runID
+        self.stepID = stepID
+        self.recordID = recordID
+        self.sequence = sequence
+        self.kind = kind
+        self.payload = payload
+        self.createdAt = createdAt
+        self.metadata = metadata
+    }
+}
+
 nonisolated struct AgentRunModelConfigurationRecord: Codable, Equatable, Sendable {
     let adapterDescriptor: AgentKernelModelDescriptorV2
     let request: AgentModelGatewayRequest
@@ -544,6 +657,7 @@ nonisolated struct AgentRunTraceProjection: Codable, Equatable, Sendable {
     let artifacts: [AgentRunArtifactRecord]
     let evidence: [AgentRunEvidenceRecord]
     let sideEffects: [AgentRunSideEffectRecord]
+    let controlRecords: [AgentRunControlRecord]
     let events: [AgentRunEventRecord]
 }
 
@@ -556,6 +670,7 @@ nonisolated struct AgentRunStoreSnapshot: Codable, Equatable, Sendable {
     var artifacts: [AgentRunArtifactRecord]
     var evidence: [AgentRunEvidenceRecord]
     var sideEffects: [AgentRunSideEffectRecord]
+    var controlRecords: [AgentRunControlRecord]
     var events: [AgentRunEventRecord]
 
     init(
@@ -567,6 +682,7 @@ nonisolated struct AgentRunStoreSnapshot: Codable, Equatable, Sendable {
         artifacts: [AgentRunArtifactRecord] = [],
         evidence: [AgentRunEvidenceRecord] = [],
         sideEffects: [AgentRunSideEffectRecord] = [],
+        controlRecords: [AgentRunControlRecord] = [],
         events: [AgentRunEventRecord] = []
     ) {
         self.schemaVersion = schemaVersion
@@ -577,6 +693,36 @@ nonisolated struct AgentRunStoreSnapshot: Codable, Equatable, Sendable {
         self.artifacts = artifacts
         self.evidence = evidence
         self.sideEffects = sideEffects
+        self.controlRecords = controlRecords
         self.events = events
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case sessions
+        case runs
+        case steps
+        case waits
+        case artifacts
+        case evidence
+        case sideEffects
+        case controlRecords
+        case events
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            schemaVersion: try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? AgentRunStoreSchema.currentVersion,
+            sessions: try container.decodeIfPresent([AgentRunSessionRecord].self, forKey: .sessions) ?? [],
+            runs: try container.decodeIfPresent([AgentRunRecord].self, forKey: .runs) ?? [],
+            steps: try container.decodeIfPresent([AgentRunStepRecord].self, forKey: .steps) ?? [],
+            waits: try container.decodeIfPresent([AgentRunWaitRecord].self, forKey: .waits) ?? [],
+            artifacts: try container.decodeIfPresent([AgentRunArtifactRecord].self, forKey: .artifacts) ?? [],
+            evidence: try container.decodeIfPresent([AgentRunEvidenceRecord].self, forKey: .evidence) ?? [],
+            sideEffects: try container.decodeIfPresent([AgentRunSideEffectRecord].self, forKey: .sideEffects) ?? [],
+            controlRecords: try container.decodeIfPresent([AgentRunControlRecord].self, forKey: .controlRecords) ?? [],
+            events: try container.decodeIfPresent([AgentRunEventRecord].self, forKey: .events) ?? []
+        )
     }
 }

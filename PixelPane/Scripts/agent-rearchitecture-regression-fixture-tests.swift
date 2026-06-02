@@ -438,8 +438,10 @@ enum AgentRearchitectureRegressionFixtureHarness {
 
         let recovery = try await runner.recoverOnLaunch()
         let interrupted = Set(recovery.interruptedRuns.map(\.runID))
+        let interruptedStepKinds = Set(recovery.interruptedSteps.map(\.kind))
 
         try expect(interrupted == Set([modelRun.runID, toolRun.runID, sideEffectRun.runID]), "Recovery should interrupt unsafe active model/tool/side-effect steps")
+        try expect(interruptedStepKinds == Set([.modelRequest, .toolRequest, .sideEffect]), "Recovery should preserve interrupted active step kinds")
         try expect(recovery.pendingWaits.map(\.waitID) == [wait.waitID], "Recovery should restore pending approval waits")
         let recoveredSideEffects = await store.sideEffects(runID: sideEffectRun.runID)
         try expect(recoveredSideEffects.map(\.sideEffectID).contains(sideEffect.sideEffectID), "Recovery should preserve managed process ownership records")

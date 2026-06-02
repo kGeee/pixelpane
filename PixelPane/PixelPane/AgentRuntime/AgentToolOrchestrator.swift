@@ -527,6 +527,12 @@ nonisolated struct AgentTaskFrame: Codable, Equatable, Sendable {
         return uniqueReferences(references)
     }
 
+    static func localPathCandidates(in text: String) -> [String] {
+        var seen = Set<String>()
+        return (absolutePathCandidates(in: text) + relativePathCandidates(in: text))
+            .filter { seen.insert($0).inserted }
+    }
+
     private static func localReference(
         for rawPath: String,
         grants: [AgentLocalFileGrant],
@@ -1130,12 +1136,19 @@ actor AgentLocalToolExecutor {
         providerTier: AgentModelCapabilityTier,
         context: AgentToolRunContext
     ) async throws -> AgentToolExecutionResult {
+        let normalizedInvocation: AgentToolInvocation
+        do {
+            normalizedInvocation = try AgentToolContractRegistry.default.normalizedInvocation(for: call)
+        } catch {
+            return failedResult(call.name, "Malformed tool call arguments: \(error)")
+        }
+        let normalizedCall = normalizedInvocation.kernelToolCall
         let decision = policy.decision(
             for: AgentPermissionRequest(
                 runMode: context.runMode,
                 providerTier: providerTier,
-                toolName: call.name,
-                arguments: call.arguments,
+                toolName: normalizedCall.name,
+                arguments: normalizedCall.arguments,
                 localGrants: context.localGrants,
                 grantedScopes: context.grantedScopes,
                 deniedScopes: context.deniedScopes,
@@ -1145,52 +1158,52 @@ actor AgentLocalToolExecutor {
 
         switch decision.kind {
         case .deny:
-            return failedResult(call.name, "Denied by policy: \(decision.summary.text)")
+            return failedResult(normalizedCall.name, "Denied by policy: \(decision.summary.text)")
         case .ask:
-            if call.name == "stage_write_proposal", decision.reason == .approvalRequired {
+            if normalizedCall.name == "stage_write_proposal", decision.reason == .approvalRequired {
                 return try await stageWriteProposal(
-                    call: call,
+                    call: normalizedCall,
                     runID: runID,
                     stepID: stepID,
                     context: context
                 )
             }
-            if call.name == "run_finite_command" {
+            if normalizedCall.name == "run_finite_command" {
                 guard Self.isCommandApprovalReason(decision.reason) else {
-                    return failedResult(call.name, "Tool requires unavailable approval or grant: \(decision.summary.text)")
+                    return failedResult(normalizedCall.name, "Tool requires unavailable approval or grant: \(decision.summary.text)")
                 }
                 return try await stageCommandProposal(
-                    call: call,
+                    call: normalizedCall,
                     runID: runID,
                     stepID: stepID,
                     context: context,
                     approvalSummary: decision.summary
                 )
             }
-            return failedResult(call.name, "Tool requires unavailable approval or grant: \(decision.summary.text)")
+            return failedResult(normalizedCall.name, "Tool requires unavailable approval or grant: \(decision.summary.text)")
         case .allow:
             break
         }
 
-        switch call.name {
+        switch normalizedCall.name {
         case "list_grants":
-            return try await listGrants(call: call, runID: runID, stepID: stepID, grants: context.localGrants)
+            return try await listGrants(call: normalizedCall, runID: runID, stepID: stepID, grants: context.localGrants)
         case "list_folder":
-            return try await listFolder(call: call, runID: runID, stepID: stepID, grants: context.localGrants)
+            return try await listFolder(call: normalizedCall, runID: runID, stepID: stepID, grants: context.localGrants)
         case "search_files":
-            return try await searchFiles(call: call, runID: runID, stepID: stepID, grants: context.localGrants)
+            return try await searchFiles(call: normalizedCall, runID: runID, stepID: stepID, grants: context.localGrants)
         case "read_file":
-            return try await readFile(call: call, runID: runID, stepID: stepID, grants: context.localGrants)
+            return try await readFile(call: normalizedCall, runID: runID, stepID: stepID, grants: context.localGrants)
         case "get_process_snapshot":
-            return try await getProcessSnapshot(call: call, runID: runID, stepID: stepID)
+            return try await getProcessSnapshot(call: normalizedCall, runID: runID, stepID: stepID)
         case "get_local_listener_snapshot":
-            return try await getLocalListenerSnapshot(call: call, runID: runID, stepID: stepID, context: context)
+            return try await getLocalListenerSnapshot(call: normalizedCall, runID: runID, stepID: stepID, context: context)
         case "stage_write_proposal":
-            return try await stageWriteProposal(call: call, runID: runID, stepID: stepID, context: context)
+            return try await stageWriteProposal(call: normalizedCall, runID: runID, stepID: stepID, context: context)
         case "run_finite_command":
-            return try await runAllowedFiniteCommand(call: call, runID: runID, stepID: stepID, context: context)
+            return try await runAllowedFiniteCommand(call: normalizedCall, runID: runID, stepID: stepID, context: context)
         default:
-            return failedResult(call.name, "Tool \(call.name) is registered but has no executor in this runtime.")
+            return failedResult(normalizedCall.name, "Tool \(normalizedCall.name) is registered but has no executor in this runtime.")
         }
     }
 
@@ -1306,12 +1319,27 @@ actor AgentLocalToolExecutor {
         return AgentToolExecutionResult(
             status: .failed,
             toolName: toolName(for: denied.kind),
-            summary: AgentRunText("User denied the side effect."),
-            observation: AgentRunText("The proposed \(denied.kind.rawValue) side effect was denied and did not execute."),
+            summary: AgentRunText("User denied the proposed \(sideEffectDisplayName(for: denied.kind))."),
+            observation: AgentRunText("The proposed \(sideEffectDisplayName(for: denied.kind)) was denied and did not execute."),
             evidenceIDs: [evidence.evidenceID],
             artifactIDs: evidence.artifactID.map { [$0] } ?? [],
             sideEffectID: denied.sideEffectID
         )
+    }
+
+    private func sideEffectDisplayName(for kind: AgentRunSideEffectKind) -> String {
+        switch kind {
+        case .fileWrite:
+            "file write"
+        case .command:
+            "command"
+        case .processStart:
+            "process start"
+        case .processStop:
+            "process stop"
+        case .custom:
+            "side effect"
+        }
     }
 
     private func toolName(for kind: AgentRunSideEffectKind) -> String {
@@ -1505,7 +1533,7 @@ actor AgentLocalToolExecutor {
         guard !query.isEmpty else {
             return failedResult(call.name, "Search query is empty.")
         }
-        let requestedFilenameOnly = Self.booleanArgument(call.arguments["filenameOnly"])
+        let requestedFilenameOnly = call.arguments["filenameOnly"] == "true"
         let filenameOnly = requestedFilenameOnly || policy.referencesSensitivePath(query)
         let terms = searchTerms(from: query)
         guard !terms.isEmpty else {
@@ -1653,8 +1681,7 @@ actor AgentLocalToolExecutor {
         runID: UUID,
         stepID: UUID?
     ) async throws -> AgentToolExecutionResult {
-        let requestedLimit = call.arguments["limit"].flatMap(Int.init) ?? defaultProcessSnapshotLimit
-        let limit = min(max(requestedLimit, 1), maxProcessSnapshotLimit)
+        let limit = Int(call.arguments["limit"] ?? "") ?? defaultProcessSnapshotLimit
         let snapshot = try await Self.collectProcessSnapshot(limit: limit)
         let evidence = try await evidenceRecorder.recordProcessSnapshot(
             runID: runID,
@@ -1695,17 +1722,8 @@ actor AgentLocalToolExecutor {
         stepID: UUID?,
         context: AgentToolRunContext
     ) async throws -> AgentToolExecutionResult {
-        let requestedLimit = call.arguments["limit"].flatMap(Int.init) ?? defaultLocalListenerSnapshotLimit
-        let limit = min(max(requestedLimit, 1), maxLocalListenerSnapshotLimit)
-        let requestedPort: Int?
-        if let rawPort = call.arguments["port"], !rawPort.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            guard let port = Int(rawPort), (1...65_535).contains(port) else {
-                return failedResult(call.name, "The requested port must be an integer from 1 to 65535.")
-            }
-            requestedPort = port
-        } else {
-            requestedPort = nil
-        }
+        let limit = Int(call.arguments["limit"] ?? "") ?? defaultLocalListenerSnapshotLimit
+        let requestedPort = call.arguments["port"].flatMap(Int.init)
 
         let resolvedRootPath: String?
         if let rawRootPath = call.arguments["rootPath"]?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -1914,7 +1932,7 @@ actor AgentLocalToolExecutor {
             }
             workingDirectory = resolved.path
         }
-        let timeout = call.arguments["timeoutSeconds"].flatMap(Int.init).map { min(max($0, 1), 120) } ?? 30
+        let timeout = Int(call.arguments["timeoutSeconds"] ?? "") ?? 30
         return AgentCommandDraft(
             command: command,
             workingDirectory: workingDirectory,
@@ -2040,16 +2058,6 @@ actor AgentLocalToolExecutor {
         var seen = Set<String>()
         return AgentLocalEvidencePlanner.terms(from: query)
             .filter { seen.insert($0).inserted }
-    }
-
-    private nonisolated static func booleanArgument(_ value: String?) -> Bool {
-        guard let value else { return false }
-        switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "1", "true", "yes", "y":
-            return true
-        default:
-            return false
-        }
     }
 
     private struct RawLocalListenerRow: Equatable {
@@ -2604,7 +2612,9 @@ actor AgentToolOrchestrator {
         var observedRequiredSideEffectToolNames = Set<String>()
         var toolCallHistory: [String: Int] = [:]
         var finalAnswerRejectionCounts: [FinalAnswerRejectionKind: Int] = [:]
-        if let preflight = try await preflightObservation(
+        let shouldRunPreflight = baseRequest.metadata["skipPreflight"]?.boolValue != true
+        if shouldRunPreflight,
+           let preflight = try await preflightObservation(
             runID: runID,
             baseRequest: baseRequest,
             providerTier: tier,
@@ -2612,6 +2622,11 @@ actor AgentToolOrchestrator {
             profile: profile,
             startedAt: startedAt
         ) {
+            try await recordControlMessage(
+                preflight,
+                runID: runID,
+                kind: .preflightObservation
+            )
             messages.append(preflight)
             observedToolResults += 1
         }
@@ -2629,6 +2644,7 @@ actor AgentToolOrchestrator {
                 iteration: iteration,
                 profile: profile
             )
+            try Task.checkCancellation()
 
             if let finalAnswer = Self.finalAnswer(from: response.events) {
                 let answerDecision = await finalAnswerDecision(
@@ -2679,16 +2695,24 @@ actor AgentToolOrchestrator {
                         )
                         return
                     }
-                    messages.append(
-                        AgentKernelMessageV2(
-                            role: .observation,
-                            content: """
-                            Runtime rejected the previous final answer.
-                            Reason: \(rejection.reason.text)
-                            If the answer depends on a local_evidence claim kind, call an available tool. Otherwise return a final answer grounded as general_knowledge or capability_limitation.
-                            """
-                        )
+                    let repairObservation = AgentKernelMessageV2(
+                        role: .observation,
+                        content: """
+                        Runtime rejected the previous final answer.
+                        Reason: \(rejection.reason.text)
+                        If the answer depends on a local_evidence claim kind, call an available tool. Otherwise return a final answer grounded as general_knowledge or capability_limitation.
+                        """
                     )
+                    try await recordControlMessage(
+                        repairObservation,
+                        runID: runID,
+                        kind: .finalAnswerRepairObservation,
+                        metadata: [
+                            "iteration": .int(iteration),
+                            "rejectionKind": .string(String(describing: rejection.kind))
+                        ]
+                    )
+                    messages.append(repairObservation)
                     continue
                 }
             }
@@ -2697,7 +2721,6 @@ actor AgentToolOrchestrator {
                 try await failRun(runID: runID, reason: AgentRunText(AgentToolOrchestratorError.noFinalAnswer.description))
                 return
             }
-
             let result = try await executeToolCall(
                 toolCall,
                 runID: runID,
@@ -2732,7 +2755,18 @@ actor AgentToolOrchestrator {
                 observedToolResults += 1
                 observedSideEffectToolResults += 1
                 observedRequiredSideEffectToolNames.insert("stage_write_proposal")
-                messages.append(AgentKernelMessageV2(role: .observation, content: stagedWrite.modelObservationText))
+                let stagedWriteObservation = AgentKernelMessageV2(role: .observation, content: stagedWrite.modelObservationText)
+                try await recordControlMessage(
+                    stagedWriteObservation,
+                    runID: runID,
+                    kind: .toolObservation,
+                    metadata: [
+                        "iteration": .int(iteration),
+                        "toolName": .string(stagedWrite.toolName),
+                        "source": .string("auto_stage_command_output_write")
+                    ]
+                )
+                messages.append(stagedWriteObservation)
                 continue
             }
 
@@ -2769,12 +2803,21 @@ actor AgentToolOrchestrator {
                 Do not repeat that exact call. Call list_grants to see valid writable targets, choose different arguments or a different tool, or produce your best final answer now.
                 """
                 : result.modelObservationText
-            messages.append(
-                AgentKernelMessageV2(
-                    role: .observation,
-                    content: observationText
-                )
+            let observation = AgentKernelMessageV2(
+                role: .observation,
+                content: observationText
             )
+            try await recordControlMessage(
+                observation,
+                runID: runID,
+                kind: .toolObservation,
+                metadata: [
+                    "iteration": .int(iteration),
+                    "toolName": .string(result.toolName),
+                    "repeatedFailingCall": .bool(repeatedFailingCall)
+                ]
+            )
+            messages.append(observation)
         }
 
         if await shouldBlockForMissingRequiredSideEffect(
@@ -2820,6 +2863,138 @@ actor AgentToolOrchestrator {
         return "\(call.name):\(argumentKey)"
     }
 
+    private func recordControlMessage(
+        _ message: AgentKernelMessageV2,
+        runID: UUID,
+        stepID: UUID? = nil,
+        kind: AgentRunControlRecordKind,
+        metadata: [String: AgentRunMetadataValue] = [:]
+    ) async throws {
+        try await store.recordControl(
+            runID: runID,
+            stepID: stepID,
+            kind: kind,
+            payload: .modelMessage(message),
+            metadata: metadata
+        )
+    }
+
+    private func recordModelRequest(
+        _ request: AgentModelGatewayRequest,
+        runID: UUID,
+        stepID: UUID? = nil,
+        iteration: Int,
+        phase: String
+    ) async throws {
+        try await store.recordControl(
+            runID: runID,
+            stepID: stepID,
+            kind: .modelRequest,
+            payload: .modelRequest(request),
+            metadata: [
+                "iteration": .int(iteration),
+                "phase": .string(phase),
+                "requestID": .string(request.id.uuidString)
+            ]
+        )
+    }
+
+    private func recordModelResponse(
+        _ response: AgentModelGatewayResponse,
+        runID: UUID,
+        stepID: UUID? = nil,
+        iteration: Int,
+        phase: String
+    ) async throws {
+        try await store.recordControl(
+            runID: runID,
+            stepID: stepID,
+            kind: .modelResponse,
+            payload: .modelResponse(AgentRunModelResponseRecord(response: response)),
+            metadata: [
+                "iteration": .int(iteration),
+                "phase": .string(phase),
+                "requestID": .string(response.requestID.uuidString)
+            ]
+        )
+    }
+
+    private func recordModelFailure(
+        _ failure: AgentModelGatewayFailure,
+        runID: UUID,
+        stepID: UUID? = nil,
+        iteration: Int,
+        phase: String,
+        requestID: UUID? = nil
+    ) async throws {
+        var metadata: [String: AgentRunMetadataValue] = [
+            "iteration": .int(iteration),
+            "phase": .string(phase),
+            "failureKind": .string(failure.kind.rawValue)
+        ]
+        if let requestID {
+            metadata["requestID"] = .string(requestID.uuidString)
+        }
+        try await store.recordControl(
+            runID: runID,
+            stepID: stepID,
+            kind: .modelFailure,
+            payload: .modelFailure(failure),
+            metadata: metadata
+        )
+    }
+
+    private func recordToolCall(
+        _ call: AgentKernelToolCallV2,
+        runID: UUID,
+        stepID: UUID? = nil,
+        iteration: Int,
+        metadata: [String: AgentRunMetadataValue] = [:]
+    ) async throws {
+        var recordMetadata = metadata
+        recordMetadata["iteration"] = .int(iteration)
+        recordMetadata["toolName"] = .string(call.name)
+        try await store.recordControl(
+            runID: runID,
+            stepID: stepID,
+            kind: .toolCall,
+            payload: .toolCall(call),
+            metadata: recordMetadata
+        )
+    }
+
+    private func recordToolResult(
+        _ result: AgentToolExecutionResult,
+        runID: UUID,
+        stepID: UUID? = nil,
+        iteration: Int,
+        metadata: [String: AgentRunMetadataValue] = [:]
+    ) async throws {
+        var recordMetadata = metadata
+        recordMetadata["iteration"] = .int(iteration)
+        recordMetadata["toolName"] = .string(result.toolName)
+        try await store.recordControl(
+            runID: runID,
+            stepID: stepID,
+            kind: .toolResult,
+            payload: .toolResult(Self.controlToolResult(from: result)),
+            metadata: recordMetadata
+        )
+    }
+
+    private nonisolated static func controlToolResult(from result: AgentToolExecutionResult) -> AgentRunToolResultRecord {
+        AgentRunToolResultRecord(
+            status: result.status.rawValue,
+            toolName: result.toolName,
+            summary: result.summary,
+            observation: result.observation,
+            evidenceIDs: result.evidenceIDs,
+            artifactIDs: result.artifactIDs,
+            waitID: result.waitID,
+            sideEffectID: result.sideEffectID
+        )
+    }
+
     private nonisolated static func isSideEffectTool(_ name: String) -> Bool {
         name == "stage_write_proposal" || name == "run_finite_command"
     }
@@ -2858,7 +3033,8 @@ actor AgentToolOrchestrator {
             runID: runID,
             providerTier: providerTier,
             context: context,
-            iteration: iteration
+            iteration: iteration,
+            controlMetadata: ["source": .string("auto_stage_command_output_write")]
         )
     }
 
@@ -2892,15 +3068,19 @@ actor AgentToolOrchestrator {
         observedRequiredSideEffectToolNames: Set<String>
     ) async throws -> Bool {
         var synthMessages = messages
-        synthMessages.append(
-            AgentKernelMessageV2(
-                role: .observation,
-                content: """
-                Produce your best final answer now using the information already gathered above. \
-                Do not call any tools. If you could not fully complete the task, briefly state what you found and what is blocking it.
-                """
-            )
+        let synthesisObservation = AgentKernelMessageV2(
+            role: .observation,
+            content: """
+            Produce your best final answer now using the information already gathered above. \
+            Do not call any tools. If you could not fully complete the task, briefly state what you found and what is blocking it.
+            """
         )
+        try await recordControlMessage(
+            synthesisObservation,
+            runID: runID,
+            kind: .bestEffortSynthesisObservation
+        )
+        synthMessages.append(synthesisObservation)
         let request = AgentModelGatewayRequest(
             mode: baseRequest.mode,
             messages: synthMessages,
@@ -2910,36 +3090,50 @@ actor AgentToolOrchestrator {
             timeout: baseRequest.timeout,
             metadata: baseRequest.metadata.merging(["bestEffortSynthesis": .bool(true)]) { current, _ in current }
         )
+        try await recordModelRequest(request, runID: runID, iteration: 0, phase: "best_effort_synthesis")
         let result = await gateway.response(adapterID: adapterID, request: request)
-        guard case .success(let response) = result,
-              let answer = Self.finalAnswer(from: response.events),
-              !(isRawJSONShapedAnswer(answer.text) && profile.hasToolPath) else {
-            return false
-        }
-        let decision = await finalAnswerDecision(
-            answer,
-            runID: runID,
-            profile: profile,
-            observedToolResults: observedToolResults,
-            observedSideEffectToolResults: observedSideEffectToolResults,
-            observedRequiredSideEffectToolNames: observedRequiredSideEffectToolNames,
-            requiresGroundingWhenUnevidenced: requiresTextProtocolGrounding(
-                baseRequest: request,
-                response: response
-            )
-        )
-        guard case .accept = decision else {
-            if case .retry(let rejection) = decision {
-                try await store.appendEvent(
-                    runID: runID,
-                    kind: .providerDiagnostic,
-                    payload: .diagnostic(rejection.reason)
-                )
+        try Task.checkCancellation()
+        switch result {
+        case .success(let response):
+            try await recordModelResponse(response, runID: runID, iteration: 0, phase: "best_effort_synthesis")
+            guard let answer = Self.finalAnswer(from: response.events),
+                  !(isRawJSONShapedAnswer(answer.text) && profile.hasToolPath) else {
+                return false
             }
+            let decision = await finalAnswerDecision(
+                answer,
+                runID: runID,
+                profile: profile,
+                observedToolResults: observedToolResults,
+                observedSideEffectToolResults: observedSideEffectToolResults,
+                observedRequiredSideEffectToolNames: observedRequiredSideEffectToolNames,
+                requiresGroundingWhenUnevidenced: requiresTextProtocolGrounding(
+                    baseRequest: request,
+                    response: response
+                )
+            )
+            guard case .accept = decision else {
+                if case .retry(let rejection) = decision {
+                    try await store.appendEvent(
+                        runID: runID,
+                        kind: .providerDiagnostic,
+                        payload: .diagnostic(rejection.reason)
+                    )
+                }
+                return false
+            }
+            try await acceptFinalAnswer(answer, runID: runID, profile: profile)
+            return true
+        case .failure(let failure):
+            try await recordModelFailure(
+                failure,
+                runID: runID,
+                iteration: 0,
+                phase: "best_effort_synthesis",
+                requestID: request.id
+            )
             return false
         }
-        try await acceptFinalAnswer(answer, runID: runID, profile: profile)
-        return true
     }
 
     private enum FinalAnswerRejectionKind: Hashable {
@@ -2948,6 +3142,7 @@ actor AgentToolOrchestrator {
         case missingTemporalContext
         case missingRequiredSideEffectEvidence
         case missingLocalEvidence
+        case unsupportedLocalReferences
         case unsupportedGroundingClaims
         case missingAnswerGrounding
     }
@@ -3349,6 +3544,14 @@ actor AgentToolOrchestrator {
             }
         }
 
+        let localReferenceRejection = unsupportedLocalReferenceRejection(
+            for: unsupportedAnswerLocalReferences(
+                in: answer.text,
+                evidence: evidence,
+                grants: profile.taskFrame.localGrants
+            )
+        )
+
         let groundingDecision = finalAnswerGroundingDecision(
             answer,
             evidence: evidence,
@@ -3380,7 +3583,14 @@ actor AgentToolOrchestrator {
                     )
                 )
             }
+            if let localReferenceRejection {
+                return .retry(localReferenceRejection)
+            }
             return .accept
+        }
+
+        if let localReferenceRejection {
+            return .retry(localReferenceRejection)
         }
 
         if profile.requiresEvidenceBeforeFinalAnswer || !requirements.isEmpty {
@@ -3498,7 +3708,7 @@ actor AgentToolOrchestrator {
 
     private nonisolated func isGroundingRejection(_ kind: FinalAnswerRejectionKind) -> Bool {
         switch kind {
-        case .unsupportedGroundingClaims, .missingAnswerGrounding:
+        case .unsupportedLocalReferences, .unsupportedGroundingClaims, .missingAnswerGrounding:
             return true
         case .rawControlJSON, .staleTemporalAnswer, .missingTemporalContext, .missingRequiredSideEffectEvidence, .missingLocalEvidence:
             return false
@@ -3509,7 +3719,7 @@ actor AgentToolOrchestrator {
         switch kind {
         case .missingRequiredSideEffectEvidence:
             return true
-        case .rawControlJSON, .staleTemporalAnswer, .missingTemporalContext, .missingLocalEvidence, .unsupportedGroundingClaims, .missingAnswerGrounding:
+        case .rawControlJSON, .staleTemporalAnswer, .missingTemporalContext, .missingLocalEvidence, .unsupportedLocalReferences, .unsupportedGroundingClaims, .missingAnswerGrounding:
             return false
         }
     }
@@ -3599,6 +3809,17 @@ actor AgentToolOrchestrator {
             result = approved
                 ? try await executor.approvedSideEffectResult(waitID: waitID, runID: runID, stepID: step.stepID)
                 : try await executor.deniedSideEffectResult(waitID: waitID, runID: runID, stepID: step.stepID)
+            try await recordToolResult(
+                result,
+                runID: runID,
+                stepID: step.stepID,
+                iteration: 0,
+                metadata: [
+                    "source": .string("approval_continuation"),
+                    "waitID": .string(waitID.uuidString),
+                    "approved": .bool(approved)
+                ]
+            )
             try await store.appendEvent(
                 runID: runID,
                 stepID: step.stepID,
@@ -3611,6 +3832,60 @@ actor AgentToolOrchestrator {
             throw error
         }
 
+        let replayMessages = await store.replayMessages(runID: runID)
+        var messages = replayMessages.isEmpty
+            ? await fallbackApprovalContinuationMessages(runID: runID, baseRequest: baseRequest)
+            : replayMessages
+        let approvalObservation = AgentKernelMessageV2(role: .observation, content: result.modelObservationText)
+        try await recordControlMessage(
+            approvalObservation,
+            runID: runID,
+            stepID: step.stepID,
+            kind: .approvalResultObservation,
+            metadata: [
+                "source": .string("approval_continuation"),
+                "waitID": .string(waitID.uuidString),
+                "approved": .bool(approved),
+                "usedDurableReplay": .bool(!replayMessages.isEmpty)
+            ]
+        )
+        messages.append(approvalObservation)
+        var resumedMetadata = baseRequest.metadata
+        resumedMetadata["approvalContinuation"] = .bool(true)
+        resumedMetadata["approvalReplayAvailable"] = .bool(!replayMessages.isEmpty)
+        if !replayMessages.isEmpty {
+            resumedMetadata["skipPreflight"] = .bool(true)
+        }
+        let resumedRequest = AgentModelGatewayRequest(
+            mode: baseRequest.mode,
+            messages: messages,
+            tools: baseRequest.tools,
+            attachments: baseRequest.attachments,
+            requestedMaxOutputTokens: baseRequest.requestedMaxOutputTokens,
+            timeout: baseRequest.timeout,
+            metadata: resumedMetadata
+        )
+
+        if approved {
+            try await run(runID: runID, request: resumedRequest, context: context)
+        } else {
+            try await store.appendEvent(
+                runID: runID,
+                kind: .assistantMessage,
+                payload: .text(result.summary)
+            )
+            try await store.updateRunStatus(
+                runID: runID,
+                status: .blocked,
+                reason: result.summary
+            )
+        }
+    }
+
+    private func fallbackApprovalContinuationMessages(
+        runID: UUID,
+        baseRequest: AgentModelGatewayRequest
+    ) async -> [AgentKernelMessageV2] {
         let visible = await store.visibleMessages(sessionID: nil).filter { $0.runID == runID }
         var messages = baseRequest.messages.filter { $0.role == .system }
         messages.append(
@@ -3621,31 +3896,7 @@ actor AgentToolOrchestrator {
                 )
             }
         )
-        messages.append(AgentKernelMessageV2(role: .observation, content: result.modelObservationText))
-        let resumedRequest = AgentModelGatewayRequest(
-            mode: baseRequest.mode,
-            messages: messages,
-            tools: baseRequest.tools,
-            attachments: baseRequest.attachments,
-            requestedMaxOutputTokens: baseRequest.requestedMaxOutputTokens,
-            timeout: baseRequest.timeout,
-            metadata: baseRequest.metadata
-        )
-
-        if approved {
-            try await run(runID: runID, request: resumedRequest, context: context)
-        } else {
-            try await store.appendEvent(
-                runID: runID,
-                kind: .assistantMessage,
-                payload: .text(AgentRunText("Canceled. I did not make the proposed file change."))
-            )
-            try await store.updateRunStatus(
-                runID: runID,
-                status: .blocked,
-                reason: AgentRunText("User denied the side effect.")
-            )
-        }
+        return messages
     }
 
     private func modelResponse(
@@ -3676,9 +3927,11 @@ actor AgentToolOrchestrator {
                 timeout: baseRequest.timeout,
                 metadata: baseRequest.metadata
             )
+            try await recordModelRequest(request, runID: runID, stepID: step.stepID, iteration: iteration, phase: "main")
             let result = await gateway.response(adapterID: adapterID, request: request)
             switch result {
             case .success(let response):
+                try await recordModelResponse(response, runID: runID, stepID: step.stepID, iteration: iteration, phase: "main")
                 try await store.appendEvent(
                     runID: runID,
                     stepID: step.stepID,
@@ -3697,10 +3950,32 @@ actor AgentToolOrchestrator {
                 _ = try await store.finishStep(stepID: step.stepID, status: .completed)
                 return response
             case .failure(let failure):
+                try await recordModelFailure(
+                    failure,
+                    runID: runID,
+                    stepID: step.stepID,
+                    iteration: iteration,
+                    phase: "main",
+                    requestID: request.id
+                )
                 if failure.kind == .structuredOutputInvalid,
                    let recovered = try await recoverStructuredOutputFailure(
                     runID: runID,
                     stepID: step.stepID,
+                    iteration: iteration,
+                    baseRequest: baseRequest,
+                    messages: messages,
+                    profile: profile,
+                    failure: failure
+                   ) {
+                    _ = try await store.finishStep(stepID: step.stepID, status: .completed)
+                    return recovered
+                }
+                if failure.kind == .toolCallInvalid,
+                   let recovered = try await recoverInvalidToolCallFailure(
+                    runID: runID,
+                    stepID: step.stepID,
+                    iteration: iteration,
                     baseRequest: baseRequest,
                     messages: messages,
                     profile: profile,
@@ -3726,12 +4001,48 @@ actor AgentToolOrchestrator {
                         timeout: baseRequest.timeout,
                         metadata: baseRequest.metadata.merging(["contextRepacked": .bool(true)]) { current, _ in current }
                     )
+                    try await store.recordControl(
+                        runID: runID,
+                        stepID: step.stepID,
+                        kind: .contextRepackObservation,
+                        payload: .metadata([
+                            "iteration": .int(iteration),
+                            "failureKind": .string(failure.kind.rawValue),
+                            "retryRequestID": .string(retryRequest.id.uuidString)
+                        ]),
+                        metadata: [
+                            "iteration": .int(iteration),
+                            "phase": .string("context_repack")
+                        ]
+                    )
+                    try await recordModelRequest(
+                        retryRequest,
+                        runID: runID,
+                        stepID: step.stepID,
+                        iteration: iteration,
+                        phase: "context_repack"
+                    )
                     let retryResult = await gateway.response(adapterID: adapterID, request: retryRequest)
                     switch retryResult {
                     case .success(let response):
+                        try await recordModelResponse(
+                            response,
+                            runID: runID,
+                            stepID: step.stepID,
+                            iteration: iteration,
+                            phase: "context_repack"
+                        )
                         _ = try await store.finishStep(stepID: step.stepID, status: .completed)
                         return response
                     case .failure(let retryFailure):
+                        try await recordModelFailure(
+                            retryFailure,
+                            runID: runID,
+                            stepID: step.stepID,
+                            iteration: iteration,
+                            phase: "context_repack",
+                            requestID: retryRequest.id
+                        )
                         _ = try await store.finishStep(stepID: step.stepID, status: .failed)
                         let reason = contextFailureReason(retryFailure)
                         try await failRun(runID: runID, reason: reason, status: .blocked)
@@ -3837,9 +4148,121 @@ actor AgentToolOrchestrator {
         AgentRunText("\(failure.message.text) Retry the request, switch to a provider with stricter tool/JSON support, or ask for read-only inspection before requesting edits.")
     }
 
+    private func recoverInvalidToolCallFailure(
+        runID: UUID,
+        stepID: UUID,
+        iteration: Int,
+        baseRequest: AgentModelGatewayRequest,
+        messages: [AgentKernelMessageV2],
+        profile: AgentRunTaskProfile,
+        failure: AgentModelGatewayFailure
+    ) async throws -> AgentModelGatewayResponse? {
+        let evidence = await store.evidenceArtifactSummary(runID: runID).evidence
+        let requirements = await evidenceRequirements(from: evidence)
+        let requirementsSatisfied = !requirements.isEmpty
+            && hasSubstantiveAnswerEvidence(evidence, requirements: requirements)
+        let hasRecordedEvidence = hasSubstantiveAnswerEvidence(evidence, requirements: requirements)
+            || (!requirements.isEmpty && hasAnyToolEvidence(evidence))
+        let shouldDisableTools = baseRequest.tools.isEmpty || requirementsSatisfied
+        let sideEffectReady = !profile.requiresSideEffectEvidenceBeforeCompletion ||
+            Set(profile.requiredSideEffectToolNames).isSubset(of: terminalRequiredSideEffectToolNames(evidence))
+        guard sideEffectReady else { return nil }
+
+        try await store.appendEvent(
+            runID: runID,
+            stepID: stepID,
+            kind: .providerDiagnostic,
+            payload: .diagnostic(
+                AgentRunText(
+                    shouldDisableTools && hasRecordedEvidence
+                        ? "Provider returned an invalid tool call after evidence was recorded. Retrying once as a no-tool evidence-grounded answer."
+                        : "Provider returned an invalid tool call. Retrying once with the validation error in the model context."
+                )
+            )
+        )
+
+        var retryMessages = messages
+        let recoveryObservation = AgentKernelMessageV2(
+            role: .observation,
+            content: shouldDisableTools && hasRecordedEvidence
+                ? """
+                The previous provider response called a tool with invalid arguments.
+                Validation error: \(failure.message.text)
+                Produce a user-facing final answer from the recorded evidence above. Do not call tools.
+                If the evidence is insufficient, state what evidence is missing.
+                """
+                : shouldDisableTools
+                ? """
+                The previous provider response called a tool with invalid arguments.
+                Validation error: \(failure.message.text)
+                Tool calls are not available in this recovery request. Produce a user-facing final answer if possible, or state what evidence is missing.
+                """
+                : """
+                The previous provider response called a tool with invalid arguments.
+                Validation error: \(failure.message.text)
+                Retry with a valid tool call that includes every required argument, or produce a user-facing final answer if no tool is needed.
+                """
+        )
+        try await recordControlMessage(
+            recoveryObservation,
+            runID: runID,
+            stepID: stepID,
+            kind: .toolCallInvalidRecoveryObservation,
+            metadata: [
+                "iteration": .int(iteration),
+                "failureKind": .string(failure.kind.rawValue),
+                "hasRecordedEvidence": .bool(hasRecordedEvidence),
+                "requirementsSatisfied": .bool(requirementsSatisfied),
+                "toolsDisabled": .bool(shouldDisableTools)
+            ]
+        )
+        retryMessages.append(recoveryObservation)
+
+        let retryRequest = AgentModelGatewayRequest(
+            mode: shouldDisableTools ? .plainChat : baseRequest.mode,
+            messages: retryMessages,
+            tools: shouldDisableTools ? [] : baseRequest.tools,
+            attachments: baseRequest.attachments,
+            requestedMaxOutputTokens: baseRequest.requestedMaxOutputTokens,
+            timeout: baseRequest.timeout,
+            metadata: baseRequest.metadata.merging(["toolCallInvalidRecovery": .bool(true)]) { current, _ in current }
+        )
+        try await recordModelRequest(
+            retryRequest,
+            runID: runID,
+            stepID: stepID,
+            iteration: iteration,
+            phase: "tool_call_invalid_recovery"
+        )
+        let retry = await gateway.response(adapterID: adapterID, request: retryRequest)
+        try Task.checkCancellation()
+        switch retry {
+        case .success(let response):
+            try await recordModelResponse(
+                response,
+                runID: runID,
+                stepID: stepID,
+                iteration: iteration,
+                phase: "tool_call_invalid_recovery"
+            )
+            return response
+        case .failure(let recoveryFailure):
+            try await recordModelFailure(
+                recoveryFailure,
+                runID: runID,
+                stepID: stepID,
+                iteration: iteration,
+                phase: "tool_call_invalid_recovery",
+                requestID: retryRequest.id
+            )
+            return nil
+        }
+    }
+
     private func recoverStructuredOutputFailure(
         runID: UUID,
         stepID: UUID,
+        iteration: Int,
         baseRequest: AgentModelGatewayRequest,
         messages: [AgentKernelMessageV2],
         profile: AgentRunTaskProfile,
@@ -3863,16 +4286,25 @@ actor AgentToolOrchestrator {
         )
 
         var retryMessages = messages
-        retryMessages.append(
-            AgentKernelMessageV2(
-                role: .observation,
-                content: """
-                The previous provider response did not satisfy the structured tool protocol.
-                Produce a user-facing final answer from the recorded evidence above. Do not call tools.
-                If the evidence is insufficient, state what evidence is missing.
-                """
-            )
+        let recoveryObservation = AgentKernelMessageV2(
+            role: .observation,
+            content: """
+            The previous provider response did not satisfy the structured tool protocol.
+            Produce a user-facing final answer from the recorded evidence above. Do not call tools.
+            If the evidence is insufficient, state what evidence is missing.
+            """
         )
+        try await recordControlMessage(
+            recoveryObservation,
+            runID: runID,
+            stepID: stepID,
+            kind: .structuredOutputRecoveryObservation,
+            metadata: [
+                "iteration": .int(iteration),
+                "failureKind": .string(failure.kind.rawValue)
+            ]
+        )
+        retryMessages.append(recoveryObservation)
         let retryRequest = AgentModelGatewayRequest(
             mode: .plainChat,
             messages: retryMessages,
@@ -3882,9 +4314,24 @@ actor AgentToolOrchestrator {
             timeout: baseRequest.timeout,
             metadata: baseRequest.metadata.merging(["structuredOutputRecovery": .bool(true)]) { current, _ in current }
         )
+        try await recordModelRequest(
+            retryRequest,
+            runID: runID,
+            stepID: stepID,
+            iteration: iteration,
+            phase: "structured_output_recovery"
+        )
         let retry = await gateway.response(adapterID: adapterID, request: retryRequest)
+        try Task.checkCancellation()
         switch retry {
         case .success(let response):
+            try await recordModelResponse(
+                response,
+                runID: runID,
+                stepID: stepID,
+                iteration: iteration,
+                phase: "structured_output_recovery"
+            )
             guard let answer = Self.finalAnswer(from: response.events),
                   !isRawJSONShapedAnswer(answer.text) else {
                 try await failRun(
@@ -3895,7 +4342,15 @@ actor AgentToolOrchestrator {
                 throw failure
             }
             return response
-        case .failure:
+        case .failure(let recoveryFailure):
+            try await recordModelFailure(
+                recoveryFailure,
+                runID: runID,
+                stepID: stepID,
+                iteration: iteration,
+                phase: "structured_output_recovery",
+                requestID: retryRequest.id
+            )
             try await failRun(
                 runID: runID,
                 reason: AgentRunText("Provider failed the structured tool protocol and the no-tool recovery request also failed. Recorded evidence was preserved for retry."),
@@ -3928,7 +4383,8 @@ actor AgentToolOrchestrator {
         runID: UUID,
         providerTier: AgentModelCapabilityTier,
         context: AgentToolRunContext,
-        iteration: Int
+        iteration: Int,
+        controlMetadata: [String: AgentRunMetadataValue] = [:]
     ) async throws -> AgentToolExecutionResult {
         let requestStep = try await store.beginStep(
             runID: runID,
@@ -3943,6 +4399,13 @@ actor AgentToolOrchestrator {
             stepID: requestStep.stepID,
             kind: .custom,
             payload: .metadata(toolMetadata(call))
+        )
+        try await recordToolCall(
+            call,
+            runID: runID,
+            stepID: requestStep.stepID,
+            iteration: iteration,
+            metadata: controlMetadata
         )
         _ = try await store.finishStep(stepID: requestStep.stepID, status: .completed)
 
@@ -3967,6 +4430,13 @@ actor AgentToolOrchestrator {
                 stepID: resultStep.stepID,
                 kind: .progress,
                 payload: .progress(result.summary)
+            )
+            try await recordToolResult(
+                result,
+                runID: runID,
+                stepID: resultStep.stepID,
+                iteration: iteration,
+                metadata: controlMetadata
             )
             _ = try await store.finishStep(stepID: resultStep.stepID, status: .completed)
             return result
@@ -4127,6 +4597,89 @@ actor AgentToolOrchestrator {
             let key = "\(claim.type.rawValue):\(claim.target ?? "")"
             return seen.insert(key).inserted
         }
+    }
+
+    private nonisolated func unsupportedAnswerLocalReferences(
+        in answer: String,
+        evidence: [AgentRunEvidenceRecord],
+        grants: [AgentLocalFileGrant]
+    ) -> [String] {
+        guard !grants.isEmpty else { return [] }
+        let resolver = AgentLocalPathResolver()
+        var seen = Set<String>()
+        var unsupported: [String] = []
+        for rawPath in AgentTaskFrame.localPathCandidates(in: answer) {
+            guard case .resolved(let resolution) = resolver.resolve(
+                rawPath,
+                grants: grants,
+                access: .read,
+                target: .any
+            ) else {
+                continue
+            }
+            let path = URL(fileURLWithPath: resolution.path).standardizedFileURL.path
+            guard seen.insert(path).inserted else { continue }
+            guard !localReferenceIsBacked(path, by: evidence) else { continue }
+            unsupported.append(path)
+        }
+        return unsupported
+    }
+
+    private nonisolated func unsupportedLocalReferenceRejection(
+        for unsupportedLocalReferences: [String]
+    ) -> FinalAnswerRejection? {
+        guard !unsupportedLocalReferences.isEmpty else { return nil }
+        let displayed = unsupportedLocalReferences.prefix(4).joined(separator: ", ")
+        let suffix = unsupportedLocalReferences.count > 4 ? ", ..." : ""
+        return FinalAnswerRejection(
+            kind: .unsupportedLocalReferences,
+            reason: AgentRunText(
+                "The final answer references accessible local path(s) without recorded evidence: \(displayed)\(suffix). Call an available local file tool for those path(s), or answer without unsupported local references."
+            )
+        )
+    }
+
+    private nonisolated func localReferenceIsBacked(
+        _ path: String,
+        by evidence: [AgentRunEvidenceRecord]
+    ) -> Bool {
+        evidence.contains { record in
+            guard let kind = AgentEvidenceKind(rawValue: record.kind) else { return false }
+            switch kind {
+            case .fileGrant:
+                return pathMatches(record.stringMetadata("path"), path)
+                    || pathListContains(record.stringMetadata("paths"), path)
+            case .fileRead:
+                return pathMatches(record.stringMetadata("path"), path)
+            case .fileSearch:
+                return pathMatches(record.stringMetadata("topPath"), path)
+                    || pathListContains(record.stringMetadata("paths"), path)
+            case .folderList:
+                return pathMatches(record.stringMetadata("path"), path)
+                    || pathListContains(record.stringMetadata("paths"), path)
+            case .sideEffect:
+                guard record.stringMetadata("status") == AgentRunSideEffectStatus.completed.rawValue else {
+                    return false
+                }
+                return pathMatches(record.stringMetadata("targetPath") ?? record.stringMetadata("path"), path)
+            case .commandOutput, .localServer, .processSnapshot, .processState, .temporalContext,
+                 .visualContext, .approval, .terminalState, .evidenceRequirement, .finalAnswerSupport:
+                return false
+            }
+        }
+    }
+
+    private nonisolated func pathMatches(_ candidate: String?, _ path: String) -> Bool {
+        guard let candidate, !candidate.isEmpty else { return false }
+        return URL(fileURLWithPath: candidate).standardizedFileURL.path == path
+    }
+
+    private nonisolated func pathListContains(_ candidates: String?, _ path: String) -> Bool {
+        guard let candidates else { return false }
+        return candidates
+            .split(separator: "\n")
+            .map(String.init)
+            .contains { pathMatches($0, path) }
     }
 
     private func hasSubstantiveAnswerEvidence(
