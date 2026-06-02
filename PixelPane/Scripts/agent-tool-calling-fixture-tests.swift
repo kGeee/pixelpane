@@ -2507,20 +2507,3 @@ struct AgentToolCallingFixtureMain {
         }
     }
 }
-
-private extension AgentRunMetadataValue {
-    var stringValue: String? {
-        guard case .string(let value) = self else { return nil }
-        return value
-    }
-
-    var intValue: Int? {
-        guard case .int(let value) = self else { return nil }
-        return value
-    }
-
-    var boolValue: Bool? {
-        guard case .bool(let value) = self else { return nil }
-        return value
-    }
-}

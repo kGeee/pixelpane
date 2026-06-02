@@ -955,10 +955,3 @@ private final class AgentSideEffectCommandOutputCollector: @unchecked Sendable {
             ?? String(decoding: data, as: UTF8.self)
     }
 }
-
-private extension AgentRunMetadataValue {
-    nonisolated var stringValue: String? {
-        guard case .string(let value) = self else { return nil }
-        return value
-    }
-}

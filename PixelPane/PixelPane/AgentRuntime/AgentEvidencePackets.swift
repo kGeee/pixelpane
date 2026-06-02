@@ -1425,34 +1425,3 @@ actor AgentFinalAnswerSupportRecorder {
         )
     }
 }
-
-private extension AgentRunMetadataValue {
-    nonisolated var intValue: Int? {
-        guard case .int(let value) = self else { return nil }
-        return value
-    }
-}
-
-private extension AgentKernelMetadataValueV2 {
-    nonisolated var stringValue: String? {
-        guard case .string(let value) = self else { return nil }
-        return value
-    }
-}
-
-private extension AgentRunEvidenceRecord {
-    nonisolated func stringMetadata(_ key: String) -> String? {
-        guard case .string(let value) = metadata[key] else { return nil }
-        return value
-    }
-
-    nonisolated func intMetadata(_ key: String) -> Int? {
-        guard case .int(let value) = metadata[key] else { return nil }
-        return value
-    }
-
-    nonisolated func boolMetadata(_ key: String) -> Bool? {
-        guard case .bool(let value) = metadata[key] else { return nil }
-        return value
-    }
-}
