@@ -167,7 +167,6 @@ enum AgentToolCallingFixtureHarness {
         try expect(frame.localReferences.contains(where: { reference in
             reference.path == noteURL.path
                 && reference.source == .explicitAbsolutePath
-                && reference.access == .readWrite
                 && reference.exists == true
         }), "absolute granted path should become a structural local reference")
         try expect(frame.quotedSearchTerms == ["needle"], "quoted search terms should be preserved exactly")
@@ -773,8 +772,8 @@ enum AgentToolCallingFixtureHarness {
         let store = try AgentRunStore(rootDirectory: root.appendingPathComponent("store", isDirectory: true))
         let viewModel = AgentRunViewModel(store: store)
         let grants = [
-            AgentLocalFileGrant(path: broadProject.path, isDirectory: true, access: .readWrite),
-            AgentLocalFileGrant(path: siteProject.path, isDirectory: true, access: .readWrite)
+            AgentLocalFileGrant(path: broadProject.path, isDirectory: true),
+            AgentLocalFileGrant(path: siteProject.path, isDirectory: true)
         ]
         let context = AgentRunViewContext(title: "Evidence Planner", contextID: "tool-evidence-planner", contextKind: "assistant")
         let firstAdapter = FixtureAgentKernelAdapterV2(responses: [.finalAnswer("Yes, I can see the local site project.")])
@@ -839,7 +838,7 @@ enum AgentToolCallingFixtureHarness {
         try FileManager.default.createDirectory(at: emptyFolder, withIntermediateDirectories: true)
         let store = try AgentRunStore(rootDirectory: root.appendingPathComponent("store", isDirectory: true))
         let viewModel = AgentRunViewModel(store: store)
-        let grant = AgentLocalFileGrant(path: emptyFolder.path, isDirectory: true, access: .readWrite)
+        let grant = AgentLocalFileGrant(path: emptyFolder.path, isDirectory: true)
         let adapter = FixtureAgentKernelAdapterV2(responses: [.finalAnswer("The folder has no entries.")])
         let config = toolConfig(grant: grant, runMode: .readOnly, adapter: adapter)
 
@@ -949,8 +948,8 @@ enum AgentToolCallingFixtureHarness {
         let store = try AgentRunStore(rootDirectory: root.appendingPathComponent("store", isDirectory: true))
         let viewModel = AgentRunViewModel(store: store)
         let grants = [
-            AgentLocalFileGrant(path: first.path, isDirectory: true, access: .readWrite),
-            AgentLocalFileGrant(path: second.path, isDirectory: true, access: .readWrite)
+            AgentLocalFileGrant(path: first.path, isDirectory: true),
+            AgentLocalFileGrant(path: second.path, isDirectory: true)
         ]
         let adapter = FixtureAgentKernelAdapterV2(
             responses: [
@@ -997,8 +996,8 @@ enum AgentToolCallingFixtureHarness {
         let store = try AgentRunStore(rootDirectory: root.appendingPathComponent("store", isDirectory: true))
         let viewModel = AgentRunViewModel(store: store)
         let grants = [
-            AgentLocalFileGrant(path: site.path, isDirectory: true, access: .readWrite),
-            AgentLocalFileGrant(path: other.path, isDirectory: true, access: .readWrite)
+            AgentLocalFileGrant(path: site.path, isDirectory: true),
+            AgentLocalFileGrant(path: other.path, isDirectory: true)
         ]
         let adapter = FixtureAgentKernelAdapterV2(
             responses: [
@@ -1091,7 +1090,7 @@ enum AgentToolCallingFixtureHarness {
         try String(repeating: "<p>large</p>", count: 20).write(to: large, atomically: true, encoding: .utf8)
         let store = try AgentRunStore(rootDirectory: root.appendingPathComponent("store", isDirectory: true))
         let viewModel = AgentRunViewModel(store: store)
-        let grant = AgentLocalFileGrant(path: site.path, isDirectory: true, access: .readWrite)
+        let grant = AgentLocalFileGrant(path: site.path, isDirectory: true)
         let adapter = FixtureAgentKernelAdapterV2(
             responses: [.finalAnswer("large.html is the largest HTML file.")]
         )
@@ -1132,7 +1131,7 @@ enum AgentToolCallingFixtureHarness {
         )
         let store = try AgentRunStore(rootDirectory: root.appendingPathComponent("store", isDirectory: true))
         let viewModel = AgentRunViewModel(store: store)
-        let grant = AgentLocalFileGrant(path: site.path, isDirectory: true, access: .readWrite)
+        let grant = AgentLocalFileGrant(path: site.path, isDirectory: true)
         let adapter = FixtureAgentKernelAdapterV2(
             responses: [
                 .toolCall(name: "read_file", arguments: ["path": page.path], reason: nil),
@@ -1174,7 +1173,7 @@ enum AgentToolCallingFixtureHarness {
         )
         let store = try AgentRunStore(rootDirectory: root.appendingPathComponent("store", isDirectory: true))
         let viewModel = AgentRunViewModel(store: store)
-        let grant = AgentLocalFileGrant(path: site.path, isDirectory: true, access: .readWrite)
+        let grant = AgentLocalFileGrant(path: site.path, isDirectory: true)
         let adapter = FixtureAgentKernelAdapterV2(
             responses: [
                 .toolCall(name: "read_file", arguments: ["path": page.path], reason: nil),
@@ -1216,7 +1215,7 @@ enum AgentToolCallingFixtureHarness {
         try "this is longer".write(to: workspace.appendingPathComponent("long.txt"), atomically: true, encoding: .utf8)
         let store = try AgentRunStore(rootDirectory: root.appendingPathComponent("store", isDirectory: true))
         let viewModel = AgentRunViewModel(store: store)
-        let grant = AgentLocalFileGrant(path: workspace.path, isDirectory: true, access: .readWrite)
+        let grant = AgentLocalFileGrant(path: workspace.path, isDirectory: true)
         let adapter = FixtureAgentKernelAdapterV2(
             responses: [.finalAnswer("long.txt is larger.")]
         )
@@ -1700,8 +1699,8 @@ enum AgentToolCallingFixtureHarness {
         let store = try AgentRunStore(rootDirectory: root.appendingPathComponent("store", isDirectory: true))
         let viewModel = AgentRunViewModel(store: store)
         let grants = [
-            AgentLocalFileGrant(path: pixelPane.path, isDirectory: true, access: .readWrite),
-            AgentLocalFileGrant(path: randomTests.path, isDirectory: true, access: .readWrite)
+            AgentLocalFileGrant(path: pixelPane.path, isDirectory: true),
+            AgentLocalFileGrant(path: randomTests.path, isDirectory: true)
         ]
         let target = randomTests.appendingPathComponent("short_story.txt")
         let shadowTarget = pixelPane.appendingPathComponent("random-tests/short_story.txt")
@@ -2179,7 +2178,7 @@ enum AgentToolCallingFixtureHarness {
             store: store,
             viewModel: AgentRunViewModel(store: store),
             workspace: workspace,
-            grant: AgentLocalFileGrant(path: workspace.path, isDirectory: true, access: .readWrite)
+            grant: AgentLocalFileGrant(path: workspace.path, isDirectory: true)
         )
     }
 

@@ -63,6 +63,7 @@ nonisolated enum AgentPermissionReason: String, Codable, Equatable, Sendable {
     case malformedArgument
     case deniedScope
     case missingFileGrant
+    // Legacy persisted value from the old read-only/read-write grant split. New policy emits missingFileGrant.
     case missingWriteGrant
     case sensitivePathDenied
     case approvalRequired
@@ -75,27 +76,19 @@ nonisolated enum AgentPermissionReason: String, Codable, Equatable, Sendable {
     case unsafeCommandDenied
 }
 
-nonisolated enum AgentLocalFileGrantAccess: String, Codable, Equatable, Sendable {
-    case readOnly
-    case readWrite
-}
-
 nonisolated struct AgentLocalFileGrant: Codable, Equatable, Identifiable, Sendable {
     let id: UUID
     let path: String
     let isDirectory: Bool
-    let access: AgentLocalFileGrantAccess
 
     init(
         id: UUID = UUID(),
         path: String,
-        isDirectory: Bool,
-        access: AgentLocalFileGrantAccess = .readOnly
+        isDirectory: Bool
     ) {
         self.id = id
         self.path = URL(fileURLWithPath: path).standardizedFileURL.path
         self.isDirectory = isDirectory
-        self.access = access
     }
 
     var url: URL {
@@ -103,17 +96,14 @@ nonisolated struct AgentLocalFileGrant: Codable, Equatable, Identifiable, Sendab
     }
 
     func allowsRead(_ candidatePath: String) -> Bool {
-        allows(candidatePath, requireWrite: false)
+        allows(candidatePath)
     }
 
     func allowsWrite(_ candidatePath: String) -> Bool {
-        access == .readWrite && allows(candidatePath, requireWrite: true)
+        allows(candidatePath)
     }
 
-    private func allows(_ candidatePath: String, requireWrite: Bool) -> Bool {
-        if requireWrite, access != .readWrite {
-            return false
-        }
+    private func allows(_ candidatePath: String) -> Bool {
         let candidate = URL(fileURLWithPath: candidatePath).standardizedFileURL.path
         if isDirectory {
             let root = path.hasSuffix("/") ? path : path + "/"
@@ -198,16 +188,13 @@ nonisolated struct AgentLocalPathResolver: Sendable {
             return failure(.emptyPath, "The local path is empty.")
         }
 
-        let allowedGrants = grants.filter { grant in
-            access == .write ? grant.access == .readWrite : true
-        }
-        guard !allowedGrants.isEmpty else {
+        guard !grants.isEmpty else {
             return failure(.noMatchingGrant, "No matching local file grant is available for this request.")
         }
 
         if cleaned.hasPrefix("/") {
             let candidatePath = URL(fileURLWithPath: cleaned).standardizedFileURL.path
-            let candidates = allowedGrants.compactMap { grant -> Candidate? in
+            let candidates = grants.compactMap { grant -> Candidate? in
                 isAllowed(candidatePath, by: grant, access: access)
                     ? Candidate(path: candidatePath, grant: grant, source: "absolute")
                     : nil
@@ -217,7 +204,7 @@ nonisolated struct AgentLocalPathResolver: Sendable {
 
         for group in relativeCandidateGroups(
             cleaned,
-            grants: allowedGrants,
+            grants: grants,
             preferredDirectoryPath: preferredDirectoryPath
         ) {
             let result = select(group.candidates, rawPath: cleaned, access: access, target: target, allowsFallback: group.allowsFallback)
@@ -826,8 +813,8 @@ nonisolated struct AgentToolCatalog: Sendable {
                     reason = "withheld:deniedScope:\(deniedScope.rawValue)"
                 } else if spec.requiredScopes.contains(.fileRead), localGrants.isEmpty {
                     reason = "withheld:missingReadGrant"
-                } else if spec.requiredScopes.contains(.fileWrite), !localGrants.contains(where: { $0.access == .readWrite }) {
-                    reason = "withheld:missingWriteGrant"
+                } else if spec.requiredScopes.contains(.fileWrite), localGrants.isEmpty {
+                    reason = "withheld:missingFileGrant"
                 } else if let missingScope = spec.requiredScopes.first(where: { scope in
                     scope != .fileRead
                         && scope != .fileWrite
@@ -854,7 +841,7 @@ nonisolated struct AgentToolCatalog: Sendable {
         if spec.requiredScopes.contains(.fileRead), localGrants.isEmpty {
             return false
         }
-        if spec.requiredScopes.contains(.fileWrite), !localGrants.contains(where: { $0.access == .readWrite }) {
+        if spec.requiredScopes.contains(.fileWrite), localGrants.isEmpty {
             return false
         }
         let nonGrantScopes = spec.requiredScopes.filter { scope in
@@ -1295,8 +1282,7 @@ nonisolated struct AgentPermissionPolicy: Sendable {
                 return localPathFailureDecision(
                     failure,
                     rawPath: rawPath,
-                    spec: spec,
-                    isWrite: false
+                    spec: spec
                 )
             }
         }
@@ -1316,8 +1302,7 @@ nonisolated struct AgentPermissionPolicy: Sendable {
                 return localPathFailureDecision(
                     failure,
                     rawPath: rawPath,
-                    spec: spec,
-                    isWrite: true
+                    spec: spec
                 )
             }
         }
@@ -1336,8 +1321,7 @@ nonisolated struct AgentPermissionPolicy: Sendable {
                 return localPathFailureDecision(
                     failure,
                     rawPath: workingDirectory,
-                    spec: spec,
-                    isWrite: false
+                    spec: spec
                 )
             }
         }
@@ -1348,13 +1332,12 @@ nonisolated struct AgentPermissionPolicy: Sendable {
     private func localPathFailureDecision(
         _ failure: AgentLocalPathResolutionFailure,
         rawPath: String,
-        spec: AgentToolSpec,
-        isWrite: Bool
+        spec: AgentToolSpec
     ) -> AgentPermissionDecision {
         switch failure.code {
         case .noMatchingGrant:
             return ask(
-                reason: isWrite ? .missingWriteGrant : .missingFileGrant,
+                reason: .missingFileGrant,
                 summary: failure.summary.text,
                 toolName: spec.name,
                 risk: spec.risk,

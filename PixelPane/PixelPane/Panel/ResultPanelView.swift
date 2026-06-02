@@ -1044,7 +1044,6 @@ struct ResultPanelView: View {
                         grants: localFileAccess.grants,
                         isDisabled: !loadingActions.isEmpty || isAskRunning,
                         onGrantFolder: localFileAccess.grantFolder,
-                        onGrantWritableFolder: localFileAccess.grantWritableFolder,
                         onGrantFile: localFileAccess.grantFile,
                         onRemove: localFileAccess.removeGrant,
                         onClear: localFileAccess.clearGrants
@@ -1470,8 +1469,7 @@ struct ResultPanelView: View {
             "- Supported Operations: \(Self.debugJoinedList(configuration.context.supportedOperations.map(\.rawValue).sorted()))",
             "- Granted Scopes: \(Self.debugJoinedList(configuration.context.grantedScopes.map(\.rawValue).sorted()))",
             "- Denied Scopes: \(Self.debugJoinedList(configuration.context.deniedScopes.map(\.rawValue).sorted()))",
-            "- Runtime Local Grants: \(grants.count)",
-            "- Runtime Read/Write Grants: \(grants.filter { $0.access == .readWrite }.count)"
+            "- Runtime Local Grants: \(grants.count)"
         ]
 
         if !grants.isEmpty {
@@ -1479,7 +1477,7 @@ struct ResultPanelView: View {
             lines.append(
                 contentsOf: grants.prefix(20).map { grant in
                     let kind = grant.isDirectory ? "folder" : "file"
-                    return "  - \(kind) \(grant.access.rawValue): \(grant.path)"
+                    return "  - \(kind): \(grant.path)"
                 }
             )
             if grants.count > 20 {
@@ -2426,10 +2424,8 @@ struct ResultPanelView: View {
             runMode = usesLocalEvidenceSynthesis ? .readOnly : .plainChat
         } else if grants.isEmpty {
             runMode = .readOnly
-        } else if grants.contains(where: { $0.access == .readWrite }) {
-            runMode = providerTier == .tierAFullAgent ? .fullAgent : .proposalOnly
         } else {
-            runMode = .readOnly
+            runMode = providerTier == .tierAFullAgent ? .fullAgent : .proposalOnly
         }
 
         let context = AgentToolRunContext(
@@ -2473,8 +2469,7 @@ struct ResultPanelView: View {
         localFileAccess.grants.map { grant in
             AgentLocalFileGrant(
                 path: grant.path,
-                isDirectory: grant.isDirectory,
-                access: grant.access
+                isDirectory: grant.isDirectory
             )
         }
     }
@@ -3523,7 +3518,6 @@ private struct FileSourceMenuButton: View {
     let grants: [LocalFileGrant]
     let isDisabled: Bool
     let onGrantFolder: () -> Void
-    let onGrantWritableFolder: () -> Void
     let onGrantFile: () -> Void
     let onRemove: (LocalFileGrant) -> Void
     let onClear: () -> Void
@@ -3534,12 +3528,6 @@ private struct FileSourceMenuButton: View {
                 onGrantFolder()
             } label: {
                 Label("Choose Folder", systemImage: "folder.badge.plus")
-            }
-
-            Button {
-                onGrantWritableFolder()
-            } label: {
-                Label("Choose Writable Folder", systemImage: "square.and.pencil")
             }
 
             Button {
@@ -3565,7 +3553,7 @@ private struct FileSourceMenuButton: View {
                         Label {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(grant.displayName)
-                                Text("\(grant.access == .readWrite ? "Read/write" : "Read-only"): \(grant.path)")
+                                Text("\(grant.kindLabel): \(grant.path)")
                                     .foregroundStyle(.secondary)
                             }
                         } icon: {

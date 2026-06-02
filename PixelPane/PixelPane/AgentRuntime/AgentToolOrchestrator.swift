@@ -39,7 +39,6 @@ nonisolated struct AgentTaskFrame: Codable, Equatable, Sendable {
     nonisolated struct LocalReference: Codable, Equatable, Sendable {
         let path: String
         let isDirectory: Bool?
-        let access: AgentLocalFileGrantAccess?
         let source: StructuralSource
         let exists: Bool?
         let grantPath: String?
@@ -328,7 +327,7 @@ nonisolated struct AgentTaskFrame: Codable, Equatable, Sendable {
     ) -> String? {
         if let explicitPath {
             let standardized = URL(fileURLWithPath: explicitPath).standardizedFileURL.path
-            if grants.contains(where: { $0.isDirectory && $0.access == .readWrite && $0.allowsWrite(standardized) }) {
+            if grants.contains(where: { $0.isDirectory && $0.allowsWrite(standardized) }) {
                 return standardized
             }
         }
@@ -497,7 +496,6 @@ nonisolated struct AgentTaskFrame: Codable, Equatable, Sendable {
                     return LocalReference(
                         path: candidate,
                         isDirectory: isDirectory.boolValue,
-                        access: grant.access,
                         source: .explicitRelativePath,
                         exists: true,
                         grantPath: grant.path
@@ -516,7 +514,6 @@ nonisolated struct AgentTaskFrame: Codable, Equatable, Sendable {
                     LocalReference(
                         path: grant.path,
                         isDirectory: grant.isDirectory,
-                        access: grant.access,
                         source: .exactGrantReference,
                         exists: true,
                         grantPath: grant.path
@@ -536,13 +533,12 @@ nonisolated struct AgentTaskFrame: Codable, Equatable, Sendable {
         source: StructuralSource
     ) -> LocalReference {
         let standardized = URL(fileURLWithPath: rawPath).standardizedFileURL.path
-        let grant = grants.first { $0.allowsRead(standardized) || $0.allowsWrite(standardized) }
+        let grant = grants.first { $0.allowsRead(standardized) }
         var isDirectory: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: standardized, isDirectory: &isDirectory)
         return LocalReference(
             path: standardized,
             isDirectory: exists ? isDirectory.boolValue : nil,
-            access: grant?.access,
             source: source,
             exists: exists,
             grantPath: grant?.path
@@ -556,14 +552,13 @@ nonisolated struct AgentTaskFrame: Codable, Equatable, Sendable {
         let preferredGrant = writeRequest.preferredDirectoryPath.flatMap { preferred in
             grants.first { $0.path == preferred }
         }
-        let grant = preferredGrant ?? grants.first { $0.isDirectory && $0.access == .readWrite }
+        let grant = preferredGrant ?? grants.first { $0.isDirectory }
         let candidate = grant?.url.appendingPathComponent(writeRequest.targetPath).standardizedFileURL.path ?? writeRequest.targetPath
         var isDirectory: ObjCBool = false
         let exists = FileManager.default.fileExists(atPath: candidate, isDirectory: &isDirectory)
         return LocalReference(
             path: candidate,
             isDirectory: exists ? isDirectory.boolValue : nil,
-            access: grant?.access,
             source: .explicitWriteTarget,
             exists: exists,
             grantPath: grant?.path
@@ -1532,8 +1527,7 @@ actor AgentLocalToolExecutor {
             searchGrants = [
                 AgentLocalFileGrant(
                     path: resolved.path,
-                    isDirectory: true,
-                    access: .readOnly
+                    isDirectory: true
                 )
             ]
             resolvedRootPath = resolved.path
@@ -1928,17 +1922,17 @@ actor AgentLocalToolExecutor {
         )
     }
 
-    /// Tell the model exactly which writable roots exist and how to retarget a denied write,
+    /// Tell the model exactly which granted roots exist and how to retarget a denied write,
     /// so an ambiguous/out-of-grant write proposal can recover into a single valid absolute
     /// path instead of looping on bare denial strings (RELY-005 / RC-5).
     private func writableTargetGuidance(grants: [AgentLocalFileGrant]) -> String {
         let writableRoots = grants
-            .filter { $0.isDirectory && $0.access == .readWrite }
+            .filter(\.isDirectory)
             .map { $0.path }
         guard !writableRoots.isEmpty else {
-            return "No writable granted folders are available; ask the user to grant a writable folder before writing."
+            return "No granted folders are available; ask the user to grant a folder before writing."
         }
-        return "Writable granted folders: \(writableRoots.joined(separator: ", ")). Use a single absolute path inside exactly one of these."
+        return "Granted folders: \(writableRoots.joined(separator: ", ")). Use a single absolute path inside exactly one of these."
     }
 
     private func failedResult(_ toolName: String, _ message: String) -> AgentToolExecutionResult {

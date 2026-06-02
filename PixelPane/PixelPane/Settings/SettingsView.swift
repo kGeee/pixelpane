@@ -608,12 +608,6 @@ private struct LocalFilesSettingsView: View {
                     }
 
                     Button {
-                        store.grantWritableFolder()
-                    } label: {
-                        Label("Grant Writable Folder", systemImage: "square.and.pencil")
-                    }
-
-                    Button {
                         store.grantFile()
                     } label: {
                         Label("Grant File", systemImage: "doc.badge.plus")
@@ -638,7 +632,7 @@ private struct LocalFilesSettingsView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(grant.displayName)
                                     .font(.system(size: 13, weight: .semibold))
-                                Text("\(grant.access == .readWrite ? "Read/write" : "Read-only"): \(grant.path)")
+                                Text("\(grant.kindLabel): \(grant.path)")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)

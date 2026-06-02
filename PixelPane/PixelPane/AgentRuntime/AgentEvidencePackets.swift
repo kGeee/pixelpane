@@ -261,14 +261,12 @@ nonisolated struct AgentGrantInventoryEntry: Codable, Equatable, Sendable {
     let path: String
     let displayName: String
     let isDirectory: Bool
-    let access: AgentLocalFileGrantAccess
 
-    init(grantID: String, path: String, displayName: String, isDirectory: Bool, access: AgentLocalFileGrantAccess) {
+    init(grantID: String, path: String, displayName: String, isDirectory: Bool) {
         self.grantID = grantID
         self.path = URL(fileURLWithPath: path).standardizedFileURL.path
         self.displayName = displayName
         self.isDirectory = isDirectory
-        self.access = access
     }
 }
 
@@ -294,8 +292,7 @@ nonisolated struct AgentGrantInventoryProvider: Sendable {
                         grantID: grant.id.uuidString,
                         path: grant.path,
                         displayName: grant.url.lastPathComponent,
-                        isDirectory: grant.isDirectory,
-                        access: grant.access
+                        isDirectory: grant.isDirectory
                     )
                 }
         )
@@ -325,7 +322,7 @@ nonisolated struct AgentGrantInventoryProvider: Sendable {
         } else {
             for entry in snapshot.entries {
                 let kind = entry.isDirectory ? "Folder" : "File"
-                lines.append("- \(kind): \(entry.path) (access: \(entry.access.rawValue))")
+                lines.append("- \(kind): \(entry.path)")
             }
         }
         return AgentRunText(lines.joined(separator: "\n"), characterLimit: characterLimit)
@@ -502,7 +499,6 @@ actor AgentEvidenceRecorder {
         let entries = snapshot.entries
         let paths = entries.map(\.path)
         let displayNames = entries.map(\.displayName)
-        let accessModes = entries.map { "\($0.path)=\($0.access.rawValue)" }
         let kinds = entries.map { "\($0.path)=\($0.isDirectory ? "folder" : "file")" }
         return try await record(
             AgentEvidencePacket(
@@ -518,7 +514,6 @@ actor AgentEvidenceRecorder {
                     "path": .string(paths.first ?? ""),
                     "paths": .string(paths.joined(separator: "\n")),
                     "displayNames": .string(displayNames.joined(separator: "\n")),
-                    "accessModes": .string(accessModes.joined(separator: "\n")),
                     "grantIDs": .string(entries.map(\.grantID).joined(separator: "\n")),
                     "kinds": .string(kinds.joined(separator: "\n")),
                     "source": .string(snapshot.source)
@@ -1261,7 +1256,6 @@ nonisolated struct AgentEvidenceController: Sendable {
                 record.stringMetadata("path") ?? "",
                 record.stringMetadata("paths") ?? "",
                 record.stringMetadata("displayNames") ?? "",
-                record.stringMetadata("accessModes") ?? "",
                 record.stringMetadata("url") ?? "",
                 record.stringMetadata("command") ?? "",
                 record.stringMetadata("topExecutable") ?? ""
@@ -1355,7 +1349,7 @@ nonisolated struct AgentEvidenceController: Sendable {
             "rowCount", "topPID", "topExecutable", "topCPUPercent", "topMemoryPercent",
             "status", "sideEffectID", "targetPath", "operation", "currentDate", "localTime",
             "weekday", "timeZone", "utcOffset", "source", "grantCount", "entryCount",
-            "displayNames", "accessModes", "grantIDs", "kinds"
+            "displayNames", "grantIDs", "kinds"
         ] {
             if let value = record.metadata[key] {
                 fields[key] = value

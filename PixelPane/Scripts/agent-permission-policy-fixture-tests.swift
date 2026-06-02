@@ -24,7 +24,7 @@ enum AgentPermissionPolicyFixtureHarness {
 
     private static func testCatalogFiltering() throws {
         let catalog = AgentToolCatalog()
-        let grants = [grant("/Users/test/project", isDirectory: true, access: .readWrite)]
+        let grants = [grant("/Users/test/project", isDirectory: true)]
 
         let tierCNames = catalog.visibleModelSchemas(
             providerTier: .tierCPlainChat,
@@ -67,14 +67,14 @@ enum AgentPermissionPolicyFixtureHarness {
         try expect(tierBReadOnlyNames.contains("get_local_listener_snapshot"), "Tier B read-only mode should expose local listener snapshots")
         try expect(!tierBReadOnlyNames.contains("run_finite_command"), "Tier B read-only mode should not expose raw shell")
 
-        let readOnlyGrantNames = catalog.visibleModelSchemas(
+        let grantedFolderNames = catalog.visibleModelSchemas(
             providerTier: .tierBConstrainedStructuredText,
             runMode: .proposalOnly,
-            localGrants: [grant("/Users/test/read-only-project", isDirectory: true, access: .readOnly)],
+            localGrants: [grant("/Users/test/project", isDirectory: true)],
             grantedScopes: [.visualContext]
         ).map(\.name)
-        try expect(readOnlyGrantNames.contains("read_file"), "read-only folder grants should expose read tools")
-        try expect(!readOnlyGrantNames.contains("stage_write_proposal"), "read-only folder grants should not expose write proposal staging")
+        try expect(grantedFolderNames.contains("read_file"), "granted folders should expose read tools")
+        try expect(grantedFolderNames.contains("stage_write_proposal"), "granted folders should expose write proposal staging")
 
         let tierANames = catalog.visibleModelSchemas(
             providerTier: .tierAFullAgent,
@@ -156,11 +156,11 @@ enum AgentPermissionPolicyFixtureHarness {
         let visibilityDiagnostics = catalog.visibilityDiagnostics(
             providerTier: .tierBConstrainedStructuredText,
             runMode: .proposalOnly,
-            localGrants: [grant("/Users/test/read-only-project", isDirectory: true, access: .readOnly)]
+            localGrants: []
         )
         try expect(
-            visibilityDiagnostics.contains("tool.stage_write_proposal=withheld:missingWriteGrant"),
-            "tool visibility diagnostics should explain why write staging was withheld"
+            visibilityDiagnostics.contains("tool.stage_write_proposal=withheld:missingFileGrant"),
+            "tool visibility diagnostics should explain why write staging was withheld without a grant"
         )
     }
 
@@ -174,8 +174,8 @@ enum AgentPermissionPolicyFixtureHarness {
         try FileManager.default.createDirectory(at: specific, withIntermediateDirectories: true)
 
         let grants = [
-            grant(broad.path, isDirectory: true, access: .readWrite),
-            grant(specific.path, isDirectory: true, access: .readWrite)
+            grant(broad.path, isDirectory: true),
+            grant(specific.path, isDirectory: true)
         ]
         let resolver = AgentLocalPathResolver()
 
@@ -211,7 +211,7 @@ enum AgentPermissionPolicyFixtureHarness {
         let resolver = AgentLocalPathResolver()
         let result = resolver.resolve(
             "~/Documents/random-tests/notes.txt",
-            grants: [grant(workspace.path, isDirectory: true, access: .readWrite)],
+            grants: [grant(workspace.path, isDirectory: true)],
             access: .read,
             target: .any
         )
@@ -262,7 +262,7 @@ enum AgentPermissionPolicyFixtureHarness {
 
     private static func testWriteProposalApprovalPolicy() throws {
         let policy = AgentPermissionPolicy()
-        let grants = [grant("/Users/test/project", isDirectory: true, access: .readWrite)]
+        let grants = [grant("/Users/test/project", isDirectory: true)]
         let arguments = [
             "operation": "replace",
             "targetPath": "/Users/test/project/notes.md",
@@ -313,7 +313,7 @@ enum AgentPermissionPolicyFixtureHarness {
 
     private static func testCommandPolicy() throws {
         let policy = AgentPermissionPolicy()
-        let grants = [grant("/Users/test/project", isDirectory: true, access: .readWrite)]
+        let grants = [grant("/Users/test/project", isDirectory: true)]
 
         let safeCommand = policy.decision(
             for: request(
@@ -407,7 +407,7 @@ enum AgentPermissionPolicyFixtureHarness {
 
     private static func testProcessAndLocalServerPolicy() throws {
         let policy = AgentPermissionPolicy()
-        let grants = [grant("/Users/test/project", isDirectory: true, access: .readWrite)]
+        let grants = [grant("/Users/test/project", isDirectory: true)]
 
         let topProcesses = policy.decision(
             for: request(
@@ -504,7 +504,7 @@ enum AgentPermissionPolicyFixtureHarness {
                     "targetPath": "/Users/test/project/new.md",
                     "content": "hello"
                 ],
-                localGrants: [grant("/Users/test/project", isDirectory: true, access: .readWrite)],
+                localGrants: [grant("/Users/test/project", isDirectory: true)],
                 supportedOperations: [.fileGrantList, .fileList, .fileSearch, .fileRead, .finiteCommand, .processSnapshot]
             )
         )
@@ -569,10 +569,9 @@ enum AgentPermissionPolicyFixtureHarness {
 
     private static func grant(
         _ path: String,
-        isDirectory: Bool,
-        access: AgentLocalFileGrantAccess = .readOnly
+        isDirectory: Bool
     ) -> AgentLocalFileGrant {
-        AgentLocalFileGrant(path: path, isDirectory: isDirectory, access: access)
+        AgentLocalFileGrant(path: path, isDirectory: isDirectory)
     }
 }
 

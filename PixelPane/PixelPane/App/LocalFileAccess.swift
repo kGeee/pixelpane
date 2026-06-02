@@ -7,37 +7,17 @@ struct LocalFileGrant: Codable, Equatable, Identifiable, Sendable {
     let path: String
     let isDirectory: Bool
     let addedAt: Date
-    let access: AgentLocalFileGrantAccess
 
     init(
         id: UUID = UUID(),
         path: String,
         isDirectory: Bool,
-        addedAt: Date = Date(),
-        access: AgentLocalFileGrantAccess = .readOnly
+        addedAt: Date = Date()
     ) {
         self.id = id
         self.path = path
         self.isDirectory = isDirectory
         self.addedAt = addedAt
-        self.access = access
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case id
-        case path
-        case isDirectory
-        case addedAt
-        case access
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(UUID.self, forKey: .id)
-        path = try container.decode(String.self, forKey: .path)
-        isDirectory = try container.decode(Bool.self, forKey: .isDirectory)
-        addedAt = try container.decode(Date.self, forKey: .addedAt)
-        access = try container.decodeIfPresent(AgentLocalFileGrantAccess.self, forKey: .access) ?? .readOnly
     }
 
     nonisolated var url: URL {
@@ -74,39 +54,26 @@ final class LocalFileAccessStore: ObservableObject {
         let panel = NSOpenPanel()
         panel.title = "Grant Folder Access"
         panel.prompt = "Grant Access"
-        panel.message = "Pixel Pane will be able to read and search this folder locally."
+        panel.message = "Pixel Pane will be able to read, search, and write inside this folder locally."
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        addGrant(url: url, isDirectory: true, access: .readOnly)
-    }
-
-    func grantWritableFolder() {
-        let panel = NSOpenPanel()
-        panel.title = "Grant Writable Folder Access"
-        panel.prompt = "Grant Writable Access"
-        panel.message = "Pixel Pane will be able to read, search, and propose approved writes in this folder locally."
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        addGrant(url: url, isDirectory: true, access: .readWrite)
+        addGrant(url: url, isDirectory: true)
     }
 
     func grantFile() {
         let panel = NSOpenPanel()
         panel.title = "Grant File Access"
         panel.prompt = "Grant Access"
-        panel.message = "Pixel Pane will be able to read this file locally."
+        panel.message = "Pixel Pane will be able to read and write this file locally."
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        addGrant(url: url, isDirectory: false, access: .readOnly)
+        addGrant(url: url, isDirectory: false)
     }
 
     func removeGrant(_ grant: LocalFileGrant) {
@@ -124,7 +91,7 @@ final class LocalFileAccessStore: ObservableObject {
         persist()
     }
 
-    private func addGrant(url: URL, isDirectory: Bool, access: AgentLocalFileGrantAccess) {
+    private func addGrant(url: URL, isDirectory: Bool) {
         let standardizedURL = url.standardizedFileURL
         let path = standardizedURL.path
         grants.removeAll { $0.path == path }
@@ -133,8 +100,7 @@ final class LocalFileAccessStore: ObservableObject {
                 id: UUID(),
                 path: path,
                 isDirectory: isDirectory,
-                addedAt: Date(),
-                access: access
+                addedAt: Date()
             )
         )
         grants.sort { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
@@ -166,14 +132,14 @@ struct LocalFileContext: Sendable {
         }
 
         var lines = [
-            "Granted read-only local locations:",
+            "Granted local locations:",
             grants.map { "- \($0.kindLabel): \($0.path)" }.joined(separator: "\n")
         ]
 
         if snippets.isEmpty {
             lines.append("No relevant local file snippets were found for this question.")
         } else {
-            lines.append("Relevant read-only local file snippets:")
+            lines.append("Relevant local file snippets:")
             for (index, snippet) in snippets.enumerated() {
                 lines.append(
                     """

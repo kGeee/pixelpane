@@ -50,7 +50,7 @@ enum AgentEvidencePacketsFixtureHarness {
 
     private static func testFileGrantInventoryEvidenceIsDiscoveryOnly() async throws {
         let harness = try await makeHarness()
-        let grant = AgentLocalFileGrant(path: harness.workspace.path, isDirectory: true, access: .readWrite)
+        let grant = AgentLocalFileGrant(path: harness.workspace.path, isDirectory: true)
         let evidence = try await harness.recorder.recordFileGrants(
             runID: harness.run.runID,
             grants: [grant]
@@ -75,7 +75,7 @@ enum AgentEvidencePacketsFixtureHarness {
         try expect(packets.first?.kind == .fileGrant, "grant inventory should be selected as grant context")
         try expect(packets.first?.keyFields["paths"] == .string(grant.path), "grant context should expose granted paths")
         try expect(packets.first?.keyFields["displayNames"] == .string(grant.url.lastPathComponent), "grant context should expose display names")
-        try expect(packets.first?.keyFields["accessModes"] == .string("\(grant.path)=\(grant.access.rawValue)"), "grant context should expose access modes")
+        try expect(packets.first?.keyFields["accessModes"] == nil, "grant context should not expose access modes")
         try expect(packets.first?.keyFields["grantIDs"] != nil, "grant context should expose grant IDs")
         try expect(packets.first?.keyFields["kinds"] == .string("\(grant.path)=folder"), "grant context should expose item kinds")
     }
