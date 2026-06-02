@@ -32,6 +32,7 @@ nonisolated enum AgentToolOperationKind: String, Codable, Equatable, Hashable, S
     case fileWriteDraft
     case visualContext
     case finiteCommand
+    case processSnapshot
     case processStart
     case processStatus
     case processStop
@@ -587,7 +588,9 @@ nonisolated enum AgentToolExecutionCapabilities {
         .fileSearch,
         .fileRead,
         .fileWriteDraft,
-        .finiteCommand
+        .finiteCommand,
+        .processSnapshot,
+        .localServerDiscovery
     ]
 }
 
@@ -870,6 +873,7 @@ extension AgentToolCatalog {
         let tierA: [AgentModelCapabilityTier] = [.tierAFullAgent]
         let readProposalFull: [AgentRunPermissionMode] = [.readOnly, .proposalOnly, .fullAgent]
         let proposalFull: [AgentRunPermissionMode] = [.proposalOnly, .fullAgent]
+        let fullOnly: [AgentRunPermissionMode] = [.fullAgent]
         let readFull: [AgentRunPermissionMode] = [.readOnly, .fullAgent]
 
         return [
@@ -954,19 +958,47 @@ extension AgentToolCatalog {
             ),
             AgentToolSpec(
                 schema: toolSchema(
+                    name: "get_process_snapshot",
+                    summary: "Read a bounded snapshot of currently running local processes, returning PID, CPU, memory, and executable name only.",
+                    arguments: [
+                        argument("limit", type: .integer, isRequired: false, summary: "Optional row limit from 1 to 20. Defaults to 8.")
+                    ]
+                ),
+                operationKind: .processSnapshot,
+                risk: .readOnly,
+                visibleRunModes: readProposalFull,
+                visibleProviderTiers: tierAB
+            ),
+            AgentToolSpec(
+                schema: toolSchema(
+                    name: "get_local_listener_snapshot",
+                    summary: "Read a bounded snapshot of local listening ports, returning port, address, PID, executable name, and granted working directory only.",
+                    arguments: [
+                        argument("port", type: .integer, isRequired: false, summary: "Optional port to inspect."),
+                        argument("rootPath", isRequired: false, summary: "Optional granted folder path or grant name used to filter listener working directories."),
+                        argument("limit", type: .integer, isRequired: false, summary: "Optional row limit from 1 to 20. Defaults to 8.")
+                    ]
+                ),
+                operationKind: .localServerDiscovery,
+                risk: .readOnly,
+                visibleRunModes: readProposalFull,
+                visibleProviderTiers: tierAB
+            ),
+            AgentToolSpec(
+                schema: toolSchema(
                     name: "run_finite_command",
-                    summary: "Run a bounded local shell command for terminal, process, system, file, and build observations. Read-only commands may run directly; risky or mutating commands require user approval before execution.",
+                    summary: "Request a bounded local shell command for terminal, file, build, or system work. Raw shell is available only in full-agent mode and requires app-owned approval or a matching approval grant.",
                     arguments: [
                         argument("command", summary: "Shell command to run."),
-                        argument("workingDirectory", isRequired: false, summary: "Optional granted working directory. Omit only for system-state commands that do not read local files."),
+                        argument("workingDirectory", summary: "Granted working directory for the command."),
                         argument("timeoutSeconds", type: .integer, isRequired: false, summary: "Optional timeout in seconds.")
                     ]
                 ),
                 operationKind: .finiteCommand,
                 risk: .command,
                 requiredScopes: [.workingDirectory],
-                visibleRunModes: readProposalFull,
-                visibleProviderTiers: tierAB
+                visibleRunModes: fullOnly,
+                visibleProviderTiers: tierA
             ),
             AgentToolSpec(
                 schema: toolSchema(

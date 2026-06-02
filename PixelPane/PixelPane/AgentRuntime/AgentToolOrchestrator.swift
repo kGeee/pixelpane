@@ -97,7 +97,6 @@ nonisolated struct AgentTaskFrame: Codable, Equatable, Sendable {
         nonisolated enum Kind: String, Codable, Equatable, Sendable {
             case writeProposal
             case commandEvidence
-            case processSnapshot
             case visualContext
             case temporalContext
             case exactSearch
@@ -124,7 +123,6 @@ nonisolated struct AgentTaskFrame: Codable, Equatable, Sendable {
     let localReferences: [LocalReference]
     let writeRequest: WriteRequest?
     let explicitCommandDraft: ExplicitCommandDraft?
-    let processSnapshotCommand: ExplicitCommandDraft?
     let quotedSearchTerms: [String]
     let temporalDayOffset: Int?
     let visualContext: VisualContextSnapshot?
@@ -148,11 +146,6 @@ nonisolated struct AgentTaskFrame: Codable, Equatable, Sendable {
 
     var requiresCommandEvidence: Bool {
         evidenceRequests.contains { $0.kind == .commandEvidence }
-            && availableToolNames.contains("run_finite_command")
-    }
-
-    var requiresProcessSnapshotEvidence: Bool {
-        evidenceRequests.contains { $0.kind == .processSnapshot }
             && availableToolNames.contains("run_finite_command")
     }
 
@@ -200,7 +193,6 @@ nonisolated struct AgentTaskFrame: Codable, Equatable, Sendable {
         let deniedScopes = context.deniedScopes.sorted { $0.rawValue < $1.rawValue }
         let writeRequest = explicitWriteRequest(from: userMessage, grants: context.localGrants)
         let commandDraft = explicitCommandDraft(from: userMessage)
-        let processSnapshotCommand = processSnapshotCommand(from: userMessage)
         let quotedTerms = quotedTerms(in: userMessage)
         let temporalDayOffset = temporalDayOffset(from: userMessage)
         let visualContext = visualContext(from: attachments)
@@ -234,7 +226,6 @@ nonisolated struct AgentTaskFrame: Codable, Equatable, Sendable {
             availableToolNames: toolNames,
             writeRequest: writeRequest,
             commandDraft: commandDraft,
-            processSnapshotCommand: processSnapshotCommand,
             quotedSearchTerms: quotedTerms,
             visualContext: visualContext,
             temporalDayOffset: temporalDayOffset
@@ -254,7 +245,6 @@ nonisolated struct AgentTaskFrame: Codable, Equatable, Sendable {
             localReferences: localReferences,
             writeRequest: writeRequest,
             explicitCommandDraft: commandDraft,
-            processSnapshotCommand: processSnapshotCommand,
             quotedSearchTerms: quotedTerms,
             temporalDayOffset: temporalDayOffset,
             visualContext: visualContext,
@@ -274,7 +264,6 @@ nonisolated struct AgentTaskFrame: Codable, Equatable, Sendable {
                 localReferenceCount: localReferences.count,
                 writeRequest: writeRequest,
                 commandDraft: commandDraft,
-                processSnapshotCommand: processSnapshotCommand,
                 quotedSearchTermCount: quotedTerms.count,
                 temporalDayOffset: temporalDayOffset,
                 visualContext: visualContext,
@@ -367,25 +356,6 @@ nonisolated struct AgentTaskFrame: Codable, Equatable, Sendable {
         return nil
     }
 
-    private static func processSnapshotCommand(from text: String) -> ExplicitCommandDraft? {
-        let lowercased = text.lowercased()
-        let processRequestPatterns = [
-            #"\b(?:top|highest|running|active)\b.{0,48}\bprocess(?:es)?\b"#,
-            #"\bprocess(?:es)?\b.{0,48}\b(?:top|highest|running|active)\b"#
-        ]
-        let isProcessSnapshotRequest = processRequestPatterns.contains { pattern in
-            lowercased.range(of: pattern, options: .regularExpression) != nil
-        }
-        guard isProcessSnapshotRequest else {
-            return nil
-        }
-        return ExplicitCommandDraft(
-            command: "ps -axo pid,pcpu,pmem,comm -r",
-            workingDirectory: nil,
-            source: .deterministicController
-        )
-    }
-
     private static func explicitWorkingDirectory(in text: String) -> String? {
         guard let regex = try? NSRegularExpression(pattern: #"\bin\s+((?:~)?/[^\s"'`]+)"#, options: [.caseInsensitive]) else {
             return nil
@@ -433,23 +403,23 @@ nonisolated struct AgentTaskFrame: Codable, Equatable, Sendable {
                   let days = Int(text[valueRange]) else { continue }
             return index == 0 ? days : -days
         }
-        guard containsRelativeDayToken(text) else {
-            return nil
+        if containsRelativeDayToken(text) {
+            guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.date.rawValue) else {
+                return nil
+            }
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            guard let date = detector.matches(in: text, range: range)
+                .compactMap(\.date)
+                .first else {
+                return nil
+            }
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = .current
+            let today = calendar.startOfDay(for: Date())
+            let target = calendar.startOfDay(for: date)
+            return calendar.dateComponents([.day], from: today, to: target).day
         }
-        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.date.rawValue) else {
-            return nil
-        }
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        guard let date = detector.matches(in: text, range: range)
-            .compactMap(\.date)
-            .first else {
-            return nil
-        }
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = .current
-        let today = calendar.startOfDay(for: Date())
-        let target = calendar.startOfDay(for: date)
-        return calendar.dateComponents([.day], from: today, to: target).day
+        return containsCurrentTemporalQuestion(text) ? 0 : nil
     }
 
     private static func containsRelativeDayToken(_ text: String) -> Bool {
@@ -462,6 +432,21 @@ nonisolated struct AgentTaskFrame: Codable, Equatable, Sendable {
             in: text,
             range: NSRange(text.startIndex..<text.endIndex, in: text)
         ) != nil
+    }
+
+    private static func containsCurrentTemporalQuestion(_ text: String) -> Bool {
+        let patterns = [
+            #"(?i)\bwhat(?:'s|s)\s+(?:the\s+)?(?:(?:current|local)\s+)?(?:time|date)\s*(?:now|right\s+now|here|locally)?\s*(?:[?.!]|$)"#,
+            #"(?i)\bwhat\s+is\s+(?:the\s+)?(?:(?:current|local)\s+)?(?:time|date)\s*(?:now|right\s+now|here|locally)?\s*(?:[?.!]|$)"#,
+            #"(?i)\bwhat\s+(?:time|date)\s+is\s+it\b"#,
+            #"(?i)\b(?:current|local)\s+(?:time|date)\s*(?:now|right\s+now|here|locally)?\s*(?:[?.!]|$)"#,
+            #"(?i)\b(?:tell|show|give)\s+me\s+(?:the\s+)?(?:(?:current|local)\s+)?(?:time|date)\s*(?:now|right\s+now|here|locally)?\s*(?:[?.!]|$)"#
+        ]
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return patterns.contains { pattern in
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { return false }
+            return regex.firstMatch(in: text, range: range) != nil
+        }
     }
 
     private static func visualContext(from attachments: [AgentKernelModelAttachmentV2]) -> VisualContextSnapshot? {
@@ -589,7 +574,6 @@ nonisolated struct AgentTaskFrame: Codable, Equatable, Sendable {
         availableToolNames: [String],
         writeRequest: WriteRequest?,
         commandDraft: ExplicitCommandDraft?,
-        processSnapshotCommand: ExplicitCommandDraft?,
         quotedSearchTerms: [String],
         visualContext: VisualContextSnapshot?,
         temporalDayOffset: Int?
@@ -614,19 +598,6 @@ nonisolated struct AgentTaskFrame: Codable, Equatable, Sendable {
                     requiredToolName: "run_finite_command",
                     targetPath: nil,
                     query: commandDraft.command
-                )
-            )
-        }
-        if let processSnapshotCommand,
-           commandDraft == nil,
-           availableToolNames.contains("run_finite_command") {
-            requests.append(
-                EvidenceRequest(
-                    kind: .processSnapshot,
-                    source: processSnapshotCommand.source,
-                    requiredToolName: "run_finite_command",
-                    targetPath: nil,
-                    query: processSnapshotCommand.command
                 )
             )
         }
@@ -681,7 +652,6 @@ nonisolated struct AgentTaskFrame: Codable, Equatable, Sendable {
         localReferenceCount: Int,
         writeRequest: WriteRequest?,
         commandDraft: ExplicitCommandDraft?,
-        processSnapshotCommand: ExplicitCommandDraft?,
         quotedSearchTermCount: Int,
         temporalDayOffset: Int?,
         visualContext: VisualContextSnapshot?,
@@ -714,9 +684,6 @@ nonisolated struct AgentTaskFrame: Codable, Equatable, Sendable {
         }
         if let commandDraft {
             lines.append("commandDraft=\(commandDraft.source.rawValue)")
-        }
-        if let processSnapshotCommand {
-            lines.append("processSnapshot=\(processSnapshotCommand.source.rawValue)")
         }
         if quotedSearchTermCount > 0 {
             lines.append("quotedSearchTerms=\(quotedSearchTermCount)")
@@ -848,9 +815,6 @@ nonisolated struct AgentRunTaskClassifier: Sendable {
             return .commandPlusWrite
         }
         if command {
-            return .commandObservation
-        }
-        if taskFrame.requiresProcessSnapshotEvidence {
             return .commandObservation
         }
         if write {
@@ -1008,7 +972,6 @@ nonisolated struct AgentRunTaskProfile: Codable, Equatable, Sendable {
         )
         let localState = !localEvidencePlan.requirements.isEmpty
             || intent.requiresCommandEvidence
-            || taskFrame.requiresProcessSnapshotEvidence
             || taskFrame.hasVisualEvidenceRequest
         let sideEffectToolNames = intent.requiredSideEffectToolNames
         let sideEffect = !sideEffectToolNames.isEmpty
@@ -1146,6 +1109,10 @@ actor AgentLocalToolExecutor {
     private let maxReadObservationCharacters = 3_200
     private let maxSearchSnippetCharacters = 260
     private let snippetRadius = 220
+    private let defaultProcessSnapshotLimit = 8
+    private let maxProcessSnapshotLimit = 20
+    private let defaultLocalListenerSnapshotLimit = 8
+    private let maxLocalListenerSnapshotLimit = 20
 
     init(
         store: AgentRunStore,
@@ -1219,6 +1186,10 @@ actor AgentLocalToolExecutor {
             return try await searchFiles(call: call, runID: runID, stepID: stepID, grants: context.localGrants)
         case "read_file":
             return try await readFile(call: call, runID: runID, stepID: stepID, grants: context.localGrants)
+        case "get_process_snapshot":
+            return try await getProcessSnapshot(call: call, runID: runID, stepID: stepID)
+        case "get_local_listener_snapshot":
+            return try await getLocalListenerSnapshot(call: call, runID: runID, stepID: stepID, context: context)
         case "stage_write_proposal":
             return try await stageWriteProposal(call: call, runID: runID, stepID: stepID, context: context)
         case "run_finite_command":
@@ -1419,34 +1390,38 @@ actor AgentLocalToolExecutor {
         stepID: UUID?,
         grants: [AgentLocalFileGrant]
     ) async throws -> AgentToolExecutionResult {
-        let body = grants.isEmpty
-            ? "No local files or folders have been granted."
-            : grants.map { grant in
-                "- \(grant.isDirectory ? "Folder" : "File"): \(grant.path) (\(grant.access.rawValue))"
-            }.joined(separator: "\n")
-        let evidence = try await evidenceRecorder.record(
-            AgentEvidencePacket(
-                sourceID: "file-grants:\(runID.uuidString)",
-                kind: .fileGrant,
-                summary: AgentRunText("Listed \(grants.count) granted local location(s)."),
-                body: AgentRunText(body),
-                artifactMimeType: "text/plain",
-                artifactFileExtension: "txt",
-                privacyClass: .localFile,
-                trustClass: .appControl,
-                metadata: ["grantCount": .int(grants.count)]
-            ),
-            runID: runID,
-            stepID: stepID
-        )
+        let provider = AgentGrantInventoryProvider()
+        let snapshot = provider.snapshot(grants: grants)
+        let evidence: AgentRunEvidenceRecord
+        if let existing = await existingGrantInventoryEvidence(runID: runID) {
+            evidence = existing
+        } else {
+            evidence = try await evidenceRecorder.recordFileGrants(
+                runID: runID,
+                stepID: stepID,
+                grants: grants
+            )
+        }
         return AgentToolExecutionResult(
             status: .succeeded,
             toolName: call.name,
             summary: AgentRunText("Listed \(grants.count) granted location(s)."),
-            observation: AgentRunText(body, characterLimit: maxObservationCharacters),
+            observation: provider.observation(
+                snapshot: snapshot,
+                evidenceID: evidence.evidenceID,
+                artifactID: evidence.artifactID,
+                characterLimit: maxObservationCharacters
+            ),
             evidenceIDs: [evidence.evidenceID],
             artifactIDs: evidence.artifactID.map { [$0] } ?? []
         )
+    }
+
+    private func existingGrantInventoryEvidence(runID: UUID) async -> AgentRunEvidenceRecord? {
+        await store.evidenceArtifactSummary(runID: runID).evidence.first { record in
+            record.kind == AgentEvidenceKind.fileGrant.rawValue
+                && record.sourceID == AgentGrantInventoryProvider.sourceID(runID: runID)
+        }
     }
 
     private func listFolder(
@@ -1679,6 +1654,123 @@ actor AgentLocalToolExecutor {
         )
     }
 
+    private func getProcessSnapshot(
+        call: AgentKernelToolCallV2,
+        runID: UUID,
+        stepID: UUID?
+    ) async throws -> AgentToolExecutionResult {
+        let requestedLimit = call.arguments["limit"].flatMap(Int.init) ?? defaultProcessSnapshotLimit
+        let limit = min(max(requestedLimit, 1), maxProcessSnapshotLimit)
+        let snapshot = try await Self.collectProcessSnapshot(limit: limit)
+        let evidence = try await evidenceRecorder.recordProcessSnapshot(
+            runID: runID,
+            stepID: stepID,
+            snapshot: snapshot
+        )
+        let rows = snapshot.rows.isEmpty
+            ? "No running process rows were returned."
+            : snapshot.rows.map { row in
+                String(
+                    format: "- pid: %d cpu: %.1f%% memory: %.1f%% executable: %@",
+                    row.pid,
+                    row.cpuPercent,
+                    row.memoryPercent,
+                    row.executableName
+                )
+            }.joined(separator: "\n")
+        let observation = """
+        Process snapshot
+        rowCount: \(snapshot.rows.count)
+        requestedLimit: \(snapshot.requestedLimit)
+        rows:
+        \(rows)
+        """
+        return AgentToolExecutionResult(
+            status: .succeeded,
+            toolName: call.name,
+            summary: AgentRunText("Recorded \(snapshot.rows.count) running process row(s)."),
+            observation: AgentRunText(observation, characterLimit: maxObservationCharacters),
+            evidenceIDs: [evidence.evidenceID],
+            artifactIDs: evidence.artifactID.map { [$0] } ?? []
+        )
+    }
+
+    private func getLocalListenerSnapshot(
+        call: AgentKernelToolCallV2,
+        runID: UUID,
+        stepID: UUID?,
+        context: AgentToolRunContext
+    ) async throws -> AgentToolExecutionResult {
+        let requestedLimit = call.arguments["limit"].flatMap(Int.init) ?? defaultLocalListenerSnapshotLimit
+        let limit = min(max(requestedLimit, 1), maxLocalListenerSnapshotLimit)
+        let requestedPort: Int?
+        if let rawPort = call.arguments["port"], !rawPort.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            guard let port = Int(rawPort), (1...65_535).contains(port) else {
+                return failedResult(call.name, "The requested port must be an integer from 1 to 65535.")
+            }
+            requestedPort = port
+        } else {
+            requestedPort = nil
+        }
+
+        let resolvedRootPath: String?
+        if let rawRootPath = call.arguments["rootPath"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !rawRootPath.isEmpty {
+            let resolution = pathResolver.resolve(
+                rawRootPath,
+                grants: context.localGrants,
+                access: .read,
+                target: .existingDirectory
+            )
+            guard let resolved = resolution.resolution else {
+                return failedResult(call.name, resolution.failure?.summary.text ?? "The requested root path is outside granted local file access.")
+            }
+            resolvedRootPath = resolved.path
+        } else {
+            resolvedRootPath = nil
+        }
+
+        let snapshot = try await Self.collectLocalListenerSnapshot(
+            limit: limit,
+            port: requestedPort,
+            rootPath: resolvedRootPath,
+            grants: context.localGrants
+        )
+        let evidence = try await evidenceRecorder.recordLocalListenerSnapshot(
+            runID: runID,
+            stepID: stepID,
+            snapshot: snapshot
+        )
+        let rows = snapshot.rows.isEmpty
+            ? "No local listener rows matched the typed filters."
+            : snapshot.rows.map { row in
+                [
+                    "- port: \(row.port)",
+                    "address: \(row.listenAddress ?? "unknown")",
+                    "pid: \(row.pid)",
+                    "executable: \(row.executableName)",
+                    "workingDirectory: \(row.workingDirectory ?? "not-recorded")"
+                ].joined(separator: " ")
+            }.joined(separator: "\n")
+        let observation = """
+        Local listener snapshot
+        rowCount: \(snapshot.rows.count)
+        requestedLimit: \(snapshot.requestedLimit)
+        requestedPort: \(snapshot.requestedPort.map(String.init) ?? "none")
+        requestedRootPath: \(snapshot.requestedRootPath ?? "none")
+        rows:
+        \(rows)
+        """
+        return AgentToolExecutionResult(
+            status: .succeeded,
+            toolName: call.name,
+            summary: AgentRunText("Recorded \(snapshot.rows.count) local listener row(s)."),
+            observation: AgentRunText(observation, characterLimit: maxObservationCharacters),
+            evidenceIDs: [evidence.evidenceID],
+            artifactIDs: evidence.artifactID.map { [$0] } ?? []
+        )
+    }
+
     private func stageWriteProposal(
         call: AgentKernelToolCallV2,
         runID: UUID,
@@ -1815,7 +1907,7 @@ actor AgentLocalToolExecutor {
         let rawWorkingDirectory = call.arguments["workingDirectory"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let workingDirectory: String
         if rawWorkingDirectory.isEmpty {
-            workingDirectory = inferredWorkingDirectory(for: command, context: context) ?? NSHomeDirectory()
+            throw AgentSideEffectError.invalidDraft("Working directory is required for shell commands.")
         } else {
             let resolution = pathResolver.resolve(
                 rawWorkingDirectory,
@@ -1834,31 +1926,6 @@ actor AgentLocalToolExecutor {
             workingDirectory: workingDirectory,
             timeoutSeconds: timeout
         )
-    }
-
-    private func inferredWorkingDirectory(
-        for command: String,
-        context: AgentToolRunContext
-    ) -> String? {
-        guard let regex = try? NSRegularExpression(pattern: #"((?:~)?/[^\s"'`]+)"#) else {
-            return nil
-        }
-        let range = NSRange(command.startIndex..<command.endIndex, in: command)
-        for match in regex.matches(in: command, range: range) {
-            guard let valueRange = Range(match.range(at: 1), in: command) else { continue }
-            let rawPath = String(command[valueRange])
-                .trimmingCharacters(in: CharacterSet(charactersIn: ".,;:)])}"))
-            let resolution = pathResolver.resolve(
-                rawPath,
-                grants: context.localGrants,
-                access: .read,
-                target: .existingFile
-            )
-            if let resolved = resolution.resolution {
-                return resolved.url.deletingLastPathComponent().standardizedFileURL.path
-            }
-        }
-        return context.localGrants.first(where: { $0.isDirectory })?.path
     }
 
     /// Tell the model exactly which writable roots exist and how to retarget a denied write,
@@ -1989,6 +2056,363 @@ actor AgentLocalToolExecutor {
         default:
             return false
         }
+    }
+
+    private struct RawLocalListenerRow: Equatable {
+        let port: Int
+        let listenAddress: String?
+        let pid: Int
+        let executableName: String
+    }
+
+    private nonisolated static func collectLocalListenerSnapshot(
+        limit: Int,
+        port: Int?,
+        rootPath: String?,
+        grants: [AgentLocalFileGrant]
+    ) async throws -> AgentLocalListenerSnapshotEvidence {
+        let clampedLimit = min(max(limit, 1), 20)
+        return try await Task.detached(priority: .utility) {
+            try collectLocalListenerSnapshotBlocking(
+                limit: clampedLimit,
+                port: port,
+                rootPath: rootPath,
+                grants: grants
+            )
+        }.value
+    }
+
+    private nonisolated static func collectLocalListenerSnapshotBlocking(
+        limit: Int,
+        port: Int?,
+        rootPath: String?,
+        grants: [AgentLocalFileGrant]
+    ) throws -> AgentLocalListenerSnapshotEvidence {
+        var arguments = ["-nP", "-iTCP", "-sTCP:LISTEN", "-Fpcn"]
+        if let port {
+            arguments.insert("-iTCP:\(port)", at: 1)
+        }
+        let output = try runFixedProcess(
+            executablePath: "/usr/sbin/lsof",
+            arguments: arguments,
+            timeoutSeconds: 3,
+            maxBytes: 48_000,
+            failureLabel: "Local listener snapshot",
+            allowNonZeroExit: true
+        )
+        let rawRows = localListenerRows(from: output.stdout, port: port)
+        var rows: [AgentLocalListenerSnapshotRow] = []
+        for raw in rawRows {
+            let workingDirectory = grantedWorkingDirectory(
+                forPID: raw.pid,
+                grants: grants,
+                rootPath: rootPath
+            )
+            if rootPath != nil, workingDirectory == nil {
+                continue
+            }
+            rows.append(
+                AgentLocalListenerSnapshotRow(
+                    port: raw.port,
+                    listenAddress: raw.listenAddress,
+                    pid: raw.pid,
+                    executableName: raw.executableName,
+                    workingDirectory: workingDirectory
+                )
+            )
+            if rows.count >= limit {
+                break
+            }
+        }
+        return AgentLocalListenerSnapshotEvidence(
+            rows: rows,
+            requestedLimit: limit,
+            requestedPort: port,
+            requestedRootPath: rootPath
+        )
+    }
+
+    private nonisolated static func localListenerRows(from output: String, port requestedPort: Int?) -> [RawLocalListenerRow] {
+        var pid: Int?
+        var executable: String?
+        var rows: [RawLocalListenerRow] = []
+
+        for line in output.split(separator: "\n", omittingEmptySubsequences: true).map(String.init) {
+            guard let prefix = line.first else { continue }
+            let value = String(line.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
+            switch prefix {
+            case "p":
+                pid = Int(value)
+                executable = nil
+            case "c":
+                executable = sanitizedExecutableName(value)
+            case "n":
+                guard let pid,
+                      let executable,
+                      let endpoint = localListenerEndpoint(from: value) else {
+                    continue
+                }
+                if let requestedPort, endpoint.port != requestedPort {
+                    continue
+                }
+                rows.append(
+                    RawLocalListenerRow(
+                        port: endpoint.port,
+                        listenAddress: endpoint.listenAddress,
+                        pid: pid,
+                        executableName: executable
+                    )
+                )
+            default:
+                continue
+            }
+        }
+
+        var seen = Set<String>()
+        return rows
+            .filter { seen.insert("\($0.pid):\($0.port):\($0.listenAddress ?? "")").inserted }
+            .sorted {
+                if $0.port == $1.port {
+                    if $0.executableName == $1.executableName {
+                        return $0.pid < $1.pid
+                    }
+                    return $0.executableName < $1.executableName
+                }
+                return $0.port < $1.port
+            }
+    }
+
+    private nonisolated static func localListenerEndpoint(from value: String) -> (port: Int, listenAddress: String?)? {
+        let cleaned = value
+            .replacingOccurrences(of: " (LISTEN)", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let colon = cleaned.lastIndex(of: ":") else {
+            return nil
+        }
+        let portText = String(cleaned[cleaned.index(after: colon)...])
+        guard let port = Int(portText) else {
+            return nil
+        }
+        let address = String(cleaned[..<colon]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return (port, address.isEmpty ? nil : address)
+    }
+
+    private nonisolated static func grantedWorkingDirectory(
+        forPID pid: Int,
+        grants: [AgentLocalFileGrant],
+        rootPath: String?
+    ) -> String? {
+        guard !grants.isEmpty else { return nil }
+        guard let cwd = try? processWorkingDirectory(pid: pid) else { return nil }
+        let normalized = URL(fileURLWithPath: cwd).standardizedFileURL.path
+        if let rootPath {
+            let root = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+            guard normalized == rootPath || normalized.hasPrefix(root) else {
+                return nil
+            }
+        }
+        return grants.contains { $0.allowsRead(normalized) } ? normalized : nil
+    }
+
+    private nonisolated static func processWorkingDirectory(pid: Int) throws -> String? {
+        let output = try runFixedProcess(
+            executablePath: "/usr/sbin/lsof",
+            arguments: ["-a", "-p", String(pid), "-d", "cwd", "-Fn"],
+            timeoutSeconds: 1,
+            maxBytes: 4_000,
+            failureLabel: "Process working-directory snapshot",
+            allowNonZeroExit: true
+        )
+        return output.stdout
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map(String.init)
+            .first(where: { $0.hasPrefix("n/") })
+            .map { String($0.dropFirst()) }
+    }
+
+    private struct FixedProcessOutput {
+        let stdout: String
+        let stderr: String
+        let exitCode: Int32
+    }
+
+    private nonisolated static func runFixedProcess(
+        executablePath: String,
+        arguments: [String],
+        timeoutSeconds: Int,
+        maxBytes: Int,
+        failureLabel: String,
+        allowNonZeroExit: Bool = false
+    ) throws -> FixedProcessOutput {
+        let process = Process()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        let collector = AgentProcessSnapshotOutputCollector(maxBytes: maxBytes)
+
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = arguments
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+            collector.appendStdout(handle.availableData)
+        }
+        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+            collector.appendStderr(handle.availableData)
+        }
+
+        do {
+            try process.run()
+        } catch {
+            stdoutPipe.fileHandleForReading.readabilityHandler = nil
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
+            throw AgentSideEffectError.executionFailed("\(failureLabel) failed to start: \(error.localizedDescription)")
+        }
+
+        let finished = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .utility).async {
+            process.waitUntilExit()
+            finished.signal()
+        }
+
+        let didTimeOut = finished.wait(timeout: .now() + .seconds(timeoutSeconds)) == .timedOut
+        if didTimeOut {
+            process.terminate()
+            _ = finished.wait(timeout: .now() + .milliseconds(750))
+        }
+
+        stdoutPipe.fileHandleForReading.readabilityHandler = nil
+        stderrPipe.fileHandleForReading.readabilityHandler = nil
+        collector.appendStdout((try? stdoutPipe.fileHandleForReading.readToEnd()) ?? Data())
+        collector.appendStderr((try? stderrPipe.fileHandleForReading.readToEnd()) ?? Data())
+
+        guard !didTimeOut else {
+            throw AgentSideEffectError.executionFailed("\(failureLabel) timed out.")
+        }
+        if !allowNonZeroExit && process.terminationStatus != 0 {
+            let stderr = AgentRunText(collector.stderrText, characterLimit: 600).text
+            throw AgentSideEffectError.executionFailed("\(failureLabel) exited with \(process.terminationStatus). \(stderr)")
+        }
+        return FixedProcessOutput(
+            stdout: collector.stdoutText,
+            stderr: collector.stderrText,
+            exitCode: process.terminationStatus
+        )
+    }
+
+    private nonisolated static func collectProcessSnapshot(limit: Int) async throws -> AgentProcessSnapshotEvidence {
+        let clampedLimit = min(max(limit, 1), 20)
+        return try await Task.detached(priority: .utility) {
+            try collectProcessSnapshotBlocking(limit: clampedLimit)
+        }.value
+    }
+
+    private nonisolated static func collectProcessSnapshotBlocking(limit: Int) throws -> AgentProcessSnapshotEvidence {
+        let process = Process()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        let collector = AgentProcessSnapshotOutputCollector(maxBytes: 32_000)
+
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-axo", "pid,pcpu,pmem,comm", "-r"]
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+            collector.appendStdout(handle.availableData)
+        }
+        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+            collector.appendStderr(handle.availableData)
+        }
+
+        do {
+            try process.run()
+        } catch {
+            stdoutPipe.fileHandleForReading.readabilityHandler = nil
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
+            throw AgentSideEffectError.executionFailed("Process snapshot failed to start: \(error.localizedDescription)")
+        }
+
+        let finished = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .utility).async {
+            process.waitUntilExit()
+            finished.signal()
+        }
+
+        let didTimeOut = finished.wait(timeout: .now() + .seconds(3)) == .timedOut
+        if didTimeOut {
+            process.terminate()
+            _ = finished.wait(timeout: .now() + .milliseconds(750))
+        }
+
+        stdoutPipe.fileHandleForReading.readabilityHandler = nil
+        stderrPipe.fileHandleForReading.readabilityHandler = nil
+        collector.appendStdout((try? stdoutPipe.fileHandleForReading.readToEnd()) ?? Data())
+        collector.appendStderr((try? stderrPipe.fileHandleForReading.readToEnd()) ?? Data())
+
+        guard !didTimeOut else {
+            throw AgentSideEffectError.executionFailed("Process snapshot timed out.")
+        }
+        guard process.terminationStatus == 0 else {
+            let stderr = AgentRunText(collector.stderrText, characterLimit: 600).text
+            throw AgentSideEffectError.executionFailed("Process snapshot exited with \(process.terminationStatus). \(stderr)")
+        }
+
+        let rows = processSnapshotRows(from: collector.stdoutText, limit: limit)
+        return AgentProcessSnapshotEvidence(rows: rows, requestedLimit: limit)
+    }
+
+    private nonisolated static func processSnapshotRows(from output: String, limit: Int) -> [AgentProcessSnapshotRow] {
+        let parsed = output
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .compactMap { line -> AgentProcessSnapshotRow? in
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty,
+                      !trimmed.lowercased().hasPrefix("pid") else {
+                    return nil
+                }
+                let parts = trimmed.split(
+                    maxSplits: 3,
+                    omittingEmptySubsequences: true,
+                    whereSeparator: { $0 == " " || $0 == "\t" }
+                )
+                guard parts.count == 4,
+                      let pid = Int(parts[0]),
+                      let cpu = Double(parts[1]),
+                      let memory = Double(parts[2]) else {
+                    return nil
+                }
+                let executable = sanitizedExecutableName(String(parts[3]))
+                return AgentProcessSnapshotRow(
+                    pid: pid,
+                    cpuPercent: cpu,
+                    memoryPercent: memory,
+                    executableName: executable
+                )
+            }
+        return Array(
+            parsed
+                .sorted {
+                    if $0.cpuPercent == $1.cpuPercent {
+                        if $0.memoryPercent == $1.memoryPercent {
+                            return $0.pid < $1.pid
+                        }
+                        return $0.memoryPercent > $1.memoryPercent
+                    }
+                    return $0.cpuPercent > $1.cpuPercent
+                }
+                .prefix(max(1, limit))
+        )
+    }
+
+    private nonisolated static func sanitizedExecutableName(_ rawValue: String) -> String {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "unknown" }
+        let name = trimmed.contains("/")
+            ? URL(fileURLWithPath: trimmed).lastPathComponent
+            : trimmed
+        let sanitized = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return sanitized.isEmpty ? "unknown" : sanitized
     }
 
     private func score(text: String, terms: [String]) -> Int {
@@ -2186,7 +2610,6 @@ actor AgentToolOrchestrator {
         var observedRequiredSideEffectToolNames = Set<String>()
         var toolCallHistory: [String: Int] = [:]
         var finalAnswerRejectionCounts: [FinalAnswerRejectionKind: Int] = [:]
-
         if let preflight = try await preflightObservation(
             runID: runID,
             baseRequest: baseRequest,
@@ -2220,7 +2643,11 @@ actor AgentToolOrchestrator {
                     profile: profile,
                     observedToolResults: observedToolResults,
                     observedSideEffectToolResults: observedSideEffectToolResults,
-                    observedRequiredSideEffectToolNames: observedRequiredSideEffectToolNames
+                    observedRequiredSideEffectToolNames: observedRequiredSideEffectToolNames,
+                    requiresGroundingWhenUnevidenced: requiresTextProtocolGrounding(
+                        baseRequest: baseRequest,
+                        response: response
+                    )
                 )
                 switch answerDecision {
                 case .accept:
@@ -2241,13 +2668,19 @@ actor AgentToolOrchestrator {
                         priorRejections: priorRejections,
                         observedRequiredSideEffectToolNames: observedRequiredSideEffectToolNames
                     ) {
-                        try await failRun(
-                            runID: runID,
-                            reason: await requiredSideEffectContractBlockReason(
+                        let blockReason: AgentRunText
+                        if isRequiredSideEffectRejection(rejection.kind) {
+                            blockReason = await requiredSideEffectContractBlockReason(
                                 runID: runID,
                                 profile: profile,
                                 observedRequiredSideEffectToolNames: observedRequiredSideEffectToolNames
-                            ),
+                            )
+                        } else {
+                            blockReason = rejection.reason
+                        }
+                        try await failRun(
+                            runID: runID,
+                            reason: blockReason,
                             status: .blocked
                         )
                         return
@@ -2258,7 +2691,7 @@ actor AgentToolOrchestrator {
                             content: """
                             Runtime rejected the previous final answer.
                             Reason: \(rejection.reason.text)
-                            Use the available tools or existing evidence before producing a final answer.
+                            If the answer depends on a local_evidence claim kind, call an available tool. Otherwise return a final answer grounded as general_knowledge or capability_limitation.
                             """
                         )
                     )
@@ -2486,7 +2919,7 @@ actor AgentToolOrchestrator {
         let result = await gateway.response(adapterID: adapterID, request: request)
         guard case .success(let response) = result,
               let answer = Self.finalAnswer(from: response.events),
-              !(isRawJSONShapedAnswer(answer) && profile.hasToolPath) else {
+              !(isRawJSONShapedAnswer(answer.text) && profile.hasToolPath) else {
             return false
         }
         let decision = await finalAnswerDecision(
@@ -2495,7 +2928,11 @@ actor AgentToolOrchestrator {
             profile: profile,
             observedToolResults: observedToolResults,
             observedSideEffectToolResults: observedSideEffectToolResults,
-            observedRequiredSideEffectToolNames: observedRequiredSideEffectToolNames
+            observedRequiredSideEffectToolNames: observedRequiredSideEffectToolNames,
+            requiresGroundingWhenUnevidenced: requiresTextProtocolGrounding(
+                baseRequest: request,
+                response: response
+            )
         )
         guard case .accept = decision else {
             if case .retry(let rejection) = decision {
@@ -2517,6 +2954,8 @@ actor AgentToolOrchestrator {
         case missingTemporalContext
         case missingRequiredSideEffectEvidence
         case missingLocalEvidence
+        case unsupportedGroundingClaims
+        case missingAnswerGrounding
     }
 
     private struct FinalAnswerRejection {
@@ -2539,6 +2978,14 @@ actor AgentToolOrchestrator {
     ) async throws -> AgentKernelMessageV2? {
         let existingEvidence = await store.evidenceArtifactSummary(runID: runID).evidence
         var observations: [String] = []
+        if let grantObservation = try await grantInventoryPreflightObservation(
+            runID: runID,
+            tools: baseRequest.tools,
+            context: context,
+            existingEvidence: existingEvidence
+        ) {
+            observations.append(grantObservation)
+        }
         observations.append(
             contentsOf: try await visualContextObservations(
                 runID: runID,
@@ -2604,34 +3051,6 @@ actor AgentToolOrchestrator {
                     )
                 )
             }
-        }
-
-        if profile.taskFrame.requiresProcessSnapshotEvidence,
-           let processSnapshotCommand = profile.taskFrame.processSnapshotCommand,
-           baseRequest.tools.contains(where: { $0.name == "run_finite_command" }),
-           !existingEvidence.contains(where: { $0.kind == AgentEvidenceKind.commandOutput.rawValue }) {
-            let result = try await executeToolCall(
-                AgentKernelToolCallV2(
-                    name: "run_finite_command",
-                    arguments: [
-                        "command": processSnapshotCommand.command,
-                        "timeoutSeconds": "5"
-                    ],
-                    reason: "Collect the process snapshot recorded in the task frame."
-                ),
-                runID: runID,
-                providerTier: providerTier,
-                context: context,
-                iteration: 0
-            )
-            if result.status == .waitingForApproval {
-                return nil
-            }
-            observations.append(
-                result.modelObservationText(
-                    observationCharacterLimit: maxPreflightToolObservationCharacters
-                )
-            )
         }
 
         let plan = AgentLocalEvidencePlanner().plan(
@@ -2705,6 +3124,37 @@ actor AgentToolOrchestrator {
             role: .observation,
             content: preflightText
         )
+    }
+
+    private func grantInventoryPreflightObservation(
+        runID: UUID,
+        tools: [AgentKernelToolSchemaV2],
+        context: AgentToolRunContext,
+        existingEvidence: [AgentRunEvidenceRecord]
+    ) async throws -> String? {
+        guard context.runMode != .plainChat,
+              context.supportedOperations.contains(.fileGrantList),
+              tools.contains(where: { $0.name == "list_grants" }) || (tools.isEmpty && !context.localGrants.isEmpty) else {
+            return nil
+        }
+        let provider = AgentGrantInventoryProvider()
+        let snapshot = provider.snapshot(grants: context.localGrants)
+        let sourceID = AgentGrantInventoryProvider.sourceID(runID: runID)
+        let evidence: AgentRunEvidenceRecord
+        if let existing = existingEvidence.first(where: { $0.kind == AgentEvidenceKind.fileGrant.rawValue && $0.sourceID == sourceID }) {
+            evidence = existing
+        } else {
+            evidence = try await AgentEvidenceRecorder(store: store).recordFileGrants(
+                runID: runID,
+                grants: context.localGrants
+            )
+        }
+        return provider.observation(
+            snapshot: snapshot,
+            evidenceID: evidence.evidenceID,
+            artifactID: evidence.artifactID,
+            characterLimit: maxPreflightToolObservationCharacters
+        ).text
     }
 
     private func visualContextObservations(
@@ -2865,19 +3315,20 @@ actor AgentToolOrchestrator {
     }
 
     private func finalAnswerDecision(
-        _ answer: String,
+        _ answer: AgentKernelFinalAnswerV2,
         runID: UUID,
         profile: AgentRunTaskProfile,
         observedToolResults: Int,
         observedSideEffectToolResults: Int,
-        observedRequiredSideEffectToolNames: Set<String>
+        observedRequiredSideEffectToolNames: Set<String>,
+        requiresGroundingWhenUnevidenced: Bool
     ) async -> FinalAnswerDecision {
         let evidence = await store.evidenceArtifactSummary(runID: runID).evidence
         let requirements = await evidenceRequirements(from: evidence)
         let hasSubstantiveEvidence = hasSubstantiveAnswerEvidence(evidence, requirements: requirements)
         let temporalEvidence = evidence.first { $0.kind == AgentEvidenceKind.temporalContext.rawValue }
 
-        if isRawJSONShapedAnswer(answer), profile.hasToolPath {
+        if isRawJSONShapedAnswer(answer.text), profile.hasToolPath {
             return .retry(
                 FinalAnswerRejection(
                     kind: .rawControlJSON,
@@ -2894,7 +3345,7 @@ actor AgentToolOrchestrator {
                     )
                 )
             }
-            if temporalAnswerContradictsContext(answer, temporalEvidence: temporalEvidence) {
+            if temporalAnswerContradictsContext(answer.text, temporalEvidence: temporalEvidence) {
                 return .retry(
                     FinalAnswerRejection(
                         kind: .staleTemporalAnswer,
@@ -2902,6 +3353,16 @@ actor AgentToolOrchestrator {
                     )
                 )
             }
+        }
+
+        let groundingDecision = finalAnswerGroundingDecision(
+            answer,
+            evidence: evidence,
+            hasSubstantiveEvidence: hasSubstantiveEvidence,
+            requiresGroundingWhenUnevidenced: requiresGroundingWhenUnevidenced && profile.hasToolPath
+        )
+        if case .retry = groundingDecision {
+            return groundingDecision
         }
 
         if profile.requiresSideEffectEvidenceBeforeCompletion {
@@ -2930,7 +3391,7 @@ actor AgentToolOrchestrator {
 
         if profile.requiresEvidenceBeforeFinalAnswer || !requirements.isEmpty {
             if hasSubstantiveEvidence {
-                let answerUsesFileContent = await answerUsesRecordedFileContent(answer, evidence: evidence)
+                let answerUsesFileContent = await answerUsesRecordedFileContent(answer.text, evidence: evidence)
                 if requirements.contains(where: { $0.kind == .fileContent }),
                    !answerUsesFileContent {
                     return .retry(
@@ -2953,6 +3414,73 @@ actor AgentToolOrchestrator {
         return .accept
     }
 
+    private func finalAnswerGroundingDecision(
+        _ answer: AgentKernelFinalAnswerV2,
+        evidence: [AgentRunEvidenceRecord],
+        hasSubstantiveEvidence: Bool,
+        requiresGroundingWhenUnevidenced: Bool
+    ) -> FinalAnswerDecision {
+        guard let grounding = answer.grounding else {
+            if requiresGroundingWhenUnevidenced && !hasSubstantiveEvidence && !hasAnyToolEvidence(evidence) {
+                return .retry(
+                    FinalAnswerRejection(
+                        kind: .missingAnswerGrounding,
+                        reason: AgentRunText("Tool-capable final answers without local evidence must declare general_knowledge, capability_limitation, or call a tool before answering.")
+                    )
+                )
+            }
+            return .accept
+        }
+
+        let claims = grounding.claims.compactMap(Self.evidenceClaim)
+        if !claims.isEmpty {
+            let decisions = AgentEvidenceController().verify(claims, evidence: evidence)
+            let unsupported = decisions.filter { $0.status != .supported }
+            if let first = unsupported.first {
+                return .retry(
+                    FinalAnswerRejection(
+                        kind: .unsupportedGroundingClaims,
+                        reason: first.summary
+                    )
+                )
+            }
+        }
+
+        if grounding.basis == .localEvidence && claims.isEmpty {
+            return .retry(
+                FinalAnswerRejection(
+                    kind: .unsupportedGroundingClaims,
+                    reason: AgentRunText("Final answers grounded as local_evidence need declared claim kinds with matching recorded evidence.")
+                )
+            )
+        }
+
+        return .accept
+    }
+
+    private nonisolated static func evidenceClaim(
+        from claim: AgentKernelAnswerClaimV2
+    ) -> AgentEvidenceClaim? {
+        switch claim.kind {
+        case .fileGrants:
+            return AgentEvidenceClaim(type: .fileGrantListed, target: claim.target)
+        case .processSnapshot:
+            return AgentEvidenceClaim(type: .processSnapshotRecorded, target: claim.target)
+        case .localListeners:
+            return AgentEvidenceClaim(type: .localListenerSnapshotRecorded, target: claim.target)
+        case .localFile:
+            return AgentEvidenceClaim(type: .localFileObserved, target: claim.target)
+        case .commandOutput:
+            return AgentEvidenceClaim(type: .commandOutputRecorded, target: claim.target)
+        case .sideEffect:
+            return AgentEvidenceClaim(type: .sideEffectRecorded, target: claim.target)
+        case .temporalContext:
+            return AgentEvidenceClaim(type: .temporalContextRecorded, target: claim.target)
+        case .visualContext:
+            return AgentEvidenceClaim(type: .visualContextRecorded, target: claim.target)
+        }
+    }
+
     private func shouldBlockAfterFinalAnswerRejection(
         _ rejection: FinalAnswerRejection,
         runID: UUID,
@@ -2960,6 +3488,9 @@ actor AgentToolOrchestrator {
         priorRejections: Int,
         observedRequiredSideEffectToolNames: Set<String>
     ) async -> Bool {
+        if isGroundingRejection(rejection.kind) {
+            return priorRejections >= 1
+        }
         guard isRequiredSideEffectRejection(rejection.kind),
               priorRejections >= maxRequiredSideEffectFinalAnswerRepairs else {
             return false
@@ -2971,11 +3502,20 @@ actor AgentToolOrchestrator {
         )
     }
 
+    private nonisolated func isGroundingRejection(_ kind: FinalAnswerRejectionKind) -> Bool {
+        switch kind {
+        case .unsupportedGroundingClaims, .missingAnswerGrounding:
+            return true
+        case .rawControlJSON, .staleTemporalAnswer, .missingTemporalContext, .missingRequiredSideEffectEvidence, .missingLocalEvidence:
+            return false
+        }
+    }
+
     private nonisolated func isRequiredSideEffectRejection(_ kind: FinalAnswerRejectionKind) -> Bool {
         switch kind {
         case .missingRequiredSideEffectEvidence:
             return true
-        case .rawControlJSON, .staleTemporalAnswer, .missingTemporalContext, .missingLocalEvidence:
+        case .rawControlJSON, .staleTemporalAnswer, .missingTemporalContext, .missingLocalEvidence, .unsupportedGroundingClaims, .missingAnswerGrounding:
             return false
         }
     }
@@ -3024,17 +3564,17 @@ actor AgentToolOrchestrator {
     }
 
     private func acceptFinalAnswer(
-        _ finalAnswer: String,
+        _ finalAnswer: AgentKernelFinalAnswerV2,
         runID: UUID,
         profile: AgentRunTaskProfile
     ) async throws {
         if profile.hasToolPath {
-            try? await recordFinalAnswerSupportIfPossible(runID: runID, answer: AgentRunText(finalAnswer))
+            try? await recordFinalAnswerSupportIfPossible(runID: runID, answer: finalAnswer)
         }
         try await store.appendEvent(
             runID: runID,
             kind: .assistantMessage,
-            payload: .text(AgentRunText(finalAnswer))
+            payload: .text(AgentRunText(finalAnswer.text))
         )
         try await recordTerminalStateIfNeeded(
             runID: runID,
@@ -3352,7 +3892,7 @@ actor AgentToolOrchestrator {
         switch retry {
         case .success(let response):
             guard let answer = Self.finalAnswer(from: response.events),
-                  !isRawJSONShapedAnswer(answer) else {
+                  !isRawJSONShapedAnswer(answer.text) else {
                 try await failRun(
                     runID: runID,
                     reason: AgentRunText("Provider failed the structured tool protocol and the no-tool recovery did not produce user-facing prose. Recorded evidence was preserved for retry."),
@@ -3376,8 +3916,17 @@ actor AgentToolOrchestrator {
         request: AgentModelGatewayRequest
     ) -> AgentRunText {
         AgentRunText(
-            "Provider route=\(response.descriptor.route.rawValue) adapter=\(response.adapterID) model=\(response.descriptor.modelName ?? response.descriptor.displayName) tier=\(response.tier.rawValue) mode=\(request.mode.rawValue) visibleTools=\(request.tools.map(\.name).sorted().joined(separator: ","))"
+            "Provider route=\(response.descriptor.route.rawValue) adapter=\(response.adapterID) model=\(response.descriptor.modelName ?? response.descriptor.displayName) tier=\(response.tier.rawValue) mode=\(request.mode.rawValue) responseFormat=\(response.responseFormat.rawValue) visibleTools=\(request.tools.map(\.name).sorted().joined(separator: ","))"
         )
+    }
+
+    private nonisolated func requiresTextProtocolGrounding(
+        baseRequest: AgentModelGatewayRequest,
+        response: AgentModelGatewayResponse
+    ) -> Bool {
+        baseRequest.mode != .plainChat
+            && response.tier == .tierBConstrainedStructuredText
+            && response.responseFormat == .textProtocol
     }
 
     private func executeToolCall(
@@ -3472,16 +4021,18 @@ actor AgentToolOrchestrator {
         )
     }
 
-    private func recordFinalAnswerSupportIfPossible(runID: UUID, answer: AgentRunText) async throws {
+    private func recordFinalAnswerSupportIfPossible(runID: UUID, answer: AgentKernelFinalAnswerV2) async throws {
         let evidence = await store.evidenceArtifactSummary(runID: runID).evidence
-        let claims = finalAnswerClaims(from: evidence)
+        let requirements = await evidenceRequirements(from: evidence)
+        let declaredClaims = answer.grounding?.claims.compactMap(Self.evidenceClaim) ?? []
+        let claims = declaredClaims.isEmpty ? finalAnswerClaims(from: evidence, requirements: requirements) : declaredClaims
         guard !claims.isEmpty else { return }
         _ = try await AgentFinalAnswerSupportRecorder(
             store: store,
             evidenceRecorder: AgentEvidenceRecorder(store: store)
         ).recordSupport(
             runID: runID,
-            answer: answer,
+            answer: AgentRunText(answer.text),
             claims: claims
         )
     }
@@ -3512,11 +4063,23 @@ actor AgentToolOrchestrator {
         return requirements.filter { seen.insert($0.id).inserted }
     }
 
-    private func finalAnswerClaims(from evidence: [AgentRunEvidenceRecord]) -> [AgentEvidenceClaim] {
+    private func finalAnswerClaims(
+        from evidence: [AgentRunEvidenceRecord],
+        requirements: [AgentLocalEvidenceRequirement] = []
+    ) -> [AgentEvidenceClaim] {
         var claims: [AgentEvidenceClaim] = []
+        let shouldInferGrantClaims = requirements.contains { $0.kind == .grantDiscovery }
         for record in evidence {
             guard let kind = AgentEvidenceKind(rawValue: record.kind) else { continue }
             switch kind {
+            case .fileGrant:
+                if shouldInferGrantClaims {
+                    if let path = record.stringMetadata("path"), !path.isEmpty {
+                        claims.append(AgentEvidenceClaim(type: .fileGrantListed, target: path))
+                    } else {
+                        claims.append(AgentEvidenceClaim(type: .fileGrantListed))
+                    }
+                }
             case .fileRead:
                 if let path = record.stringMetadata("path") {
                     claims.append(.fileExists(path))
@@ -3533,6 +4096,13 @@ actor AgentToolOrchestrator {
                 if let command = record.stringMetadata("command") {
                     claims.append(AgentEvidenceClaim(type: .commandRan, target: command))
                 }
+            case .processSnapshot:
+                if let topPID = record.intMetadata("topPID") {
+                    claims.append(AgentEvidenceClaim(type: .processRunning, target: String(topPID)))
+                }
+                if let topExecutable = record.stringMetadata("topExecutable") {
+                    claims.append(AgentEvidenceClaim(type: .processRunning, target: topExecutable))
+                }
             case .sideEffect:
                 if record.stringMetadata("status") == AgentRunSideEffectStatus.completed.rawValue {
                     if let targetPath = record.stringMetadata("targetPath") {
@@ -3542,7 +4112,9 @@ actor AgentToolOrchestrator {
                     }
                 }
             case .localServer:
-                if let port = record.intMetadata("port") {
+                claims.append(AgentEvidenceClaim(type: .localListenerSnapshotRecorded, target: record.intMetadata("port").map(String.init)))
+                if record.boolMetadata("isListening") == true,
+                   let port = record.intMetadata("port") {
                     claims.append(.portListening(port))
                 }
                 if let url = record.stringMetadata("url") {
@@ -3552,7 +4124,7 @@ actor AgentToolOrchestrator {
                 if let processID = record.stringMetadata("processID") {
                     claims.append(AgentEvidenceClaim(type: .processRunning, target: processID))
                 }
-            case .fileGrant, .temporalContext, .visualContext, .approval, .terminalState, .evidenceRequirement, .finalAnswerSupport:
+            case .temporalContext, .visualContext, .approval, .terminalState, .evidenceRequirement, .finalAnswerSupport:
                 continue
             }
         }
@@ -3573,7 +4145,7 @@ actor AgentToolOrchestrator {
         return evidence.contains { record in
             guard let kind = AgentEvidenceKind(rawValue: record.kind) else { return false }
             switch kind {
-            case .fileRead, .commandOutput, .localServer, .processState, .temporalContext, .visualContext:
+            case .fileRead, .commandOutput, .localServer, .processSnapshot, .processState, .temporalContext, .visualContext:
                 return true
             case .fileSearch:
                 return (record.intMetadata("matchCount") ?? 0) > 0
@@ -3619,7 +4191,7 @@ actor AgentToolOrchestrator {
         evidence.contains { record in
             guard let kind = AgentEvidenceKind(rawValue: record.kind) else { return false }
             switch kind {
-            case .fileRead, .fileSearch, .folderList, .commandOutput, .localServer, .processState, .temporalContext, .visualContext, .sideEffect:
+            case .fileRead, .fileSearch, .folderList, .commandOutput, .localServer, .processSnapshot, .processState, .temporalContext, .visualContext, .sideEffect:
                 return true
             case .fileGrant, .approval, .terminalState, .evidenceRequirement, .finalAnswerSupport:
                 return false
@@ -3690,10 +4262,6 @@ actor AgentToolOrchestrator {
         let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.hasPrefix("{")
             && trimmed.hasSuffix("}")
-            && (trimmed.contains(#""type""#)
-                || trimmed.contains(#""answer""#)
-                || trimmed.contains(#""text""#)
-                || trimmed.contains(#""bullets""#))
     }
 
     private nonisolated func temporalAnswerContradictsContext(
@@ -3715,13 +4283,18 @@ actor AgentToolOrchestrator {
         return years.contains { $0 != currentYear }
     }
 
-    private nonisolated static func finalAnswer(from events: [AgentKernelModelAdapterEventV2]) -> String? {
+    private nonisolated static func finalAnswer(from events: [AgentKernelModelAdapterEventV2]) -> AgentKernelFinalAnswerV2? {
         for event in events.reversed() {
             switch event {
-            case .finalAnswer(let text), .snapshot(let text):
+            case .finalAnswer(let answer):
+                let trimmed = answer.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    return AgentKernelFinalAnswerV2(text: trimmed, grounding: answer.grounding)
+                }
+            case .snapshot(let text):
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty {
-                    return trimmed
+                    return AgentKernelFinalAnswerV2(text: trimmed)
                 }
             case .toolCall, .malformedOutput, .emptyOutput, .timedOut:
                 continue
@@ -3789,5 +4362,46 @@ private extension AgentRunEvidenceRecord {
 
     nonisolated func boolMetadata(_ key: String) -> Bool? {
         metadata[key]?.boolValue
+    }
+}
+
+private final class AgentProcessSnapshotOutputCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private let maxBytes: Int
+    private nonisolated(unsafe) var stdoutData = Data()
+    private nonisolated(unsafe) var stderrData = Data()
+
+    nonisolated init(maxBytes: Int) {
+        self.maxBytes = max(1, maxBytes)
+    }
+
+    nonisolated func appendStdout(_ data: Data) {
+        append(data, to: &stdoutData)
+    }
+
+    nonisolated func appendStderr(_ data: Data) {
+        append(data, to: &stderrData)
+    }
+
+    nonisolated var stdoutText: String {
+        text(from: stdoutData)
+    }
+
+    nonisolated var stderrText: String {
+        text(from: stderrData)
+    }
+
+    private nonisolated func append(_ data: Data, to target: inout Data) {
+        guard !data.isEmpty else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        let remaining = max(0, maxBytes - target.count)
+        target.append(data.prefix(remaining))
+    }
+
+    private nonisolated func text(from data: Data) -> String {
+        String(data: data, encoding: .utf8)
+            ?? String(data: data, encoding: .ascii)
+            ?? String(decoding: data, as: UTF8.self)
     }
 }

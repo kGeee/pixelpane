@@ -129,6 +129,44 @@ nonisolated struct MLXVisionModelSelection: Codable, Sendable {
     let smokeTestedAt: Date
 }
 
+extension AgentModelConformanceTarget {
+    nonisolated static func mlxText(
+        selection: MLXVisionModelSelection,
+        textRuntimeURL: URL?,
+        adapterID: String = AgentModelConformanceTarget.localMLXChatAdapterID
+    ) -> AgentModelConformanceTarget {
+        AgentModelConformanceTarget(
+            providerKind: .mlxLocal,
+            route: .local,
+            adapterID: adapterID,
+            modelID: selection.repositoryID,
+            modelPath: selection.localPath,
+            runtimeExecutablePath: textRuntimeURL?.path,
+            runtimeVersion: nil
+        )
+    }
+
+    nonisolated static func mlxText(
+        snapshot: MLXVisionSetupSnapshot,
+        adapterID: String = AgentModelConformanceTarget.localMLXChatAdapterID
+    ) -> AgentModelConformanceTarget? {
+        guard let selectedModel = snapshot.selectedModel,
+              selectedModel.isTextCompatible,
+              let selectedURL = selectedModel.localURL else {
+            return nil
+        }
+        return AgentModelConformanceTarget(
+            providerKind: .mlxLocal,
+            route: .local,
+            adapterID: adapterID,
+            modelID: selectedModel.repositoryID,
+            modelPath: selectedURL.path,
+            runtimeExecutablePath: snapshot.textRuntimeURL?.path,
+            runtimeVersion: nil
+        )
+    }
+}
+
 nonisolated struct MLXVisionModelStore: @unchecked Sendable {
     private static let selectedModelKey = "MLXVisionSelectedModel"
     private static let setupStateKey = "MLXVisionSetupState"

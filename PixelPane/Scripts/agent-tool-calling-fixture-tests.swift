@@ -15,6 +15,14 @@ enum AgentToolCallingFixtureHarness {
     static func run() async throws {
         try await testTaskProfileClassifiesOperationIntent()
         try await testTaskFrameBuilderUsesStructuralSources()
+        try await testModelRequestedProcessSnapshotRecordsEvidence()
+        try await testTierBGeneralGroundingCompletesWithoutEvidence()
+        try await testNativeTierBFinalAnswerDoesNotRequireTextProtocolGrounding()
+        try await testCurrentTimeQuestionRecordsTemporalContextForNativeTools()
+        try await testTierBUngroundedAnswerWithoutEvidenceBlocksAfterRepair()
+        try await testDeclaredProcessGroundingNeedsSnapshotEvidence()
+        try await testFolderEvidenceCannotSupportListenerGrounding()
+        try await testModelRequestedListenerSnapshotRecordsEvidence()
         try await testToolLoopListsGrantedFolderAndContinues()
         try await testSearchAndReadToolsRecordEvidence()
         try await testQuotedSearchUsesPreciseQuery()
@@ -23,7 +31,7 @@ enum AgentToolCallingFixtureHarness {
         try await testVisualAttachmentRecordsEvidenceAndPromptContext()
         try await testEvidencePlannerReadsScopedContentForReferencedEntity()
         try await testEmptyResolvedDirectoryListingIsAnswerEvidence()
-        try await testGrantDiscoveryUsesListGrantsWithoutReadingFiles()
+        try await testGrantDiscoveryUsesInventoryEvidenceWithoutReadingFiles()
         try await testRuntimeCapabilityQuestionDoesNotSearchLocalFiles()
         try await testModelRequestedSearchAcrossAllGrants()
         try await testFollowUpReferenceIsModelToolResolved()
@@ -97,14 +105,14 @@ enum AgentToolCallingFixtureHarness {
         try expect(structuralWrite.requiredSideEffectToolNames == ["stage_write_proposal"], "structural write constraints should require the write proposal tool")
 
         let processAndSave = AgentRunTaskProfile.classify(
-            userMessage: "what are the top running processes and save them to processes.txt",
+            userMessage: "collect a process inventory and save it to processes.txt",
             tools: proposal.tools,
             context: proposal.context
         )
-        try expect(processAndSave.isLocalStateRequest, "top-process observation should be recognized as local system-state work")
+        try expect(!processAndSave.isLocalStateRequest, "free-form process wording should reach the model before any local system-state tool runs")
         try expect(!processAndSave.isSideEffectRequest, "free-form observation-and-save wording alone should not be mutating side-effect gated")
         try expect(processAndSave.requiredSideEffectToolNames.isEmpty, "free-form observation-and-save wording alone should not require write or shell side-effect tools")
-        try expect(processAndSave.taskFrame.requiresProcessSnapshotEvidence, "top-process observation should create a deterministic process snapshot evidence request")
+        try expect(processAndSave.taskFrame.evidenceRequests.isEmpty, "free-form process wording should not create deterministic process snapshot preflight")
     }
 
     @MainActor
@@ -194,6 +202,303 @@ enum AgentToolCallingFixtureHarness {
     }
 
     @MainActor
+    private static func testModelRequestedProcessSnapshotRecordsEvidence() async throws {
+        let harness = try await makeHarness(prefix: "tool-process-snapshot")
+        let adapter = FixtureAgentKernelAdapterV2(
+            responses: [
+                .toolCall(name: "get_process_snapshot", arguments: ["limit": "5"], reason: nil),
+                .finalAnswer("The process snapshot was collected.")
+            ]
+        )
+        let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
+
+        let runID = try await harness.viewModel.startRun(
+            userMessage: "Use the process snapshot capability.",
+            context: AgentRunViewContext(title: "Process Snapshot", contextID: "tool-process-snapshot", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use tools when available.",
+            timeout: 4
+        )
+        try await harness.viewModel.waitForIdle(timeout: 6)
+        await harness.viewModel.refresh()
+
+        let requests = await adapter.requests()
+        let trace = try await harness.store.traceProjection(runID: runID)
+        try expect(requests.count >= 2, "process snapshot should return an observation to the model before final answer")
+        try expect(requests.first?.messages.contains(where: { $0.role == .observation && $0.content.contains("Process snapshot") }) == false, "process snapshot should not run before the first model request")
+        try expect(requests.first?.tools.contains(where: { $0.name == "get_process_snapshot" }) == true, "typed process snapshot should be model-visible")
+        try expect(requests.first?.tools.contains(where: { $0.name == "run_finite_command" }) == false, "raw shell should not be model-visible in read-only process questions")
+        try expect(requests.last?.messages.contains(where: { $0.role == .observation && $0.content.contains("Process snapshot") }) == true, "model continuation should receive process snapshot observation")
+        try expect(trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.processSnapshot.rawValue && ($0.metadata["rowCount"]?.intValue ?? 0) > 0 }), "process snapshot evidence should be recorded with rows")
+        try expect(!trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.commandOutput.rawValue }), "typed process snapshot should not record command-output evidence")
+        try expect(harness.viewModel.state.activeStatus == .completed, "process snapshot run should complete")
+    }
+
+    @MainActor
+    private static func testTierBGeneralGroundingCompletesWithoutEvidence() async throws {
+        let harness = try await makeHarness(prefix: "grounding-general")
+        let adapter = tierBFixtureAdapter(
+            responses: [
+                groundedFinalAnswer(
+                    "This response does not depend on recorded local evidence.",
+                    basis: .generalKnowledge
+                )
+            ]
+        )
+        let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
+
+        let runID = try await harness.viewModel.startRun(
+            userMessage: "Give a general answer.",
+            context: AgentRunViewContext(title: "Grounding General", contextID: "grounding-general", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use the structured protocol.",
+            timeout: 4
+        )
+        try await harness.viewModel.waitForIdle(timeout: 6)
+        await harness.viewModel.refresh()
+
+        let trace = try await harness.store.traceProjection(runID: runID)
+        try expect(harness.viewModel.state.activeStatus == .completed, "general grounding should complete without local evidence")
+        try expect(!trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.finalAnswerSupport.rawValue }), "general answer should not fabricate local support evidence")
+    }
+
+    @MainActor
+    private static func testNativeTierBFinalAnswerDoesNotRequireTextProtocolGrounding() async throws {
+        let harness = try await makeHarness(prefix: "native-grounding")
+        let target = nativeMLXConformanceTarget(
+            modelID: "fixture/native-mlx-grounding",
+            modelPath: "/tmp/native-mlx-grounding"
+        )
+        let profile = nativeMLXConformanceProfile(target: target)
+        let adapter = nativeMLXFixtureAdapter(
+            target: target,
+            responses: [
+                .finalAnswer("I can answer using the native tool protocol without a text-protocol grounding envelope.")
+            ]
+        )
+        let config = toolConfig(
+            grant: harness.grant,
+            runMode: .readOnly,
+            adapter: adapter,
+            modelConformanceProfile: profile
+        )
+
+        let runID = try await harness.viewModel.startRun(
+            userMessage: "Give a normal answer.",
+            context: AgentRunViewContext(title: "Native Grounding", contextID: "native-grounding", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            modelConformanceProfile: profile,
+            systemPrompt: "Use tools when available.",
+            timeout: 4
+        )
+        try await harness.viewModel.waitForIdle(timeout: 6)
+        await harness.viewModel.refresh()
+
+        let requests = await adapter.requests()
+        let trace = try await harness.store.traceProjection(runID: runID)
+        let diagnostics = trace.events.compactMap { event -> String? in
+            guard event.kind == .providerDiagnostic,
+                  case .diagnostic(let text) = event.payload else { return nil }
+            return text.text
+        }.joined(separator: "\n")
+
+        try expect(harness.viewModel.state.activeStatus == .completed, "native Tier B final answer should complete without text-protocol grounding metadata")
+        try expect(requests.count == 1, "native answer should not get a text-protocol grounding repair attempt")
+        try expect(requests.first?.responseFormat == .native, "profile-backed local MLX should use native tool protocol")
+        try expect(!diagnostics.contains("Tool-capable final answers without local evidence"), "native tool protocol should not require text-protocol grounding fields")
+    }
+
+    @MainActor
+    private static func testCurrentTimeQuestionRecordsTemporalContextForNativeTools() async throws {
+        let harness = try await makeHarness(prefix: "native-time-context")
+        let target = nativeMLXConformanceTarget(
+            modelID: "fixture/native-mlx-time",
+            modelPath: "/tmp/native-mlx-time"
+        )
+        let profile = nativeMLXConformanceProfile(target: target)
+        let adapter = nativeMLXFixtureAdapter(
+            target: target,
+            responses: [
+                .finalAnswer("The current time is available from the app-owned temporal context.")
+            ]
+        )
+        let config = toolConfig(
+            grant: harness.grant,
+            runMode: .readOnly,
+            adapter: adapter,
+            modelConformanceProfile: profile
+        )
+
+        let runID = try await harness.viewModel.startRun(
+            userMessage: "whats the time",
+            context: AgentRunViewContext(title: "Native Time", contextID: "native-time-context", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            modelConformanceProfile: profile,
+            systemPrompt: "Use app-owned temporal context for current time.",
+            timeout: 4
+        )
+        try await harness.viewModel.waitForIdle(timeout: 6)
+        await harness.viewModel.refresh()
+
+        let trace = try await harness.store.traceProjection(runID: runID)
+        let firstRequest = await adapter.requests().first
+        let observations = firstRequest?.messages.filter { $0.role == .observation }.map(\.content).joined(separator: "\n") ?? ""
+
+        try expect(harness.viewModel.state.activeStatus == .completed, "current-time question should complete with temporal evidence")
+        try expect(trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.temporalContext.rawValue }), "current-time question should record temporal.context evidence")
+        try expect(observations.contains("App-owned temporal context"), "model should receive temporal context before answering")
+        try expect(observations.contains("localTime:"), "temporal observation should include local time")
+    }
+
+    @MainActor
+    private static func testTierBUngroundedAnswerWithoutEvidenceBlocksAfterRepair() async throws {
+        let harness = try await makeHarness(prefix: "grounding-missing")
+        let adapter = tierBFixtureAdapter(
+            responses: [
+                .finalAnswer("Unsupported first answer."),
+                .finalAnswer("Unsupported second answer.")
+            ]
+        )
+        let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
+
+        _ = try await harness.viewModel.startRun(
+            userMessage: "Answer with the available protocol.",
+            context: AgentRunViewContext(title: "Grounding Missing", contextID: "grounding-missing", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use the structured protocol.",
+            timeout: 4
+        )
+        try await harness.viewModel.waitForIdle(timeout: 6)
+        await harness.viewModel.refresh()
+
+        let requests = await adapter.requests()
+        try expect(requests.count == 2, "ungrounded Tier B answer should get one repair attempt")
+        try expect(harness.viewModel.state.activeStatus == .blocked, "ungrounded Tier B answer should block after bounded repair")
+    }
+
+    @MainActor
+    private static func testDeclaredProcessGroundingNeedsSnapshotEvidence() async throws {
+        let harness = try await makeHarness(prefix: "grounding-process")
+        let processGrounding = AgentKernelAnswerGroundingV2(
+            basis: .localEvidence,
+            claims: [AgentKernelAnswerClaimV2(kind: .processSnapshot)]
+        )
+        let adapter = tierBFixtureAdapter(
+            responses: [
+                groundedFinalAnswer("Unsupported before evidence.", grounding: processGrounding),
+                .toolCall(name: "get_process_snapshot", arguments: ["limit": "3"], reason: nil),
+                groundedFinalAnswer("Supported after evidence.", grounding: processGrounding)
+            ]
+        )
+        let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
+
+        let runID = try await harness.viewModel.startRun(
+            userMessage: "Use recorded state to answer.",
+            context: AgentRunViewContext(title: "Grounding Process", contextID: "grounding-process", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use the structured protocol.",
+            timeout: 4
+        )
+        try await harness.viewModel.waitForIdle(timeout: 6)
+        await harness.viewModel.refresh()
+
+        let requests = await adapter.requests()
+        let trace = try await harness.store.traceProjection(runID: runID)
+        try expect(requests.count >= 3, "unsupported process grounding should return to the model before tool use")
+        try expect(trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.processSnapshot.rawValue }), "process grounding should be satisfied by process snapshot evidence")
+        try expect(trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.finalAnswerSupport.rawValue }), "supported declared process grounding should record final-answer support")
+        try expect(harness.viewModel.state.activeStatus == .completed, "declared process grounding should complete after matching evidence")
+    }
+
+    @MainActor
+    private static func testFolderEvidenceCannotSupportListenerGrounding() async throws {
+        let harness = try await makeHarness(prefix: "grounding-listener-relevance")
+        try "fixture".write(to: harness.workspace.appendingPathComponent("fixture.txt"), atomically: true, encoding: .utf8)
+        let listenerGrounding = AgentKernelAnswerGroundingV2(
+            basis: .localEvidence,
+            claims: [AgentKernelAnswerClaimV2(kind: .localListeners)]
+        )
+        let adapter = tierBFixtureAdapter(
+            responses: [
+                .toolCall(name: "list_folder", arguments: ["path": harness.workspace.path], reason: nil),
+                groundedFinalAnswer("Unsupported by folder evidence.", grounding: listenerGrounding),
+                groundedFinalAnswer("Still unsupported by folder evidence.", grounding: listenerGrounding)
+            ]
+        )
+        let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
+
+        let runID = try await harness.viewModel.startRun(
+            userMessage: "Use recorded state to answer.",
+            context: AgentRunViewContext(title: "Grounding Listener Relevance", contextID: "grounding-listener-relevance", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use the structured protocol.",
+            timeout: 4
+        )
+        try await harness.viewModel.waitForIdle(timeout: 6)
+        await harness.viewModel.refresh()
+
+        let trace = try await harness.store.traceProjection(runID: runID)
+        try expect(trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.folderList.rawValue }), "folder evidence should be recorded")
+        try expect(!trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.localServer.rawValue }), "listener evidence should not be fabricated from folder evidence")
+        try expect(harness.viewModel.state.activeStatus == .blocked, "listener claims should block without listener evidence")
+    }
+
+    @MainActor
+    private static func testModelRequestedListenerSnapshotRecordsEvidence() async throws {
+        let harness = try await makeHarness(prefix: "tool-listener-snapshot")
+        let listenerGrounding = AgentKernelAnswerGroundingV2(
+            basis: .localEvidence,
+            claims: [AgentKernelAnswerClaimV2(kind: .localListeners, target: "1")]
+        )
+        let adapter = tierBFixtureAdapter(
+            responses: [
+                .toolCall(name: "get_local_listener_snapshot", arguments: ["port": "1", "limit": "5"], reason: nil),
+                groundedFinalAnswer("Listener snapshot was recorded.", grounding: listenerGrounding)
+            ]
+        )
+        let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
+
+        let runID = try await harness.viewModel.startRun(
+            userMessage: "Use recorded state to answer.",
+            context: AgentRunViewContext(title: "Listener Snapshot", contextID: "tool-listener-snapshot", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use the structured protocol.",
+            timeout: 4
+        )
+        try await harness.viewModel.waitForIdle(timeout: 6)
+        await harness.viewModel.refresh()
+
+        let trace = try await harness.store.traceProjection(runID: runID)
+        try expect(trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.localServer.rawValue && $0.metadata["requestedPort"] == .int(1) }), "listener snapshot should record server.local evidence")
+        try expect(trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.finalAnswerSupport.rawValue }), "listener grounding should record final-answer support")
+        try expect(harness.viewModel.state.activeStatus == .completed, "listener snapshot run should complete")
+    }
+
+    @MainActor
     private static func testToolLoopListsGrantedFolderAndContinues() async throws {
         let harness = try await makeHarness(prefix: "tool-list")
         try "alpha".write(to: harness.workspace.appendingPathComponent("alpha.txt"), atomically: true, encoding: .utf8)
@@ -245,13 +550,13 @@ enum AgentToolCallingFixtureHarness {
             responses: [
                 .toolCall(name: "search_files", arguments: ["query": "experience"], reason: nil),
                 .toolCall(name: "read_file", arguments: ["path": "index.html"], reason: nil),
-                .finalAnswer("Your website says your experience includes AI engineering, Swift apps, and agent tooling.")
+                .finalAnswer("The page says the experience includes AI engineering, Swift apps, and agent tooling.")
             ]
         )
         let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
 
         let runID = try await harness.viewModel.startRun(
-            userMessage: "what is my experience according to my personal website?",
+            userMessage: "what experience is described in the granted site files?",
             context: AgentRunViewContext(title: "Tool Search", contextID: "tool-search", contextKind: "assistant"),
             adapter: adapter,
             mode: config.mode,
@@ -557,7 +862,7 @@ enum AgentToolCallingFixtureHarness {
     }
 
     @MainActor
-    private static func testGrantDiscoveryUsesListGrantsWithoutReadingFiles() async throws {
+    private static func testGrantDiscoveryUsesInventoryEvidenceWithoutReadingFiles() async throws {
         let harness = try await makeHarness(prefix: "tool-grant-discovery")
         try "private content should not be read".write(
             to: harness.workspace.appendingPathComponent("notes.txt"),
@@ -583,8 +888,17 @@ enum AgentToolCallingFixtureHarness {
         await harness.viewModel.refresh()
 
         let trace = try await harness.store.traceProjection(runID: runID)
+        let firstRequest = await adapter.requests().first
+        let firstObservation = firstRequest?.messages.first(where: { $0.role == .observation })?.content ?? ""
         try expect(harness.viewModel.state.activeStatus == .completed, "grant discovery run should complete")
-        try expect(!trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.fileGrant.rawValue }), "grant wording alone should not create a local evidence obligation")
+        try expect(firstObservation.contains(harness.workspace.path), "first model request should receive the granted path inventory")
+        try expect(firstObservation.contains("entryCount"), "first model request should receive inventory metadata")
+        try expect(trace.evidence.contains(where: { record in
+            record.kind == AgentEvidenceKind.fileGrant.rawValue
+                && record.metadata["paths"]?.stringValue?.contains(harness.workspace.path) == true
+                && record.artifactID != nil
+        }), "grant discovery should record artifact-backed grant inventory evidence")
+        try expect(!trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.finalAnswerSupport.rawValue }), "grant inventory alone should not fabricate final-answer support")
         try expect(!trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.folderList.rawValue }), "grant discovery should not list an arbitrary folder")
         try expect(!trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.fileSearch.rawValue }), "grant discovery should not search files")
         try expect(!trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.fileRead.rawValue }), "grant discovery should not read files")
@@ -1711,20 +2025,58 @@ enum AgentToolCallingFixtureHarness {
         return value
     }
 
+    private static func groundedFinalAnswer(
+        _ text: String,
+        basis: AgentKernelAnswerGroundingBasisV2,
+        claims: [AgentKernelAnswerClaimV2] = []
+    ) -> FixtureAgentKernelAdapterV2.ScriptedResponse {
+        groundedFinalAnswer(
+            text,
+            grounding: AgentKernelAnswerGroundingV2(
+                basis: basis,
+                claims: claims
+            )
+        )
+    }
+
+    private static func groundedFinalAnswer(
+        _ text: String,
+        grounding: AgentKernelAnswerGroundingV2
+    ) -> FixtureAgentKernelAdapterV2.ScriptedResponse {
+        .events([
+            .finalAnswer(
+                AgentKernelFinalAnswerV2(
+                    text: text,
+                    grounding: grounding
+                )
+            )
+        ])
+    }
+
     private static func toolConfig(
         grant: AgentLocalFileGrant,
         runMode: AgentRunPermissionMode,
-        adapter: any AgentKernelModelAdapterV2
+        adapter: any AgentKernelModelAdapterV2,
+        modelConformanceProfile: AgentModelConformanceProfile? = nil
     ) -> (mode: AgentModelGatewayMode, tools: [AgentKernelToolSchemaV2], context: AgentToolRunContext) {
-        toolConfig(grants: [grant], runMode: runMode, adapter: adapter)
+        toolConfig(
+            grants: [grant],
+            runMode: runMode,
+            adapter: adapter,
+            modelConformanceProfile: modelConformanceProfile
+        )
     }
 
     private static func toolConfig(
         grants: [AgentLocalFileGrant],
         runMode: AgentRunPermissionMode,
-        adapter: any AgentKernelModelAdapterV2
+        adapter: any AgentKernelModelAdapterV2,
+        modelConformanceProfile: AgentModelConformanceProfile? = nil
     ) -> (mode: AgentModelGatewayMode, tools: [AgentKernelToolSchemaV2], context: AgentToolRunContext) {
-        let tier = AgentModelGateway.tier(for: adapter.capabilities)
+        let tier = AgentModelGateway.tier(
+            for: adapter.capabilities,
+            conformanceProfile: modelConformanceProfile
+        )
         let context = AgentToolRunContext(
             runMode: runMode,
             localGrants: grants,
@@ -1739,6 +2091,60 @@ enum AgentToolCallingFixtureHarness {
         )
         let mode: AgentModelGatewayMode = tier == .tierAFullAgent ? .fullAgent : .constrainedStructuredText
         return (mode, tools, context)
+    }
+
+    private static func nativeMLXFixtureAdapter(
+        target: AgentModelConformanceTarget,
+        responses: [FixtureAgentKernelAdapterV2.ScriptedResponse]
+    ) -> FixtureAgentKernelAdapterV2 {
+        let descriptor = AgentKernelModelDescriptorV2(
+            id: target.adapterID,
+            providerKind: target.providerKind,
+            route: target.route,
+            displayName: "Fixture Native MLX",
+            modelName: target.modelID
+        )
+        return FixtureAgentKernelAdapterV2(
+            descriptor: descriptor,
+            capabilities: AgentKernelModelAdapterCapabilitiesV2(
+                descriptor: descriptor,
+                toolCallingMode: .native,
+                structuredOutputReliability: .bestEffort,
+                streamingMode: .events,
+                limits: AgentKernelModelLimitsV2(contextWindowTokens: 4_096)
+            ),
+            responses: responses
+        )
+    }
+
+    private static func nativeMLXConformanceTarget(
+        modelID: String,
+        modelPath: String
+    ) -> AgentModelConformanceTarget {
+        AgentModelConformanceTarget(
+            providerKind: .mlxLocal,
+            route: .local,
+            adapterID: AgentModelConformanceTarget.localMLXChatAdapterID,
+            modelID: modelID,
+            modelPath: modelPath,
+            runtimeExecutablePath: "/usr/local/bin/mlx_lm.server",
+            runtimeVersion: nil
+        )
+    }
+
+    private static func nativeMLXConformanceProfile(
+        target: AgentModelConformanceTarget
+    ) -> AgentModelConformanceProfile {
+        let pass = AgentModelConformanceProbeResult.passed("pass")
+        return AgentModelConformanceProfile(
+            target: target,
+            plainChat: pass,
+            structuredJSON: .failed("diagnostic JSON probe failed"),
+            toolCall: pass,
+            toolResultFollowUp: pass,
+            latency: pass,
+            derivedTier: .tierB
+        )
     }
 
     private static func tierBFixtureAdapter(

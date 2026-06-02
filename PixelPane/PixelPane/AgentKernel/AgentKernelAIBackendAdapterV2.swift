@@ -215,11 +215,17 @@ extension AgentKernelModelAdapterCapabilitiesV2 {
         } else {
             unavailableReason = nil
         }
+        let textProvider: AIBackendProvider?
+        if case .available(let provider) = backendCapabilities.text {
+            textProvider = provider
+        } else {
+            textProvider = nil
+        }
         return AgentKernelModelAdapterCapabilitiesV2(
             descriptor: descriptor,
             inputModalities: inputModalities.isEmpty ? [.text] : inputModalities,
             outputModalities: [.text],
-            toolCallingMode: .textProtocol,
+            toolCallingMode: textProvider == .mlxText ? .native : .textProtocol,
             structuredOutputReliability: .bestEffort,
             streamingMode: .snapshots,
             limits: AgentKernelModelLimitsV2(

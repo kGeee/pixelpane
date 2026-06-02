@@ -13,8 +13,11 @@ enum AgentEvidencePacketsFixtureHarness {
 
     static func run() async throws {
         try await testFileSearchEvidenceSupportsExactPath()
+        try await testFileGrantInventoryEvidenceIsDiscoveryOnly()
         try await testLocalServerEvidenceSupportsFinalAnswerWithoutModelVerifier()
+        try await testLocalListenerSnapshotEvidenceSupportsOnlyListenerClaims()
         try await testCommandAndTerminalSupport()
+        try await testProcessSnapshotEvidenceSupportsProcessClaims()
         try await testSideEffectEvidenceSupportsWriteClaims()
         try await testContextSelectionAvoidsStaleRuns()
         try await testUnsupportedAndMissingEvidence()
@@ -45,6 +48,38 @@ enum AgentEvidencePacketsFixtureHarness {
         try expect(packets.first?.artifactID != nil, "search detail should be artifact-backed")
     }
 
+    private static func testFileGrantInventoryEvidenceIsDiscoveryOnly() async throws {
+        let harness = try await makeHarness()
+        let grant = AgentLocalFileGrant(path: harness.workspace.path, isDirectory: true, access: .readWrite)
+        let evidence = try await harness.recorder.recordFileGrants(
+            runID: harness.run.runID,
+            grants: [grant]
+        )
+
+        let records = await harness.store.evidenceArtifactSummary(runID: harness.run.runID).evidence
+        let pathDecision = harness.controller.verify(
+            AgentEvidenceClaim(type: .fileGrantListed, target: grant.path),
+            evidence: records
+        )
+        let nameDecision = harness.controller.verify(
+            AgentEvidenceClaim(type: .fileGrantListed, target: grant.url.lastPathComponent),
+            evidence: records
+        )
+        let contentDecision = harness.controller.verify(.fileExists(grant.path), evidence: records)
+        let packets = harness.controller.contextPackets(from: records, query: grant.url.lastPathComponent)
+
+        try expect(evidence.artifactID != nil, "grant inventory should keep the full grant snapshot as an artifact")
+        try expect(pathDecision.status == .supported, "grant inventory should support path-based grant claims")
+        try expect(nameDecision.status == .supported, "grant inventory should support display-name grant claims")
+        try expect(contentDecision.status == .needsEvidence, "grant inventory must not satisfy file-content claims")
+        try expect(packets.first?.kind == .fileGrant, "grant inventory should be selected as grant context")
+        try expect(packets.first?.keyFields["paths"] == .string(grant.path), "grant context should expose granted paths")
+        try expect(packets.first?.keyFields["displayNames"] == .string(grant.url.lastPathComponent), "grant context should expose display names")
+        try expect(packets.first?.keyFields["accessModes"] == .string("\(grant.path)=\(grant.access.rawValue)"), "grant context should expose access modes")
+        try expect(packets.first?.keyFields["grantIDs"] != nil, "grant context should expose grant IDs")
+        try expect(packets.first?.keyFields["kinds"] == .string("\(grant.path)=folder"), "grant context should expose item kinds")
+    }
+
     private static func testLocalServerEvidenceSupportsFinalAnswerWithoutModelVerifier() async throws {
         let harness = try await makeHarness()
         let server = AgentLocalServerEvidence(
@@ -72,6 +107,51 @@ enum AgentEvidencePacketsFixtureHarness {
         try expect(final.supportEvidenceID != nil, "final answer support should be recorded as evidence")
     }
 
+    private static func testLocalListenerSnapshotEvidenceSupportsOnlyListenerClaims() async throws {
+        let harness = try await makeHarness()
+        let evidence = try await harness.recorder.recordLocalListenerSnapshot(
+            runID: harness.run.runID,
+            snapshot: AgentLocalListenerSnapshotEvidence(
+                rows: [
+                    AgentLocalListenerSnapshotRow(
+                        port: 4317,
+                        listenAddress: "127.0.0.1",
+                        pid: 700,
+                        executableName: "fixture-server",
+                        workingDirectory: "/Users/test/project"
+                    )
+                ],
+                requestedLimit: 5,
+                requestedPort: 4317,
+                requestedRootPath: "/Users/test/project"
+            )
+        )
+        _ = try await harness.recorder.recordLocalListenerSnapshot(
+            runID: harness.run.runID,
+            snapshot: AgentLocalListenerSnapshotEvidence(
+                rows: [],
+                requestedLimit: 5,
+                requestedPort: 9876
+            )
+        )
+
+        let records = await harness.store.evidenceArtifactSummary(runID: harness.run.runID).evidence
+        let listenerDecision = harness.controller.verify(
+            AgentEvidenceClaim(type: .localListenerSnapshotRecorded, target: "4317"),
+            evidence: records
+        )
+        let listeningDecision = harness.controller.verify(.portListening(4317), evidence: records)
+        let absentListeningDecision = harness.controller.verify(.portListening(9876), evidence: records)
+        let packets = harness.controller.contextPackets(from: records, query: "4317")
+
+        try expect(evidence.artifactID != nil, "listener snapshot should keep full rows as an artifact")
+        try expect(listenerDecision.status == .supported, "listener snapshot claim should be supported by server evidence")
+        try expect(listeningDecision.status == .supported, "positive listener rows should support port-listening claims")
+        try expect(absentListeningDecision.status == .needsEvidence, "negative listener snapshots must not support positive port-listening claims")
+        try expect(packets.first?.kind == .localServer, "listener evidence should be selected as local server context")
+        try expect(packets.first?.keyFields["rowCount"] == .int(1), "context packet should expose listener row count")
+    }
+
     private static func testCommandAndTerminalSupport() async throws {
         let harness = try await makeHarness()
         let output = AgentCommandExecutionOutput(
@@ -92,6 +172,38 @@ enum AgentEvidencePacketsFixtureHarness {
 
         try expect(commandDecision.status == .supported, "command success should be supported by exit code 0")
         try expect(terminalDecision.status == .supported, "task completion should be supported by terminal evidence")
+    }
+
+    private static func testProcessSnapshotEvidenceSupportsProcessClaims() async throws {
+        let harness = try await makeHarness()
+        let evidence = try await harness.recorder.recordProcessSnapshot(
+            runID: harness.run.runID,
+            snapshot: AgentProcessSnapshotEvidence(
+                rows: [
+                    AgentProcessSnapshotRow(pid: 123, cpuPercent: 42.5, memoryPercent: 3.2, executableName: "swift"),
+                    AgentProcessSnapshotRow(pid: 456, cpuPercent: 2.0, memoryPercent: 1.1, executableName: "launchd")
+                ],
+                requestedLimit: 2
+            )
+        )
+
+        let records = await harness.store.evidenceArtifactSummary(runID: harness.run.runID).evidence
+        let executableDecision = harness.controller.verify(
+            AgentEvidenceClaim(type: .processRunning, target: "swift"),
+            evidence: records
+        )
+        let pidDecision = harness.controller.verify(
+            AgentEvidenceClaim(type: .processRunning, target: "123"),
+            evidence: records
+        )
+        let packets = harness.controller.contextPackets(from: records, query: "swift process")
+
+        try expect(evidence.artifactID != nil, "process snapshot should keep full rows as an artifact")
+        try expect(executableDecision.status == .supported, "process snapshot should support top executable process claims")
+        try expect(pidDecision.status == .supported, "process snapshot should support top PID process claims")
+        try expect(packets.first?.kind == .processSnapshot, "process snapshot should be selected as relevant context")
+        try expect(packets.first?.keyFields["topExecutable"] == .string("swift"), "context packet should expose top executable")
+        try expect(packets.first?.keyFields["rowCount"] == .int(2), "context packet should expose row count")
     }
 
     private static func testSideEffectEvidenceSupportsWriteClaims() async throws {

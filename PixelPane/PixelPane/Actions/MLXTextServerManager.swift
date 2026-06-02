@@ -67,6 +67,27 @@ actor MLXTextServerManager {
         }
     }
 
+    func nativeToolResponse(
+        request: AgentKernelModelAdapterRequestV2,
+        modelURL: URL,
+        executableURL: URL
+    ) async throws -> [AgentKernelModelAdapterEventV2] {
+        let warmServer = try await readyServer(modelURL: modelURL, executableURL: executableURL)
+        scheduleIdleShutdown()
+
+        do {
+            let events = try await requestNativeToolResponse(
+                request: request,
+                server: warmServer
+            )
+            scheduleIdleShutdown()
+            return events
+        } catch {
+            stopServer()
+            throw error
+        }
+    }
+
     func warmIfNeeded(modelURL: URL, executableURL: URL) async {
         do {
             _ = try await readyServer(modelURL: modelURL, executableURL: executableURL)
@@ -201,6 +222,212 @@ actor MLXTextServerManager {
         }
 
         return formatter.format(text)
+    }
+
+    private func requestNativeToolResponse(
+        request adapterRequest: AgentKernelModelAdapterRequestV2,
+        server: WarmServer
+    ) async throws -> [AgentKernelModelAdapterEventV2] {
+        guard let url = URL(string: "http://127.0.0.1:\(server.port)/v1/chat/completions") else {
+            throw AIBackendError.unavailable(.generationFailed)
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = requestTimeout
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        var payload: [String: Any] = [
+            "messages": nativeMessages(from: adapterRequest.messages),
+            "max_tokens": min(adapterRequest.requestedMaxOutputTokens, 4_096),
+            "temperature": 0,
+            "stop": ["<|im_end|>"]
+        ]
+        if !adapterRequest.tools.isEmpty {
+            payload["tools"] = adapterRequest.tools.map(nativeToolSchema)
+            payload["tool_choice"] = "auto"
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw AIBackendError.unavailable(.generationFailed)
+        }
+
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = json["choices"] as? [[String: Any]],
+              let message = choices.first?["message"] as? [String: Any] else {
+            throw AIBackendError.unavailable(.generationFailed)
+        }
+
+        if let toolCalls = message["tool_calls"] as? [[String: Any]],
+           let event = nativeToolCallEvent(from: toolCalls) {
+            return [event]
+        }
+
+        let text = (message["content"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            return [.emptyOutput]
+        }
+        return [.finalAnswer(text)]
+    }
+
+    private func nativeMessages(
+        from messages: [AgentKernelMessageV2]
+    ) -> [[String: Any]] {
+        messages.flatMap { message -> [[String: Any]] in
+            switch message.role {
+            case .system:
+                return [["role": "system", "content": message.content]]
+            case .user:
+                return [["role": "user", "content": message.content]]
+            case .assistant:
+                return [["role": "assistant", "content": message.content]]
+            case .observation:
+                if let toolObservation = nativeToolObservation(from: message.content, messageID: message.id) {
+                    return toolObservation
+                }
+                return [
+                    [
+                        "role": "user",
+                        "content": "Tool/runtime observation:\n\(message.content)"
+                    ]
+                ]
+            }
+        }
+    }
+
+    private func nativeToolObservation(
+        from content: String,
+        messageID: UUID
+    ) -> [[String: Any]]? {
+        let lines = content
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+        guard lines.first == "Tool result",
+              let nameLine = lines.first(where: { $0.hasPrefix("name: ") }) else {
+            return nil
+        }
+        let name = String(nameLine.dropFirst("name: ".count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return nil }
+
+        let callID = "pixelpane-\(messageID.uuidString)"
+        return [
+            [
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    [
+                        "id": callID,
+                        "type": "function",
+                        "function": [
+                            "name": name,
+                            "arguments": "{}"
+                        ]
+                    ]
+                ]
+            ],
+            [
+                "role": "tool",
+                "tool_call_id": callID,
+                "name": name,
+                "content": content
+            ],
+            [
+                "role": "user",
+                "content": "Use the tool result above to continue the task. Return a final answer if you have enough information; otherwise call another available tool."
+            ]
+        ]
+    }
+
+    private func nativeToolSchema(
+        from tool: AgentKernelToolSchemaV2
+    ) -> [String: Any] {
+        var properties: [String: Any] = [:]
+        for argument in tool.arguments {
+            properties[argument.name] = [
+                "type": nativeJSONSchemaType(argument.type),
+                "description": argument.summary
+            ]
+        }
+        return [
+            "type": "function",
+            "function": [
+                "name": tool.name,
+                "description": tool.summary,
+                "parameters": [
+                    "type": "object",
+                    "properties": properties,
+                    "required": tool.requiredArguments,
+                    "additionalProperties": false
+                ]
+            ]
+        ]
+    }
+
+    private func nativeJSONSchemaType(_ type: AgentKernelToolArgumentTypeV2) -> String {
+        switch type {
+        case .string, .jsonString:
+            return "string"
+        case .integer:
+            return "integer"
+        case .number:
+            return "number"
+        case .boolean:
+            return "boolean"
+        }
+    }
+
+    private func nativeToolCallEvent(
+        from toolCalls: [[String: Any]]
+    ) -> AgentKernelModelAdapterEventV2? {
+        for rawCall in toolCalls {
+            guard let function = rawCall["function"] as? [String: Any],
+                  let name = function["name"] as? String,
+                  !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                continue
+            }
+            let arguments = nativeToolArguments(from: function["arguments"])
+            return .toolCall(
+                AgentKernelToolCallV2(
+                    name: name,
+                    arguments: arguments
+                )
+            )
+        }
+        return nil
+    }
+
+    private func nativeToolArguments(from raw: Any?) -> [String: String] {
+        let object: Any?
+        if let text = raw as? String,
+           let data = text.data(using: .utf8) {
+            object = try? JSONSerialization.jsonObject(with: data)
+        } else {
+            object = raw
+        }
+
+        guard let dictionary = object as? [String: Any] else {
+            return [:]
+        }
+
+        return dictionary.reduce(into: [String: String]()) { result, item in
+            switch item.value {
+            case let value as String:
+                result[item.key] = value
+            case let value as NSNumber:
+                result[item.key] = value.stringValue
+            default:
+                if JSONSerialization.isValidJSONObject(item.value),
+                   let data = try? JSONSerialization.data(withJSONObject: item.value),
+                   let text = String(data: data, encoding: .utf8) {
+                    result[item.key] = text
+                } else {
+                    result[item.key] = String(describing: item.value)
+                }
+            }
+        }
     }
 
     private func scheduleIdleShutdown() {

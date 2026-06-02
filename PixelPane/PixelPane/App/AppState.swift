@@ -11,10 +11,11 @@ final class AppState: ObservableObject {
     @Published private(set) var localAICapabilities: AIBackendCapabilities = .unknown
     @Published private(set) var mlxVisionSetupSnapshot = MLXVisionSetupRunner().snapshot()
     @Published private(set) var isRunningMLXSetupCheck = false
+    @Published private(set) var isRunningAgentModelConformanceCheck = false
+    @Published private(set) var agentModelConformanceProfile: AgentModelConformanceProfile?
     @Published private(set) var hasCompletedOnboarding: Bool
     @Published private(set) var hasCompletedFirstCaptureTutorial: Bool
     @Published private(set) var aiRoutingSettings: AIRoutingSettings
-    @Published private(set) var responseDetailLevel: ResponseDetailLevel
     let localFileAccess: LocalFileAccessStore
     let chatHistory: ChatHistoryStore
 
@@ -28,13 +29,16 @@ final class AppState: ObservableObject {
     private let technicalContentClassifier = TechnicalContentClassifier()
     private let hotkeyManager = HotkeyManager()
     private let mlxVisionSetupRunner = MLXVisionSetupRunner()
+    private let agentModelConformanceStore: AgentModelConformanceStore
     private let localAIBackend: any AIBackend = HybridLocalAIBackend()
     private let userDefaults: UserDefaults
+    private var mlxSetupCheckTask: Task<Void, Never>?
     private let onboardingCompletedKey = "PrivacyOnboarding.Completed"
     private let firstCaptureTutorialCompletedKey = "FirstCaptureTutorial.Completed"
 
     init(userDefaults: UserDefaults = .standard) {
         self.userDefaults = userDefaults
+        agentModelConformanceStore = AgentModelConformanceStore(defaults: userDefaults)
         localFileAccess = LocalFileAccessStore(userDefaults: userDefaults)
         chatHistory = ChatHistoryStore(userDefaults: userDefaults)
         hasCompletedOnboarding = userDefaults.bool(forKey: onboardingCompletedKey)
@@ -47,16 +51,11 @@ final class AppState: ObservableObject {
                 ? AIRoutingSettings.cloudBackendAvailable
                 : storedAllowCloudImageContext
         )
-        if userDefaults.object(forKey: ResponseDetailDefaults.levelKey) == nil {
-            responseDetailLevel = .balanced
-        } else {
-            let raw = userDefaults.integer(forKey: ResponseDetailDefaults.levelKey)
-            responseDetailLevel = ResponseDetailLevel(rawValue: raw) ?? .balanced
-        }
         if mlxVisionSetupSnapshot.selectedModel == nil {
             aiRoutingSettings.useCloudModels = AIRoutingSettings.cloudBackendAvailable
             aiRoutingSettings.allowCloudImageContext = AIRoutingSettings.cloudBackendAvailable
         }
+        agentModelConformanceProfile = currentAgentModelConformanceProfile(snapshot: mlxVisionSetupSnapshot)
         persistAIRoutingSettings()
         refreshSystemStatus()
         refreshLocalAIStatus()
@@ -108,12 +107,6 @@ final class AppState: ObservableObject {
         showOnboarding()
     }
 
-    func setResponseDetailLevel(_ level: ResponseDetailLevel) {
-        guard responseDetailLevel != level else { return }
-        responseDetailLevel = level
-        userDefaults.set(level.rawValue, forKey: ResponseDetailDefaults.levelKey)
-    }
-
     func startCapture() {
         guard !isCapturing else { return }
         refreshSystemStatus()
@@ -143,7 +136,6 @@ final class AppState: ObservableObject {
         panelController.show(
             result: lastResult,
             routingSettings: aiRoutingSettings,
-            responseDetail: responseDetailLevel,
             localAICapabilities: localAICapabilities,
             localFileAccess: localFileAccess,
             chatHistory: chatHistory,
@@ -157,7 +149,6 @@ final class AppState: ObservableObject {
     func showAssistant() {
         panelController.showAssistant(
             routingSettings: aiRoutingSettings,
-            responseDetail: responseDetailLevel,
             localAICapabilities: localAICapabilities,
             localFileAccess: localFileAccess,
             chatHistory: chatHistory,
@@ -174,7 +165,6 @@ final class AppState: ObservableObject {
         persistAIRoutingSettings()
         panelController.refreshRoutingSettings(
             aiRoutingSettings,
-            responseDetail: responseDetailLevel,
             localAICapabilities: localAICapabilities,
             localFileAccess: localFileAccess,
             chatHistory: chatHistory
@@ -206,9 +196,11 @@ final class AppState: ObservableObject {
             guard let self else { return }
             let capabilities = await localAIBackend.capabilities()
             let mlxSnapshot = mlxVisionSetupRunner.snapshot()
+            let conformanceProfile = currentAgentModelConformanceProfile(snapshot: mlxSnapshot)
             await MainActor.run {
                 self.localAICapabilities = capabilities
                 self.mlxVisionSetupSnapshot = mlxSnapshot
+                self.agentModelConformanceProfile = conformanceProfile
             }
         }
     }
@@ -216,15 +208,38 @@ final class AppState: ObservableObject {
     func runMLXSetupCheck(for model: MLXVisionModel) {
         guard !isRunningMLXSetupCheck else { return }
         isRunningMLXSetupCheck = true
+        isRunningAgentModelConformanceCheck = false
 
-        Task { [weak self] in
+        mlxSetupCheckTask = Task { [weak self] in
             guard let self else { return }
             let snapshot = await mlxVisionSetupRunner.runSetupCheck(for: model)
             let capabilities = await localAIBackend.capabilities()
+            let setupProfile = currentAgentModelConformanceProfile(snapshot: snapshot)
             await MainActor.run {
                 self.mlxVisionSetupSnapshot = snapshot
                 self.localAICapabilities = capabilities
+                self.agentModelConformanceProfile = setupProfile
+            }
+
+            var conformanceProfile = setupProfile
+            if !Task.isCancelled,
+               snapshot.textCapabilityStatus.isAvailable,
+               let target = AgentModelConformanceTarget.mlxText(snapshot: snapshot) {
+                await MainActor.run {
+                    self.isRunningAgentModelConformanceCheck = true
+                }
+                let profile = await self.runAgentModelConformanceCheck(target: target)
+                self.agentModelConformanceStore.save(profile)
+                conformanceProfile = profile
+            }
+
+            await MainActor.run {
+                self.mlxVisionSetupSnapshot = snapshot
+                self.localAICapabilities = capabilities
+                self.agentModelConformanceProfile = conformanceProfile
+                self.isRunningAgentModelConformanceCheck = false
                 self.isRunningMLXSetupCheck = false
+                self.mlxSetupCheckTask = nil
                 Task { await MLXTextServerManager.shared.stop() }
                 if snapshot.selectedModel != nil {
                     self.setUseCloudModels(false)
@@ -246,15 +261,38 @@ final class AppState: ObservableObject {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         guard !isRunningMLXSetupCheck else { return }
         isRunningMLXSetupCheck = true
+        isRunningAgentModelConformanceCheck = false
 
-        Task { [weak self] in
+        mlxSetupCheckTask = Task { [weak self] in
             guard let self else { return }
             let snapshot = await mlxVisionSetupRunner.runSetupCheck(forCustomModelDirectory: url)
             let capabilities = await localAIBackend.capabilities()
+            let setupProfile = currentAgentModelConformanceProfile(snapshot: snapshot)
             await MainActor.run {
                 self.mlxVisionSetupSnapshot = snapshot
                 self.localAICapabilities = capabilities
+                self.agentModelConformanceProfile = setupProfile
+            }
+
+            var conformanceProfile = setupProfile
+            if !Task.isCancelled,
+               snapshot.textCapabilityStatus.isAvailable,
+               let target = AgentModelConformanceTarget.mlxText(snapshot: snapshot) {
+                await MainActor.run {
+                    self.isRunningAgentModelConformanceCheck = true
+                }
+                let profile = await self.runAgentModelConformanceCheck(target: target)
+                self.agentModelConformanceStore.save(profile)
+                conformanceProfile = profile
+            }
+
+            await MainActor.run {
+                self.mlxVisionSetupSnapshot = snapshot
+                self.localAICapabilities = capabilities
+                self.agentModelConformanceProfile = conformanceProfile
+                self.isRunningAgentModelConformanceCheck = false
                 self.isRunningMLXSetupCheck = false
+                self.mlxSetupCheckTask = nil
                 Task { await MLXTextServerManager.shared.stop() }
                 if snapshot.selectedModel != nil {
                     self.setUseCloudModels(false)
@@ -265,9 +303,23 @@ final class AppState: ObservableObject {
         }
     }
 
+    func cancelMLXSetupCheck() {
+        mlxSetupCheckTask?.cancel()
+        mlxSetupCheckTask = nil
+        isRunningMLXSetupCheck = false
+        isRunningAgentModelConformanceCheck = false
+        Task { await MLXTextServerManager.shared.stop() }
+        refreshLocalAIStatus()
+    }
+
     func clearMLXModelSelection() {
+        mlxSetupCheckTask?.cancel()
+        mlxSetupCheckTask = nil
         let snapshot = mlxVisionSetupRunner.clearSelection()
         mlxVisionSetupSnapshot = snapshot
+        agentModelConformanceProfile = nil
+        isRunningMLXSetupCheck = false
+        isRunningAgentModelConformanceCheck = false
         setUseCloudModels(true)
         Task { await MLXTextServerManager.shared.stop() }
         refreshLocalAIStatus()
@@ -375,7 +427,6 @@ final class AppState: ObservableObject {
             panelController.show(
                 result: result,
                 routingSettings: aiRoutingSettings,
-                responseDetail: responseDetailLevel,
                 localAICapabilities: localAICapabilities,
                 localFileAccess: localFileAccess,
                 chatHistory: chatHistory,
@@ -400,7 +451,6 @@ final class AppState: ObservableObject {
             panelController.show(
                 result: result,
                 routingSettings: aiRoutingSettings,
-                responseDetail: responseDetailLevel,
                 localAICapabilities: localAICapabilities,
                 localFileAccess: localFileAccess,
                 chatHistory: chatHistory,
@@ -436,10 +486,43 @@ final class AppState: ObservableObject {
         userDefaults.set(aiRoutingSettings.allowCloudImageContext, forKey: AIRoutingDefaults.allowCloudImageContextKey)
     }
 
+    private func runAgentModelConformanceCheck(
+        target: AgentModelConformanceTarget
+    ) async -> AgentModelConformanceProfile {
+        let backend = MLXTextBackend(store: MLXVisionModelStore(defaults: userDefaults), timeoutSeconds: 45)
+        let descriptor = AgentKernelModelDescriptorV2(
+            id: target.adapterID,
+            providerKind: .mlxLocal,
+            route: .local,
+            displayName: "MLX Text",
+            modelName: target.modelID
+        )
+        let capabilities = AgentKernelModelAdapterCapabilitiesV2.aiBackendBridge(
+            descriptor: descriptor,
+            backendCapabilities: await backend.capabilities()
+        )
+        let adapter = AgentKernelMLXNativeToolAdapterV2(
+            descriptor: descriptor,
+            backend: backend,
+            capabilities: capabilities,
+            preferredProvider: .mlxText,
+            allowsSingleRepairAttempt: false
+        )
+        return await AgentModelConformanceRunner(perProbeTimeout: 45).run(
+            adapter: adapter,
+            target: target
+        )
+    }
+
+    private func currentAgentModelConformanceProfile(
+        snapshot: MLXVisionSetupSnapshot
+    ) -> AgentModelConformanceProfile? {
+        agentModelConformanceStore.profile(for: AgentModelConformanceTarget.mlxText(snapshot: snapshot))
+    }
+
     private func refreshPresentedPanel() {
         panelController.refreshRoutingSettings(
             aiRoutingSettings,
-            responseDetail: responseDetailLevel,
             localAICapabilities: localAICapabilities,
             localFileAccess: localFileAccess,
             chatHistory: chatHistory

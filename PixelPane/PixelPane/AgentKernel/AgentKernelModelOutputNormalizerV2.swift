@@ -43,15 +43,55 @@ struct AgentKernelToolProtocolDecoderV2: Sendable {
 
         switch type {
         case "final_answer":
-            guard let text = json["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                return .failure(reason(code: "text_protocol_missing_final_text", summary: "Final answer output is missing non-empty text."))
-            }
-            return .event(.finalAnswer(text))
+            return decodeFinalAnswer(json)
         case "tool_call":
             return decodeToolCall(json, tools: tools)
         default:
             return .failure(reason(code: "text_protocol_unknown_type", summary: "Text protocol output type is not supported."))
         }
+    }
+
+    private nonisolated func decodeFinalAnswer(_ json: [String: Any]) -> AgentKernelToolProtocolDecodeResultV2 {
+        guard let text = json["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .failure(reason(code: "text_protocol_missing_final_text", summary: "Final answer output is missing non-empty text."))
+        }
+        guard let groundingValue = json["grounding"] else {
+            return .event(.finalAnswer(AgentKernelFinalAnswerV2(text: text)))
+        }
+        guard let groundingObject = groundingValue as? [String: Any] else {
+            return .failure(reason(code: "text_protocol_grounding_not_object", summary: "Final answer grounding must be a JSON object."))
+        }
+        guard let basisValue = groundingObject["basis"] as? String,
+              let basis = AgentKernelAnswerGroundingBasisV2(rawValue: basisValue) else {
+            return .failure(reason(code: "text_protocol_unknown_grounding_basis", summary: "Final answer grounding basis is not supported."))
+        }
+
+        let rawClaims = groundingObject["claims"] as? [[String: Any]] ?? []
+        var claims: [AgentKernelAnswerClaimV2] = []
+        for rawClaim in rawClaims {
+            guard let kindValue = rawClaim["kind"] as? String,
+                  let kind = AgentKernelAnswerClaimKindV2(rawValue: kindValue) else {
+                return .failure(reason(code: "text_protocol_unknown_grounding_claim", summary: "Final answer grounding claim kind is not supported."))
+            }
+            claims.append(
+                AgentKernelAnswerClaimV2(
+                    kind: kind,
+                    target: rawClaim["target"] as? String
+                )
+            )
+        }
+
+        return .event(
+            .finalAnswer(
+                AgentKernelFinalAnswerV2(
+                    text: text,
+                    grounding: AgentKernelAnswerGroundingV2(
+                        basis: basis,
+                        claims: claims
+                    )
+                )
+            )
+        )
     }
 
     nonisolated func partialToolCallForValidation(
@@ -366,10 +406,10 @@ struct AgentKernelModelOutputNormalizerV2: Sendable {
         event: AgentKernelModelAdapterEventV2,
         tools: [AgentKernelToolSchemaV2]
     ) -> AgentKernelModelAdapterEventV2 {
-        guard case .finalAnswer(let text) = event else {
+        guard case .finalAnswer(let answer) = event else {
             return event
         }
-        return normalizedFinalAnswer(text, tools: tools) ?? event
+        return normalizedFinalAnswer(answer.text, tools: tools) ?? event
     }
 
     nonisolated func normalizedFinalAnswer(

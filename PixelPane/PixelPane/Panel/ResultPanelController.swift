@@ -12,7 +12,6 @@ final class ResultPanelController {
     func show(
         result: CaptureResult,
         routingSettings: AIRoutingSettings,
-        responseDetail: ResponseDetailLevel,
         localAICapabilities: AIBackendCapabilities,
         localFileAccess: LocalFileAccessStore,
         chatHistory: ChatHistoryStore,
@@ -30,7 +29,6 @@ final class ResultPanelController {
             ResultPanelView(
                 result: result,
                 routingSettings: routingSettings,
-                responseDetail: responseDetail,
                 localAICapabilities: localAICapabilities,
                 localFileAccess: localFileAccess,
                 chatHistory: chatHistory,
@@ -66,7 +64,6 @@ final class ResultPanelController {
 
     func refreshRoutingSettings(
         _ routingSettings: AIRoutingSettings,
-        responseDetail: ResponseDetailLevel,
         localAICapabilities: AIBackendCapabilities,
         localFileAccess: LocalFileAccessStore,
         chatHistory: ChatHistoryStore
@@ -76,7 +73,6 @@ final class ResultPanelController {
         show(
             result: currentResult,
             routingSettings: routingSettings,
-            responseDetail: responseDetail,
             localAICapabilities: localAICapabilities,
             localFileAccess: localFileAccess,
             chatHistory: chatHistory,
@@ -92,7 +88,6 @@ final class ResultPanelController {
 
     func showAssistant(
         routingSettings: AIRoutingSettings,
-        responseDetail: ResponseDetailLevel,
         localAICapabilities: AIBackendCapabilities,
         localFileAccess: LocalFileAccessStore,
         chatHistory: ChatHistoryStore,
@@ -111,7 +106,6 @@ final class ResultPanelController {
         show(
             result: result,
             routingSettings: routingSettings,
-            responseDetail: responseDetail,
             localAICapabilities: localAICapabilities,
             localFileAccess: localFileAccess,
             chatHistory: chatHistory,

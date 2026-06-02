@@ -158,13 +158,6 @@ struct SettingsView: View {
         Form {
             routingModeSection
 
-            Section("Response Style") {
-                ResponseStyleSlider(
-                    level: appState.responseDetailLevel,
-                    onChange: { appState.setResponseDetailLevel($0) }
-                )
-            }
-
             Section("Local AI") {
                 localAISectionContent
             }
@@ -209,6 +202,13 @@ struct SettingsView: View {
                         systemImage: appState.localAICapabilities.image.isAvailable ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
                         tint: appState.localAICapabilities.image.isAvailable ? .green : .orange
                     )
+
+                    LocalAIStatusTile(
+                        title: "Agent Tools",
+                        detail: agentToolsStatus.detail,
+                        systemImage: agentToolsStatus.systemImage,
+                        tint: agentToolsStatus.tint
+                    )
                 }
 
                 Text(mlxSetupDetailText)
@@ -240,6 +240,14 @@ struct SettingsView: View {
                     Label("Choose Folder", systemImage: "folder")
                 }
                 .disabled(appState.isRunningMLXSetupCheck)
+
+                if appState.isRunningMLXSetupCheck {
+                    Button {
+                        appState.cancelMLXSetupCheck()
+                    } label: {
+                        Label("Cancel", systemImage: "xmark.circle")
+                    }
+                }
 
                 Menu {
                     Button {
@@ -284,6 +292,10 @@ struct SettingsView: View {
                 } else {
                     MLXModelDetailView(model: appState.mlxVisionSetupSnapshot.recommendedModel)
                 }
+
+                Text(agentToolsDetailText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -397,7 +409,40 @@ struct SettingsView: View {
             appState.mlxVisionSetupSnapshot.runtimeURL.map { "Vision runtime: \($0.path)" }
         ]
         .compactMap { $0 }
-        .joined(separator: "\n")
+            .joined(separator: "\n")
+    }
+
+    private var agentToolsStatus: (detail: String, systemImage: String, tint: Color) {
+        if appState.isRunningAgentModelConformanceCheck {
+            return ("Checking", "hourglass", .blue)
+        }
+        guard appState.localAICapabilities.text.isAvailable else {
+            return ("Unavailable", "exclamationmark.triangle.fill", .orange)
+        }
+        guard let profile = appState.agentModelConformanceProfile else {
+            return ("Plain chat", "text.bubble", .secondary)
+        }
+        switch profile.derivedTier {
+        case .tierA:
+            return ("Full agent", "checkmark.circle.fill", .green)
+        case .tierB:
+            return ("Tools ready", "checkmark.circle.fill", .green)
+        case .tierC:
+            return ("Plain chat", "text.bubble", .secondary)
+        case .unavailable:
+            return ("Probe failed", "exclamationmark.triangle.fill", .orange)
+        }
+    }
+
+    private var agentToolsDetailText: String {
+        guard let profile = appState.agentModelConformanceProfile else {
+            return "Agent Tools: not checked for the active text model. Local MLX chat stays available, but agent tools remain disabled until the model passes conformance."
+        }
+        let tested = ISO8601DateFormatter().string(from: profile.testedAt)
+        return """
+        Agent Tools: \(profile.derivedTier.rawValue), tested \(tested)
+        Plain: \(profile.plainChat.status.rawValue); JSON: \(profile.structuredJSON.status.rawValue); Tool: \(profile.toolCall.status.rawValue); Follow-up: \(profile.toolResultFollowUp.status.rawValue)
+        """
     }
 
     private func applySelectedMLXModel() {
@@ -681,126 +726,6 @@ private struct ChatHistorySettingsView: View {
         }
         .formStyle(.grouped)
     }
-}
-
-private struct ResponseStyleSlider: View {
-    let level: ResponseDetailLevel
-    let onChange: (ResponseDetailLevel) -> Void
-
-    private let thumbWidth: CGFloat = 18
-    private let thumbHeight: CGFloat = 28
-    private let trackHeight: CGFloat = 5
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(level.title)
-                    .font(.system(size: 14, weight: .semibold))
-
-                Spacer()
-
-                Text("Completion-safe")
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.secondary)
-            }
-
-            Text(level.subtitle)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            VStack(spacing: 8) {
-                sliderTrack
-                    .frame(height: thumbHeight)
-
-                HStack(spacing: 0) {
-                    ForEach(ResponseDetailLevel.allCases) { stop in
-                        VStack(alignment: tickHorizontalAlignment(for: stop), spacing: 0) {
-                            Text(stop.title)
-                                .font(.caption2.weight(stop == level ? .bold : .regular))
-                        }
-                        .foregroundStyle(stop == level ? .primary : .tertiary)
-                        .frame(maxWidth: .infinity, alignment: tickAlignment(for: stop))
-                    }
-                }
-                .padding(.horizontal, thumbWidth / 2)
-            }
-
-        }
-    }
-
-    private var sliderTrack: some View {
-        GeometryReader { proxy in
-            let trackWidth = max(1, proxy.size.width - thumbWidth)
-            let trackStart = thumbWidth / 2
-            let centerY = proxy.size.height / 2
-            let progress = CGFloat(level.rawValue) / CGFloat(ResponseDetailLevel.allCases.count - 1)
-            let thumbCenterX = trackStart + (trackWidth * progress)
-
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(.quaternary)
-                    .frame(width: trackWidth, height: trackHeight)
-                    .position(x: trackStart + trackWidth / 2, y: centerY)
-
-                Capsule()
-                    .fill(Color.accentColor)
-                    .frame(width: max(0, thumbCenterX - trackStart), height: trackHeight)
-                    .position(x: trackStart + max(0, thumbCenterX - trackStart) / 2, y: centerY)
-
-                ForEach(ResponseDetailLevel.allCases) { stop in
-                    let stopProgress = CGFloat(stop.rawValue) / CGFloat(ResponseDetailLevel.allCases.count - 1)
-                    Circle()
-                        .fill(stop == level ? Color.accentColor : Color.secondary.opacity(0.45))
-                        .frame(width: 4, height: 4)
-                        .position(x: trackStart + trackWidth * stopProgress, y: centerY + 10)
-                }
-
-                Capsule()
-                    .fill(.primary)
-                    .frame(width: thumbWidth, height: thumbHeight)
-                    .shadow(color: .black.opacity(0.18), radius: 2, x: 0, y: 1)
-                    .position(x: thumbCenterX, y: centerY)
-            }
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        setLevel(at: value.location.x, trackStart: trackStart, trackWidth: trackWidth)
-                    }
-            )
-        }
-    }
-
-    private func tickAlignment(for stop: ResponseDetailLevel) -> Alignment {
-        switch stop {
-        case .brief:
-            .leading
-        case .balanced:
-            .center
-        case .thorough:
-            .trailing
-        }
-    }
-
-    private func tickHorizontalAlignment(for stop: ResponseDetailLevel) -> HorizontalAlignment {
-        switch stop {
-        case .brief:
-            .leading
-        case .balanced:
-            .center
-        case .thorough:
-            .trailing
-        }
-    }
-
-    private func setLevel(at xPosition: CGFloat, trackStart: CGFloat, trackWidth: CGFloat) {
-        let progress = min(1, max(0, (xPosition - trackStart) / trackWidth))
-        let rawValue = Int((progress * CGFloat(ResponseDetailLevel.allCases.count - 1)).rounded())
-        if let next = ResponseDetailLevel(rawValue: rawValue), next != level {
-            onChange(next)
-        }
-    }
-
 }
 
 enum SettingsWindowActivation {

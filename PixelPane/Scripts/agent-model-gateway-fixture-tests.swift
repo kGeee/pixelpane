@@ -13,6 +13,15 @@ enum AgentModelGatewayFixtureHarness {
 
     static func run() async throws {
         try await testTierClassification()
+        try testConformanceProfileTierDerivation()
+        try await testLocalMLXDefaultsToPlainChatUntilChecked()
+        try await testLocalMLXConformanceProfileEnablesTierB()
+        try await testLocalMLXNativeProfileUsesNativeToolRequests()
+        try await testConformanceRunnerRecordsProbeResults()
+        try await testConformanceRunnerUsesNativeToolProbes()
+        try await testNativeConformanceDoesNotRequireTextProtocolJSON()
+        try testConformanceStoreUsesExactTarget()
+        try await testConformanceTimeoutFallsBackToPlainChatTier()
         try await testFullAgentRequiresTierA()
         try await testPlainChatStripsTools()
         try await testProviderFailureMapping()
@@ -38,6 +47,253 @@ enum AgentModelGatewayFixtureHarness {
         try expect(tierAValue == .tierAFullAgent, "native/strict adapter should be Tier A")
         try expect(tierBValue == .tierBConstrainedStructuredText, "text protocol adapter should be Tier B")
         try expect(tierCValue == .tierCPlainChat, "plain text adapter should be Tier C")
+    }
+
+    private static func testConformanceProfileTierDerivation() throws {
+        let target = mlxConformanceTarget(modelID: "fixture/model-a", modelPath: "/tmp/model-a")
+        let plainPass = AgentModelConformanceProbeResult.passed("plain")
+        let pass = AgentModelConformanceProbeResult.passed("pass")
+        let fail = AgentModelConformanceProbeResult.failed("fail")
+        let tierCProfile = AgentModelConformanceProfile(
+            target: target,
+            plainChat: plainPass,
+            structuredJSON: fail,
+            toolCall: fail,
+            toolResultFollowUp: fail,
+            latency: pass
+        )
+        let tierBProfile = AgentModelConformanceProfile(
+            target: target,
+            plainChat: plainPass,
+            structuredJSON: pass,
+            toolCall: pass,
+            toolResultFollowUp: pass,
+            latency: pass
+        )
+        let unavailableProfile = AgentModelConformanceProfile(
+            target: target,
+            plainChat: .timedOut("plain timed out"),
+            structuredJSON: .skipped("not reached"),
+            toolCall: .skipped("not reached"),
+            toolResultFollowUp: .skipped("not reached"),
+            latency: .timedOut("timeout")
+        )
+
+        try expect(tierCProfile.derivedTier == .tierC, "plain chat plus failed JSON/tool probes should derive Tier C")
+        try expect(tierBProfile.derivedTier == .tierB, "structured JSON, tool-call, and tool-result probes should derive Tier B")
+        try expect(unavailableProfile.derivedTier == .unavailable, "plain chat failure should derive unavailable")
+        try expect(unavailableProfile.derivedTier.gatewayTier == .tierCPlainChat, "unavailable conformance should route as plain chat only")
+    }
+
+    private static func testLocalMLXDefaultsToPlainChatUntilChecked() async throws {
+        let adapter = fixtureAdapter(
+            id: AgentModelConformanceTarget.localMLXChatAdapterID,
+            providerKind: .mlxLocal,
+            modelName: "fixture/model-a",
+            toolCallingMode: .textProtocol,
+            structured: .bestEffort,
+            responses: [.finalAnswer("plain")]
+        )
+        let gateway = AgentModelGateway(adapters: [adapter])
+        let tier = await gateway.tier(adapterID: adapter.descriptor.id)
+        let toolResult = await gateway.response(
+            adapterID: adapter.descriptor.id,
+            request: request(mode: .constrainedStructuredText, tools: [readFileTool()])
+        )
+        let plainResult = await gateway.response(
+            adapterID: adapter.descriptor.id,
+            request: request(mode: .plainChat, tools: [readFileTool()])
+        )
+        let requests = await adapter.requests()
+
+        try expect(tier == .tierCPlainChat, "unchecked local MLX text protocol adapters should default to Tier C")
+        try expect(toolResult.failure?.kind == .unsupportedToolMode, "unchecked local MLX should reject tool-loop mode before adapter execution")
+        try expect(plainResult.response?.events == [.finalAnswer("plain")], "unchecked local MLX should remain usable for plain chat")
+        try expect(requests.count == 1, "only the plain chat request should reach the adapter")
+        try expect(requests.first?.tools.isEmpty == true, "plain chat should not receive tool schemas")
+        try expect(requests.first?.responseFormat == AgentKernelToolCallingModeV2.none, "plain chat should not request JSON protocol")
+    }
+
+    private static func testLocalMLXConformanceProfileEnablesTierB() async throws {
+        let target = mlxConformanceTarget(modelID: "fixture/model-b", modelPath: "/tmp/model-b")
+        let profile = tierBConformanceProfile(target: target)
+        let adapter = fixtureAdapter(
+            id: target.adapterID,
+            providerKind: .mlxLocal,
+            modelName: target.modelID,
+            toolCallingMode: .textProtocol,
+            structured: .bestEffort,
+            responses: [.toolCall(name: "read_file", arguments: ["path": "notes.txt"], reason: nil)]
+        )
+        let staticTier = AgentModelGateway.tier(for: adapter.capabilities, conformanceProfile: profile)
+        let gateway = AgentModelGateway(adapters: [adapter], conformanceProfiles: [profile])
+        let gatewayTier = await gateway.tier(adapterID: adapter.descriptor.id)
+        let result = await gateway.response(
+            adapterID: adapter.descriptor.id,
+            request: request(mode: .constrainedStructuredText, tools: [readFileTool()])
+        )
+
+        guard case .toolCall(let call)? = result.response?.events.first else {
+            throw HarnessError(description: "proved local MLX profile should allow constrained tool calls")
+        }
+        try expect(staticTier == .tierBConstrainedStructuredText, "matching conformance profile should make local MLX Tier B")
+        try expect(gatewayTier == .tierBConstrainedStructuredText, "gateway tier should consult the matching conformance profile")
+        try expect(call.name == "read_file", "proved local MLX should return the validated tool call")
+    }
+
+    private static func testLocalMLXNativeProfileUsesNativeToolRequests() async throws {
+        let target = mlxConformanceTarget(modelID: "fixture/model-native", modelPath: "/tmp/model-native")
+        let profile = tierBConformanceProfile(target: target)
+        let adapter = fixtureAdapter(
+            id: target.adapterID,
+            providerKind: .mlxLocal,
+            modelName: target.modelID,
+            toolCallingMode: .native,
+            structured: .bestEffort,
+            responses: [.toolCall(name: "read_file", arguments: ["path": "notes.txt"], reason: nil)]
+        )
+        let gateway = AgentModelGateway(adapters: [adapter], conformanceProfiles: [profile])
+        let result = await gateway.response(
+            adapterID: adapter.descriptor.id,
+            request: request(mode: .constrainedStructuredText, tools: [readFileTool()])
+        )
+        let lastRequest = await adapter.lastRequest()
+
+        guard case .toolCall(let call)? = result.response?.events.first else {
+            throw HarnessError(description: "proved native local MLX profile should allow constrained native tool calls")
+        }
+        try expect(call.name == "read_file", "native local MLX should return the validated tool call")
+        try expect(lastRequest?.responseFormat == .native, "profile-backed native local MLX should use native tool protocol")
+        try expect(lastRequest?.tools.map(\.name) == ["read_file"], "native local MLX should receive tool schemas")
+    }
+
+    private static func testConformanceRunnerRecordsProbeResults() async throws {
+        let target = mlxConformanceTarget(modelID: "fixture/model-c", modelPath: "/tmp/model-c")
+        let adapter = fixtureAdapter(
+            id: target.adapterID,
+            providerKind: .mlxLocal,
+            modelName: target.modelID,
+            toolCallingMode: .textProtocol,
+            structured: .bestEffort,
+            responses: [
+                .finalAnswer("4"),
+                .finalAnswer("structured-ok"),
+                .toolCall(name: "pixelpane_probe_echo", arguments: ["text": "probe-ok"], reason: nil),
+                .finalAnswer("probe-ok")
+            ]
+        )
+        let profile = await AgentModelConformanceRunner(perProbeTimeout: 2).run(
+            adapter: adapter,
+            target: target
+        )
+        let requests = await adapter.requests()
+
+        try expect(profile.derivedTier == .tierB, "passing conformance probes should record a Tier B profile")
+        try expect(profile.plainChat.status == .passed, "plain chat probe should pass")
+        try expect(profile.structuredJSON.status == .passed, "structured JSON probe should pass")
+        try expect(profile.toolCall.status == .passed, "tool-call probe should pass")
+        try expect(profile.toolResultFollowUp.status == .passed, "tool-result follow-up probe should pass")
+        try expect(profile.latency.durationSeconds != nil, "profile should record latency timing")
+        try expect(requests.count == 4, "conformance runner should issue four probes")
+        try expect(requests.map(\.responseFormat) == [.none, .textProtocol, .textProtocol, .textProtocol], "conformance should test plain chat separately from JSON/tool protocol")
+        try expect(requests[2].tools.map(\.name) == ["pixelpane_probe_echo"], "tool-call probe should use an explicit schema")
+    }
+
+    private static func testConformanceRunnerUsesNativeToolProbes() async throws {
+        let target = mlxConformanceTarget(modelID: "fixture/model-native-probes", modelPath: "/tmp/model-native-probes")
+        let adapter = fixtureAdapter(
+            id: target.adapterID,
+            providerKind: .mlxLocal,
+            modelName: target.modelID,
+            toolCallingMode: .native,
+            structured: .bestEffort,
+            responses: [
+                .finalAnswer("4"),
+                .finalAnswer("structured-ok"),
+                .toolCall(name: "pixelpane_probe_echo", arguments: ["text": "probe-ok"], reason: nil),
+                .finalAnswer("probe-ok")
+            ]
+        )
+        let profile = await AgentModelConformanceRunner(perProbeTimeout: 2).run(
+            adapter: adapter,
+            target: target
+        )
+        let requests = await adapter.requests()
+
+        try expect(profile.derivedTier == .tierB, "native tool conformance probes should derive Tier B after passing")
+        try expect(requests.map(\.responseFormat) == [.none, .textProtocol, .native, .native], "native adapters should use native tool probes while still checking structured JSON")
+        try expect(requests[2].tools.map(\.name) == ["pixelpane_probe_echo"], "native tool-call probe should use an explicit schema")
+        try expect(requests[3].messages.contains(where: { $0.role == .observation && $0.content.contains("probe-ok") }), "native tool-result probe should include the runtime observation")
+    }
+
+    private static func testNativeConformanceDoesNotRequireTextProtocolJSON() async throws {
+        let target = mlxConformanceTarget(modelID: "fixture/model-native-json-flake", modelPath: "/tmp/model-native-json-flake")
+        let adapter = fixtureAdapter(
+            id: target.adapterID,
+            providerKind: .mlxLocal,
+            modelName: target.modelID,
+            toolCallingMode: .native,
+            structured: .bestEffort,
+            responses: [
+                .finalAnswer("4"),
+                .malformedOutput("not-json"),
+                .toolCall(name: "pixelpane_probe_echo", arguments: ["text": "probe-ok"], reason: nil),
+                .finalAnswer("probe-ok")
+            ]
+        )
+        let profile = await AgentModelConformanceRunner(perProbeTimeout: 2).run(
+            adapter: adapter,
+            target: target
+        )
+
+        try expect(profile.structuredJSON.status == .failed, "fixture should reproduce a failed generic JSON probe")
+        try expect(profile.toolCall.status == .passed, "native tool-call probe should pass")
+        try expect(profile.toolResultFollowUp.status == .passed, "native tool-result follow-up probe should pass")
+        try expect(profile.derivedTier == .tierB, "native MLX tool readiness should not be vetoed by generic text-protocol JSON flake")
+    }
+
+    private static func testConformanceStoreUsesExactTarget() throws {
+        let defaultsName = "AgentModelGatewayFixture-\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: defaultsName) else {
+            throw HarnessError(description: "could not create fixture defaults")
+        }
+        defaults.removePersistentDomain(forName: defaultsName)
+        let store = AgentModelConformanceStore(defaults: defaults)
+        let firstTarget = mlxConformanceTarget(modelID: "fixture/model-d", modelPath: "/tmp/model-d")
+        let secondTarget = mlxConformanceTarget(modelID: "fixture/model-d", modelPath: "/tmp/other-model-d")
+        let profile = tierBConformanceProfile(target: firstTarget)
+
+        store.save(profile)
+
+        try expect(store.profile(for: firstTarget) == profile, "store should return the exact saved target profile")
+        try expect(store.profile(for: secondTarget) == nil, "changing the selected model path should not reuse the old profile")
+        defaults.removePersistentDomain(forName: defaultsName)
+    }
+
+    private static func testConformanceTimeoutFallsBackToPlainChatTier() async throws {
+        let target = mlxConformanceTarget(modelID: "fixture/model-e", modelPath: "/tmp/model-e")
+        let adapter = fixtureAdapter(
+            id: target.adapterID,
+            providerKind: .mlxLocal,
+            modelName: target.modelID,
+            toolCallingMode: .textProtocol,
+            structured: .bestEffort,
+            responses: [
+                .timeout,
+                .finalAnswer("unused"),
+                .toolCall(name: "pixelpane_probe_echo", arguments: ["text": "probe-ok"], reason: nil),
+                .finalAnswer("probe-ok")
+            ]
+        )
+        let profile = await AgentModelConformanceRunner(perProbeTimeout: 2).run(
+            adapter: adapter,
+            target: target
+        )
+        let tier = AgentModelGateway.tier(for: adapter.capabilities, conformanceProfile: profile)
+
+        try expect(profile.plainChat.status == .timedOut, "timeout result should be recorded in the profile")
+        try expect(profile.derivedTier == .unavailable, "plain chat timeout should derive unavailable conformance")
+        try expect(tier == .tierCPlainChat, "timeout conformance should leave routing at plain chat only")
     }
 
     private static func testFullAgentRequiresTierA() async throws {
@@ -362,7 +618,9 @@ enum AgentModelGatewayFixtureHarness {
 
     private static func fixtureAdapter(
         id: String = UUID().uuidString,
+        providerKind: AgentKernelModelProviderKindV2 = .fixture,
         route: AgentKernelModelRouteV2 = .local,
+        modelName: String? = nil,
         toolCallingMode: AgentKernelToolCallingModeV2 = .native,
         structured: AgentKernelStructuredOutputReliabilityV2 = .strict,
         limits: AgentKernelModelLimitsV2 = AgentKernelModelLimitsV2(contextWindowTokens: 8_192),
@@ -371,9 +629,10 @@ enum AgentModelGatewayFixtureHarness {
     ) -> FixtureAgentKernelAdapterV2 {
         let descriptor = AgentKernelModelDescriptorV2(
             id: id,
-            providerKind: .fixture,
+            providerKind: providerKind,
             route: route,
-            displayName: id
+            displayName: id,
+            modelName: modelName
         )
         let capabilities = AgentKernelModelAdapterCapabilitiesV2(
             descriptor: descriptor,
@@ -388,6 +647,35 @@ enum AgentModelGatewayFixtureHarness {
             descriptor: descriptor,
             capabilities: capabilities,
             responses: responses
+        )
+    }
+
+    private static func mlxConformanceTarget(
+        modelID: String,
+        modelPath: String
+    ) -> AgentModelConformanceTarget {
+        AgentModelConformanceTarget(
+            providerKind: .mlxLocal,
+            route: .local,
+            adapterID: AgentModelConformanceTarget.localMLXChatAdapterID,
+            modelID: modelID,
+            modelPath: modelPath,
+            runtimeExecutablePath: "/usr/local/bin/mlx_lm.generate",
+            runtimeVersion: nil
+        )
+    }
+
+    private static func tierBConformanceProfile(
+        target: AgentModelConformanceTarget
+    ) -> AgentModelConformanceProfile {
+        let pass = AgentModelConformanceProbeResult.passed("pass")
+        return AgentModelConformanceProfile(
+            target: target,
+            plainChat: pass,
+            structuredJSON: pass,
+            toolCall: pass,
+            toolResultFollowUp: pass,
+            latency: pass
         )
     }
 }
