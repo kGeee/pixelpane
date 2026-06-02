@@ -95,6 +95,26 @@ final class MLXTextBackend: AIBackend, @unchecked Sendable {
         )
     }
 
+    nonisolated func nativeToolResponse(
+        for request: AgentKernelModelAdapterRequestV2
+    ) async throws -> [AgentKernelModelAdapterEventV2] {
+        let promptCharacters = request.messages.reduce(0) { $0 + $1.content.count }
+        guard promptCharacters <= AIModelLimits.maxPromptCharacters else {
+            throw AIBackendError.promptTooLarge(maxCharacters: AIModelLimits.maxPromptCharacters)
+        }
+
+        let runtime = try resolveRuntime()
+        guard let serverExecutableURL = runtime.serverExecutableURL else {
+            throw AIBackendError.unavailable(.mlxRuntimeMissing)
+        }
+
+        return try await MLXTextServerManager.shared.nativeToolResponse(
+            request: request,
+            modelURL: runtime.snapshotURL,
+            executableURL: serverExecutableURL
+        )
+    }
+
     private nonisolated func resolveRuntime() throws -> MLXTextResolvedRuntime {
         guard let selection = store.selectedModel else {
             throw AIBackendError.unavailable(.mlxModelMissing)

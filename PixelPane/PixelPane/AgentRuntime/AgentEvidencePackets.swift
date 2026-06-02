@@ -8,6 +8,7 @@ nonisolated enum AgentEvidenceKind: String, Codable, Equatable, Sendable {
     case fileRead = "file.read"
     case commandOutput = "command.output"
     case localServer = "server.local"
+    case processSnapshot = "process.snapshot"
     case processState = "process.state"
     case temporalContext = "temporal.context"
     case visualContext = "visual.context"
@@ -160,6 +161,50 @@ nonisolated struct AgentLocalServerEvidence: Codable, Equatable, Sendable {
     }
 }
 
+nonisolated struct AgentLocalListenerSnapshotRow: Codable, Equatable, Sendable {
+    let port: Int
+    let listenAddress: String?
+    let pid: Int
+    let executableName: String
+    let workingDirectory: String?
+
+    init(
+        port: Int,
+        listenAddress: String? = nil,
+        pid: Int,
+        executableName: String,
+        workingDirectory: String? = nil
+    ) {
+        self.port = port
+        self.listenAddress = listenAddress
+        self.pid = pid
+        self.executableName = executableName
+        self.workingDirectory = workingDirectory
+    }
+}
+
+nonisolated struct AgentLocalListenerSnapshotEvidence: Codable, Equatable, Sendable {
+    let rows: [AgentLocalListenerSnapshotRow]
+    let requestedLimit: Int
+    let requestedPort: Int?
+    let requestedRootPath: String?
+    let source: String
+
+    init(
+        rows: [AgentLocalListenerSnapshotRow],
+        requestedLimit: Int,
+        requestedPort: Int? = nil,
+        requestedRootPath: String? = nil,
+        source: String = "/usr/sbin/lsof"
+    ) {
+        self.rows = rows
+        self.requestedLimit = requestedLimit
+        self.requestedPort = requestedPort
+        self.requestedRootPath = requestedRootPath
+        self.source = source
+    }
+}
+
 nonisolated struct AgentProcessStateEvidence: Codable, Equatable, Sendable {
     let processID: String
     let status: String
@@ -185,7 +230,114 @@ nonisolated struct AgentProcessStateEvidence: Codable, Equatable, Sendable {
     }
 }
 
+nonisolated struct AgentProcessSnapshotRow: Codable, Equatable, Sendable {
+    let pid: Int
+    let cpuPercent: Double
+    let memoryPercent: Double
+    let executableName: String
+
+    init(pid: Int, cpuPercent: Double, memoryPercent: Double, executableName: String) {
+        self.pid = pid
+        self.cpuPercent = cpuPercent
+        self.memoryPercent = memoryPercent
+        self.executableName = executableName
+    }
+}
+
+nonisolated struct AgentProcessSnapshotEvidence: Codable, Equatable, Sendable {
+    let rows: [AgentProcessSnapshotRow]
+    let requestedLimit: Int
+    let source: String
+
+    init(rows: [AgentProcessSnapshotRow], requestedLimit: Int, source: String = "/bin/ps") {
+        self.rows = rows
+        self.requestedLimit = requestedLimit
+        self.source = source
+    }
+}
+
+nonisolated struct AgentGrantInventoryEntry: Codable, Equatable, Sendable {
+    let grantID: String
+    let path: String
+    let displayName: String
+    let isDirectory: Bool
+
+    init(grantID: String, path: String, displayName: String, isDirectory: Bool) {
+        self.grantID = grantID
+        self.path = URL(fileURLWithPath: path).standardizedFileURL.path
+        self.displayName = displayName
+        self.isDirectory = isDirectory
+    }
+}
+
+nonisolated struct AgentGrantInventorySnapshot: Codable, Equatable, Sendable {
+    let entries: [AgentGrantInventoryEntry]
+    let source: String
+
+    init(entries: [AgentGrantInventoryEntry], source: String = "app-runtime") {
+        self.entries = entries
+        self.source = source
+    }
+}
+
+nonisolated struct AgentGrantInventoryProvider: Sendable {
+    init() {}
+
+    func snapshot(grants: [AgentLocalFileGrant]) -> AgentGrantInventorySnapshot {
+        AgentGrantInventorySnapshot(
+            entries: grants
+                .sorted { $0.path.localizedCaseInsensitiveCompare($1.path) == .orderedAscending }
+                .map { grant in
+                    AgentGrantInventoryEntry(
+                        grantID: grant.id.uuidString,
+                        path: grant.path,
+                        displayName: grant.url.lastPathComponent,
+                        isDirectory: grant.isDirectory
+                    )
+                }
+        )
+    }
+
+    static func sourceID(runID: UUID) -> String {
+        "file-grants:\(runID.uuidString)"
+    }
+
+    func observation(
+        snapshot: AgentGrantInventorySnapshot,
+        evidenceID: UUID,
+        artifactID: UUID? = nil,
+        characterLimit: Int
+    ) -> AgentRunText {
+        var lines = [
+            "Grant inventory",
+            "source: \(snapshot.source)",
+            "evidenceID: \(evidenceID.uuidString)"
+        ]
+        if let artifactID {
+            lines.append("artifactID: \(artifactID.uuidString)")
+        }
+        lines.append("entryCount: \(snapshot.entries.count)")
+        if snapshot.entries.isEmpty {
+            lines.append("No local files or folders have been granted.")
+        } else {
+            for entry in snapshot.entries {
+                let kind = entry.isDirectory ? "Folder" : "File"
+                lines.append("- \(kind): \(entry.path)")
+            }
+        }
+        return AgentRunText(lines.joined(separator: "\n"), characterLimit: characterLimit)
+    }
+}
+
 nonisolated enum AgentEvidenceClaimType: String, Codable, Equatable, Sendable {
+    case fileGrantListed = "file_grant_listed"
+    case processSnapshotRecorded = "process_snapshot_recorded"
+    case localListenerSnapshotRecorded = "local_listener_snapshot_recorded"
+    case localFileObserved = "local_file_observed"
+    case commandOutputRecorded = "command_output_recorded"
+    case sideEffectRecorded = "side_effect_recorded"
+    case temporalContextRecorded = "temporal_context_recorded"
+    case visualContextRecorded = "visual_context_recorded"
     case fileExists = "file_exists"
     case fileSearchFound = "file_search_found"
     case fileChanged = "file_changed"
@@ -333,6 +485,42 @@ actor AgentEvidenceRecorder {
             artifactID: artifactID,
             metadata: metadata,
             createdAt: createdAt
+        )
+    }
+
+    @discardableResult
+    func recordFileGrants(
+        runID: UUID,
+        stepID: UUID? = nil,
+        grants: [AgentLocalFileGrant]
+    ) async throws -> AgentRunEvidenceRecord {
+        let provider = AgentGrantInventoryProvider()
+        let snapshot = provider.snapshot(grants: grants)
+        let entries = snapshot.entries
+        let paths = entries.map(\.path)
+        let displayNames = entries.map(\.displayName)
+        let kinds = entries.map { "\($0.path)=\($0.isDirectory ? "folder" : "file")" }
+        return try await record(
+            AgentEvidencePacket(
+                sourceID: AgentGrantInventoryProvider.sourceID(runID: runID),
+                kind: .fileGrant,
+                summary: AgentRunText("Listed \(entries.count) granted local location(s)."),
+                artifactData: try encoder.encode(snapshot),
+                privacyClass: .localFile,
+                trustClass: .appControl,
+                metadata: [
+                    "grantCount": .int(entries.count),
+                    "entryCount": .int(entries.count),
+                    "path": .string(paths.first ?? ""),
+                    "paths": .string(paths.joined(separator: "\n")),
+                    "displayNames": .string(displayNames.joined(separator: "\n")),
+                    "grantIDs": .string(entries.map(\.grantID).joined(separator: "\n")),
+                    "kinds": .string(kinds.joined(separator: "\n")),
+                    "source": .string(snapshot.source)
+                ]
+            ),
+            runID: runID,
+            stepID: stepID
         )
     }
 
@@ -572,6 +760,54 @@ actor AgentEvidenceRecorder {
     }
 
     @discardableResult
+    func recordLocalListenerSnapshot(
+        runID: UUID,
+        stepID: UUID? = nil,
+        snapshot: AgentLocalListenerSnapshotEvidence
+    ) async throws -> AgentRunEvidenceRecord {
+        var metadata: [String: AgentRunMetadataValue] = [
+            "isListening": .bool(!snapshot.rows.isEmpty),
+            "rowCount": .int(snapshot.rows.count),
+            "requestedLimit": .int(snapshot.requestedLimit),
+            "source": .string(snapshot.source)
+        ]
+        if let requestedPort = snapshot.requestedPort {
+            metadata["requestedPort"] = .int(requestedPort)
+            metadata["port"] = .int(requestedPort)
+        }
+        if let requestedRootPath = snapshot.requestedRootPath {
+            metadata["requestedRootPath"] = .string(requestedRootPath)
+        }
+        if let top = snapshot.rows.first {
+            metadata["port"] = .int(top.port)
+            metadata["processID"] = .string(String(top.pid))
+            metadata["pid"] = .int(top.pid)
+            metadata["executableName"] = .string(top.executableName)
+            if let listenAddress = top.listenAddress {
+                metadata["listenAddress"] = .string(listenAddress)
+            }
+            if let workingDirectory = top.workingDirectory {
+                metadata["workingDirectory"] = .string(workingDirectory)
+            }
+        }
+
+        let scopedText = snapshot.requestedPort.map { " for port \($0)" } ?? ""
+        return try await record(
+            AgentEvidencePacket(
+                sourceID: "local-listener-snapshot:\(runID.uuidString)",
+                kind: .localServer,
+                summary: AgentRunText("Recorded \(snapshot.rows.count) local listener row(s)\(scopedText)."),
+                artifactData: try encoder.encode(snapshot),
+                privacyClass: .localNetwork,
+                trustClass: .toolObservation,
+                metadata: metadata
+            ),
+            runID: runID,
+            stepID: stepID
+        )
+    }
+
+    @discardableResult
     func recordProcessState(
         runID: UUID,
         stepID: UUID? = nil,
@@ -592,6 +828,39 @@ actor AgentEvidenceRecorder {
                 kind: .processState,
                 summary: AgentRunText("Process \(process.processID) is \(process.status)."),
                 artifactData: try encoder.encode(process),
+                privacyClass: .terminalOutput,
+                trustClass: .toolObservation,
+                metadata: metadata
+            ),
+            runID: runID,
+            stepID: stepID
+        )
+    }
+
+    @discardableResult
+    func recordProcessSnapshot(
+        runID: UUID,
+        stepID: UUID? = nil,
+        snapshot: AgentProcessSnapshotEvidence
+    ) async throws -> AgentRunEvidenceRecord {
+        var metadata: [String: AgentRunMetadataValue] = [
+            "rowCount": .int(snapshot.rows.count),
+            "requestedLimit": .int(snapshot.requestedLimit),
+            "source": .string(snapshot.source)
+        ]
+        if let top = snapshot.rows.first {
+            metadata["topPID"] = .int(top.pid)
+            metadata["topExecutable"] = .string(top.executableName)
+            metadata["topCPUPercent"] = .double(top.cpuPercent)
+            metadata["topMemoryPercent"] = .double(top.memoryPercent)
+        }
+
+        return try await record(
+            AgentEvidencePacket(
+                sourceID: "process-snapshot:\(runID.uuidString)",
+                kind: .processSnapshot,
+                summary: AgentRunText("Recorded \(snapshot.rows.count) running process snapshot row(s)."),
+                artifactData: try encoder.encode(snapshot),
                 privacyClass: .terminalOutput,
                 trustClass: .toolObservation,
                 metadata: metadata
@@ -726,6 +995,92 @@ nonisolated struct AgentEvidenceController: Sendable {
 
     func verify(_ claim: AgentEvidenceClaim, evidence: [AgentRunEvidenceRecord]) -> AgentEvidenceSupportDecision {
         switch claim.type {
+        case .fileGrantListed:
+            return matching(
+                claim,
+                evidence: evidence,
+                kinds: [.fileGrant],
+                predicate: { record in
+                    matchesTarget(record.stringMetadata("path"), claim.target)
+                        || matchesLine(in: record.stringMetadata("paths"), target: claim.target)
+                        || matchesLine(in: record.stringMetadata("displayNames"), target: claim.target)
+                },
+                missing: "File-grant claims need grant-list evidence."
+            )
+        case .processSnapshotRecorded:
+            return matching(
+                claim,
+                evidence: evidence,
+                kinds: [.processSnapshot],
+                predicate: { record in
+                    (record.intMetadata("rowCount") ?? -1) >= 0
+                        && (matchesTarget(record.stringMetadata("topExecutable"), claim.target)
+                            || matchesTarget(record.intMetadata("topPID").map(String.init), claim.target))
+                },
+                missing: "Process snapshot claims need process snapshot evidence."
+            )
+        case .localListenerSnapshotRecorded:
+            return matching(
+                claim,
+                evidence: evidence,
+                kinds: [.localServer],
+                predicate: { record in
+                    if let target = claim.target, let port = Int(target) {
+                        return record.intMetadata("port") == port
+                    }
+                    return matchesTarget(record.stringMetadata("url"), claim.target)
+                        || matchesTarget(record.intMetadata("port").map(String.init), claim.target)
+                },
+                missing: "Local listener claims need listener snapshot evidence."
+            )
+        case .localFileObserved:
+            return matching(
+                claim,
+                evidence: evidence,
+                kinds: [.fileRead, .fileSearch, .folderList],
+                predicate: { record in
+                    guard let target = claim.target, !target.isEmpty else { return true }
+                    return record.stringMetadata("path") == target
+                        || record.stringMetadata("topPath") == target
+                        || record.stringMetadata("paths")?.split(separator: "\n").map(String.init).contains(target) == true
+                },
+                missing: "Local-file claims need file evidence."
+            )
+        case .commandOutputRecorded:
+            return matching(
+                claim,
+                evidence: evidence,
+                kinds: [.commandOutput],
+                predicate: { record in matchesTarget(record.stringMetadata("command"), claim.target) },
+                missing: "Command-output claims need command output evidence."
+            )
+        case .sideEffectRecorded:
+            return matching(
+                claim,
+                evidence: evidence,
+                kinds: [.sideEffect],
+                predicate: { record in
+                    matchesTarget(record.stringMetadata("sideEffectID"), claim.target)
+                        || matchesTarget(record.stringMetadata("targetPath"), claim.target)
+                },
+                missing: "Side-effect claims need side-effect evidence."
+            )
+        case .temporalContextRecorded:
+            return matching(
+                claim,
+                evidence: evidence,
+                kinds: [.temporalContext],
+                predicate: { record in matchesTarget(record.stringMetadata("currentDate"), claim.target) },
+                missing: "Temporal claims need temporal context evidence."
+            )
+        case .visualContextRecorded:
+            return matching(
+                claim,
+                evidence: evidence,
+                kinds: [.visualContext],
+                predicate: { record in matchesTarget(record.stringMetadata("source"), claim.target) },
+                missing: "Visual-context claims need visual context evidence."
+            )
         case .fileExists:
             return matching(
                 claim,
@@ -796,10 +1151,16 @@ nonisolated struct AgentEvidenceController: Sendable {
             return matching(
                 claim,
                 evidence: evidence,
-                kinds: [.processState, .sideEffect],
+                kinds: [.processState, .processSnapshot, .sideEffect],
                 predicate: { record in
-                    matchesTarget(record.stringMetadata("processID"), claim.target)
-                        && (record.stringMetadata("status") == "running" || record.stringMetadata("status") == AgentRunSideEffectStatus.completed.rawValue)
+                    if record.kind == AgentEvidenceKind.processSnapshot.rawValue {
+                        return (record.intMetadata("rowCount") ?? 0) > 0
+                            && (matchesTarget(record.stringMetadata("topExecutable"), claim.target)
+                                || matchesTarget(record.intMetadata("topPID").map(String.init), claim.target))
+                    }
+                    return matchesTarget(record.stringMetadata("processID"), claim.target)
+                        && (record.stringMetadata("status") == "running"
+                            || record.stringMetadata("status") == AgentRunSideEffectStatus.completed.rawValue)
                 },
                 missing: "Process-running claims need running process evidence."
             )
@@ -894,8 +1255,10 @@ nonisolated struct AgentEvidenceController: Sendable {
                 record.summary.text,
                 record.stringMetadata("path") ?? "",
                 record.stringMetadata("paths") ?? "",
+                record.stringMetadata("displayNames") ?? "",
                 record.stringMetadata("url") ?? "",
-                record.stringMetadata("command") ?? ""
+                record.stringMetadata("command") ?? "",
+                record.stringMetadata("topExecutable") ?? ""
             ].joined(separator: "\n").lowercased()
             let termScore = terms.isEmpty ? 1 : terms.reduce(0) { partial, term in
                 partial + (fieldText.contains(term) ? 1 : 0)
@@ -958,11 +1321,17 @@ nonisolated struct AgentEvidenceController: Sendable {
         return value == target
     }
 
+    private func matchesLine(in value: String?, target: String?) -> Bool {
+        guard let target, !target.isEmpty else { return value != nil }
+        guard let value else { return false }
+        return value.split(separator: "\n").map(String.init).contains(target)
+    }
+
     private func score(kind: AgentEvidenceKind) -> Int {
         switch kind {
         case .fileRead, .fileSearch, .localServer, .sideEffect:
             100
-        case .commandOutput, .processState, .temporalContext, .folderList:
+        case .commandOutput, .processSnapshot, .processState, .temporalContext, .folderList:
             80
         case .terminalState, .approval, .evidenceRequirement:
             60
@@ -976,8 +1345,11 @@ nonisolated struct AgentEvidenceController: Sendable {
         for key in [
             "path", "paths", "topPath", "query", "command", "workingDirectory", "exitCode",
             "didTimeOut", "port", "url", "httpStatusCode", "isListening", "processID",
+            "pid", "listenAddress", "requestedPort", "requestedRootPath", "executableName",
+            "rowCount", "topPID", "topExecutable", "topCPUPercent", "topMemoryPercent",
             "status", "sideEffectID", "targetPath", "operation", "currentDate", "localTime",
-            "weekday", "timeZone", "utcOffset", "source"
+            "weekday", "timeZone", "utcOffset", "source", "grantCount", "entryCount",
+            "displayNames", "grantIDs", "kinds"
         ] {
             if let value = record.metadata[key] {
                 fields[key] = value

@@ -159,10 +159,67 @@ nonisolated struct AgentKernelToolCallV2: Codable, Equatable, Identifiable, Send
     }
 }
 
+nonisolated enum AgentKernelAnswerGroundingBasisV2: String, Codable, Equatable, Sendable {
+    case generalKnowledge = "general_knowledge"
+    case localEvidence = "local_evidence"
+    case capabilityLimitation = "capability_limitation"
+}
+
+nonisolated enum AgentKernelAnswerClaimKindV2: String, Codable, Equatable, Hashable, Sendable {
+    case fileGrants = "file_grants"
+    case processSnapshot = "process_snapshot"
+    case localListeners = "local_listeners"
+    case localFile = "local_file"
+    case commandOutput = "command_output"
+    case sideEffect = "side_effect"
+    case temporalContext = "temporal_context"
+    case visualContext = "visual_context"
+}
+
+nonisolated struct AgentKernelAnswerClaimV2: Codable, Equatable, Sendable {
+    let kind: AgentKernelAnswerClaimKindV2
+    let target: String?
+
+    nonisolated init(kind: AgentKernelAnswerClaimKindV2, target: String? = nil) {
+        self.kind = kind
+        self.target = target
+    }
+}
+
+nonisolated struct AgentKernelAnswerGroundingV2: Codable, Equatable, Sendable {
+    let basis: AgentKernelAnswerGroundingBasisV2
+    let claims: [AgentKernelAnswerClaimV2]
+
+    nonisolated init(
+        basis: AgentKernelAnswerGroundingBasisV2,
+        claims: [AgentKernelAnswerClaimV2] = []
+    ) {
+        self.basis = basis
+        self.claims = claims
+    }
+}
+
+nonisolated struct AgentKernelFinalAnswerV2: Codable, Equatable, Sendable {
+    let text: String
+    let grounding: AgentKernelAnswerGroundingV2?
+
+    nonisolated init(
+        text: String,
+        grounding: AgentKernelAnswerGroundingV2? = nil
+    ) {
+        self.text = text
+        self.grounding = grounding
+    }
+}
+
 nonisolated enum AgentKernelModelEventV2: Codable, Equatable, Sendable {
-    case finalAnswer(String)
+    case finalAnswer(AgentKernelFinalAnswerV2)
     case toolCall(AgentKernelToolCallV2)
     case malformedOutput(String)
     case emptyOutput
     case timedOut
+
+    nonisolated static func finalAnswer(_ text: String) -> Self {
+        .finalAnswer(AgentKernelFinalAnswerV2(text: text))
+    }
 }

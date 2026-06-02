@@ -167,18 +167,22 @@ struct AgentKernelModelAdapterRequestV2: Codable, Equatable, Identifiable, Senda
 
 enum AgentKernelModelAdapterEventV2: Codable, Equatable, Sendable {
     case snapshot(String)
-    case finalAnswer(String)
+    case finalAnswer(AgentKernelFinalAnswerV2)
     case toolCall(AgentKernelToolCallV2)
     case malformedOutput(String)
     case emptyOutput
     case timedOut
 
+    nonisolated static func finalAnswer(_ text: String) -> Self {
+        .finalAnswer(AgentKernelFinalAnswerV2(text: text))
+    }
+
     nonisolated var modelEvent: AgentKernelModelEventV2? {
         switch self {
         case .snapshot:
             nil
-        case .finalAnswer(let text):
-            .finalAnswer(text)
+        case .finalAnswer(let answer):
+            .finalAnswer(answer)
         case .toolCall(let call):
             .toolCall(call)
         case .malformedOutput(let text):

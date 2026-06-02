@@ -303,6 +303,7 @@ final class AgentRunViewModel: ObservableObject {
         mode: AgentModelGatewayMode = .plainChat,
         tools: [AgentKernelToolSchemaV2] = [],
         toolContext: AgentToolRunContext = .plainChat,
+        modelConformanceProfile: AgentModelConformanceProfile? = nil,
         attachments: [AgentKernelModelAttachmentV2] = [],
         systemPrompt: String? = nil,
         maxOutputTokens: Int = 1_024,
@@ -345,7 +346,10 @@ final class AgentRunViewModel: ObservableObject {
                 )
             )
         )
-        let gateway = AgentModelGateway(adapters: [adapter])
+        let gateway = AgentModelGateway(
+            adapters: [adapter],
+            conformanceProfiles: modelConformanceProfile.map { [$0] } ?? []
+        )
         let orchestrator = AgentToolOrchestrator(
             store: store,
             gateway: gateway,
@@ -430,7 +434,8 @@ final class AgentRunViewModel: ObservableObject {
 
     func approveWait(
         _ waitID: UUID,
-        adapter: any AgentKernelModelAdapterV2
+        adapter: any AgentKernelModelAdapterV2,
+        modelConformanceProfile: AgentModelConformanceProfile? = nil
     ) async throws {
         try await approveWait(
             waitID,
@@ -438,7 +443,8 @@ final class AgentRunViewModel: ObservableObject {
             context: AgentRunViewContext(title: "Assistant"),
             mode: .plainChat,
             tools: [],
-            toolContext: .plainChat
+            toolContext: .plainChat,
+            modelConformanceProfile: modelConformanceProfile
         )
     }
 
@@ -449,6 +455,7 @@ final class AgentRunViewModel: ObservableObject {
         mode: AgentModelGatewayMode,
         tools: [AgentKernelToolSchemaV2],
         toolContext: AgentToolRunContext,
+        modelConformanceProfile: AgentModelConformanceProfile? = nil,
         attachments: [AgentKernelModelAttachmentV2] = [],
         systemPrompt: String? = nil,
         maxOutputTokens: Int = 1_024,
@@ -489,7 +496,10 @@ final class AgentRunViewModel: ObservableObject {
                 toolContext: toolContext
             )
         )
-        let gateway = AgentModelGateway(adapters: [adapter])
+        let gateway = AgentModelGateway(
+            adapters: [adapter],
+            conformanceProfiles: modelConformanceProfile.map { [$0] } ?? []
+        )
         let orchestrator = AgentToolOrchestrator(
             store: store,
             gateway: gateway,
@@ -522,7 +532,8 @@ final class AgentRunViewModel: ObservableObject {
 
     func denyWait(
         _ waitID: UUID,
-        adapter: any AgentKernelModelAdapterV2
+        adapter: any AgentKernelModelAdapterV2,
+        modelConformanceProfile: AgentModelConformanceProfile? = nil
     ) async throws {
         try await denyWait(
             waitID,
@@ -530,7 +541,8 @@ final class AgentRunViewModel: ObservableObject {
             context: AgentRunViewContext(title: "Assistant"),
             mode: .plainChat,
             tools: [],
-            toolContext: .plainChat
+            toolContext: .plainChat,
+            modelConformanceProfile: modelConformanceProfile
         )
     }
 
@@ -541,6 +553,7 @@ final class AgentRunViewModel: ObservableObject {
         mode: AgentModelGatewayMode,
         tools: [AgentKernelToolSchemaV2],
         toolContext: AgentToolRunContext,
+        modelConformanceProfile: AgentModelConformanceProfile? = nil,
         attachments: [AgentKernelModelAttachmentV2] = [],
         systemPrompt: String? = nil,
         maxOutputTokens: Int = 1_024,
@@ -581,7 +594,10 @@ final class AgentRunViewModel: ObservableObject {
                 toolContext: toolContext
             )
         )
-        let gateway = AgentModelGateway(adapters: [adapter])
+        let gateway = AgentModelGateway(
+            adapters: [adapter],
+            conformanceProfiles: modelConformanceProfile.map { [$0] } ?? []
+        )
         let orchestrator = AgentToolOrchestrator(
             store: store,
             gateway: gateway,
@@ -932,7 +948,12 @@ final class AgentRunViewModel: ObservableObject {
     private nonisolated static func finalAnswer(from events: [AgentKernelModelAdapterEventV2]) -> String? {
         for event in events.reversed() {
             switch event {
-            case .finalAnswer(let text), .snapshot(let text):
+            case .finalAnswer(let answer):
+                let trimmed = answer.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    return trimmed
+                }
+            case .snapshot(let text):
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty {
                     return trimmed

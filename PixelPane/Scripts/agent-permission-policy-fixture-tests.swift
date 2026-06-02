@@ -24,7 +24,7 @@ enum AgentPermissionPolicyFixtureHarness {
 
     private static func testCatalogFiltering() throws {
         let catalog = AgentToolCatalog()
-        let grants = [grant("/Users/test/project", isDirectory: true, access: .readWrite)]
+        let grants = [grant("/Users/test/project", isDirectory: true)]
 
         let tierCNames = catalog.visibleModelSchemas(
             providerTier: .tierCPlainChat,
@@ -42,7 +42,9 @@ enum AgentPermissionPolicyFixtureHarness {
         ).map(\.name)
         try expect(tierBNames.contains("read_file"), "Tier B full-agent mode should expose read tools")
         try expect(!tierBNames.contains("stage_write_proposal"), "Tier B full-agent mode should not expose write proposal staging")
-        try expect(tierBNames.contains("run_finite_command"), "Tier B full-agent mode should expose the generic finite command tool")
+        try expect(tierBNames.contains("get_process_snapshot"), "Tier B full-agent mode should expose process snapshots")
+        try expect(tierBNames.contains("get_local_listener_snapshot"), "Tier B full-agent mode should expose local listener snapshots")
+        try expect(!tierBNames.contains("run_finite_command"), "Tier B full-agent mode should not expose raw shell")
 
         let tierBProposalNames = catalog.visibleModelSchemas(
             providerTier: .tierBConstrainedStructuredText,
@@ -51,15 +53,28 @@ enum AgentPermissionPolicyFixtureHarness {
             grantedScopes: [.visualContext]
         ).map(\.name)
         try expect(tierBProposalNames.contains("stage_write_proposal"), "Tier B proposal mode should expose write proposal staging")
+        try expect(tierBProposalNames.contains("get_process_snapshot"), "Tier B proposal mode should expose process snapshots")
+        try expect(tierBProposalNames.contains("get_local_listener_snapshot"), "Tier B proposal mode should expose local listener snapshots")
+        try expect(!tierBProposalNames.contains("run_finite_command"), "Tier B proposal mode should not expose raw shell")
 
-        let readOnlyGrantNames = catalog.visibleModelSchemas(
+        let tierBReadOnlyNames = catalog.visibleModelSchemas(
             providerTier: .tierBConstrainedStructuredText,
-            runMode: .proposalOnly,
-            localGrants: [grant("/Users/test/read-only-project", isDirectory: true, access: .readOnly)],
+            runMode: .readOnly,
+            localGrants: grants,
             grantedScopes: [.visualContext]
         ).map(\.name)
-        try expect(readOnlyGrantNames.contains("read_file"), "read-only folder grants should expose read tools")
-        try expect(!readOnlyGrantNames.contains("stage_write_proposal"), "read-only folder grants should not expose write proposal staging")
+        try expect(tierBReadOnlyNames.contains("get_process_snapshot"), "Tier B read-only mode should expose process snapshots")
+        try expect(tierBReadOnlyNames.contains("get_local_listener_snapshot"), "Tier B read-only mode should expose local listener snapshots")
+        try expect(!tierBReadOnlyNames.contains("run_finite_command"), "Tier B read-only mode should not expose raw shell")
+
+        let grantedFolderNames = catalog.visibleModelSchemas(
+            providerTier: .tierBConstrainedStructuredText,
+            runMode: .proposalOnly,
+            localGrants: [grant("/Users/test/project", isDirectory: true)],
+            grantedScopes: [.visualContext]
+        ).map(\.name)
+        try expect(grantedFolderNames.contains("read_file"), "granted folders should expose read tools")
+        try expect(grantedFolderNames.contains("stage_write_proposal"), "granted folders should expose write proposal staging")
 
         let tierANames = catalog.visibleModelSchemas(
             providerTier: .tierAFullAgent,
@@ -68,6 +83,28 @@ enum AgentPermissionPolicyFixtureHarness {
             grantedScopes: [.processControl, .visualContext]
         ).map(\.name)
         try expect(tierANames.contains("run_finite_command"), "Tier A full agent should expose finite commands")
+        try expect(tierANames.contains("get_process_snapshot"), "Tier A full agent should expose process snapshots")
+        try expect(tierANames.contains("get_local_listener_snapshot"), "Tier A full agent should expose local listener snapshots")
+
+        let tierAReadOnlyNames = catalog.visibleModelSchemas(
+            providerTier: .tierAFullAgent,
+            runMode: .readOnly,
+            localGrants: grants,
+            grantedScopes: [.processControl, .visualContext]
+        ).map(\.name)
+        try expect(tierAReadOnlyNames.contains("get_process_snapshot"), "Tier A read-only mode should expose process snapshots")
+        try expect(tierAReadOnlyNames.contains("get_local_listener_snapshot"), "Tier A read-only mode should expose local listener snapshots")
+        try expect(!tierAReadOnlyNames.contains("run_finite_command"), "Tier A read-only mode should hide raw shell")
+
+        let tierAProposalNames = catalog.visibleModelSchemas(
+            providerTier: .tierAFullAgent,
+            runMode: .proposalOnly,
+            localGrants: grants,
+            grantedScopes: [.processControl, .visualContext]
+        ).map(\.name)
+        try expect(tierAProposalNames.contains("get_process_snapshot"), "Tier A proposal mode should expose process snapshots")
+        try expect(tierAProposalNames.contains("get_local_listener_snapshot"), "Tier A proposal mode should expose local listener snapshots")
+        try expect(!tierAProposalNames.contains("run_finite_command"), "Tier A proposal mode should hide raw shell")
 
         let deniedProcessNames = catalog.visibleModelSchemas(
             providerTier: .tierAFullAgent,
@@ -88,6 +125,25 @@ enum AgentPermissionPolicyFixtureHarness {
         try expect(!executableNames.contains("start_process"), "unsupported process start should not be model-visible")
         try expect(!executableNames.contains("describe_visual_context"), "unsupported visual context should not be model-visible")
         try expect(executableNames.contains("run_finite_command"), "supported command executor should remain model-visible")
+        try expect(executableNames.contains("get_process_snapshot"), "supported process snapshot executor should remain model-visible")
+        try expect(executableNames.contains("get_local_listener_snapshot"), "supported local listener executor should remain model-visible")
+
+        let noProcessSnapshotNames = catalog.visibleModelSchemas(
+            providerTier: .tierAFullAgent,
+            runMode: .readOnly,
+            localGrants: grants,
+            supportedOperations: [.fileGrantList, .fileList, .fileSearch, .fileRead, .finiteCommand, .localServerDiscovery]
+        ).map(\.name)
+        try expect(!noProcessSnapshotNames.contains("get_process_snapshot"), "unsupported process snapshot operation should be hidden")
+        try expect(noProcessSnapshotNames.contains("get_local_listener_snapshot"), "unrelated unsupported process snapshot operation should not hide listener snapshots")
+
+        let noListenerSnapshotNames = catalog.visibleModelSchemas(
+            providerTier: .tierAFullAgent,
+            runMode: .readOnly,
+            localGrants: grants,
+            supportedOperations: [.fileGrantList, .fileList, .fileSearch, .fileRead, .finiteCommand, .processSnapshot]
+        ).map(\.name)
+        try expect(!noListenerSnapshotNames.contains("get_local_listener_snapshot"), "unsupported local listener operation should be hidden")
 
         let noWriteOperationNames = catalog.visibleModelSchemas(
             providerTier: .tierBConstrainedStructuredText,
@@ -100,11 +156,11 @@ enum AgentPermissionPolicyFixtureHarness {
         let visibilityDiagnostics = catalog.visibilityDiagnostics(
             providerTier: .tierBConstrainedStructuredText,
             runMode: .proposalOnly,
-            localGrants: [grant("/Users/test/read-only-project", isDirectory: true, access: .readOnly)]
+            localGrants: []
         )
         try expect(
-            visibilityDiagnostics.contains("tool.stage_write_proposal=withheld:missingWriteGrant"),
-            "tool visibility diagnostics should explain why write staging was withheld"
+            visibilityDiagnostics.contains("tool.stage_write_proposal=withheld:missingFileGrant"),
+            "tool visibility diagnostics should explain why write staging was withheld without a grant"
         )
     }
 
@@ -118,8 +174,8 @@ enum AgentPermissionPolicyFixtureHarness {
         try FileManager.default.createDirectory(at: specific, withIntermediateDirectories: true)
 
         let grants = [
-            grant(broad.path, isDirectory: true, access: .readWrite),
-            grant(specific.path, isDirectory: true, access: .readWrite)
+            grant(broad.path, isDirectory: true),
+            grant(specific.path, isDirectory: true)
         ]
         let resolver = AgentLocalPathResolver()
 
@@ -155,7 +211,7 @@ enum AgentPermissionPolicyFixtureHarness {
         let resolver = AgentLocalPathResolver()
         let result = resolver.resolve(
             "~/Documents/random-tests/notes.txt",
-            grants: [grant(workspace.path, isDirectory: true, access: .readWrite)],
+            grants: [grant(workspace.path, isDirectory: true)],
             access: .read,
             target: .any
         )
@@ -206,7 +262,7 @@ enum AgentPermissionPolicyFixtureHarness {
 
     private static func testWriteProposalApprovalPolicy() throws {
         let policy = AgentPermissionPolicy()
-        let grants = [grant("/Users/test/project", isDirectory: true, access: .readWrite)]
+        let grants = [grant("/Users/test/project", isDirectory: true)]
         let arguments = [
             "operation": "replace",
             "targetPath": "/Users/test/project/notes.md",
@@ -257,7 +313,7 @@ enum AgentPermissionPolicyFixtureHarness {
 
     private static func testCommandPolicy() throws {
         let policy = AgentPermissionPolicy()
-        let grants = [grant("/Users/test/project", isDirectory: true, access: .readWrite)]
+        let grants = [grant("/Users/test/project", isDirectory: true)]
 
         let safeCommand = policy.decision(
             for: request(
@@ -266,7 +322,17 @@ enum AgentPermissionPolicyFixtureHarness {
                 localGrants: grants
             )
         )
-        try expect(safeCommand.kind == .allow, "safe read-only command should be allowed")
+        try expect(safeCommand.kind == .deny && safeCommand.reason == .runModeDisallowsTool, "raw shell should be hidden and denied outside full-agent mode")
+
+        let missingWorkingDirectory = policy.decision(
+            for: request(
+                runMode: .fullAgent,
+                toolName: "run_finite_command",
+                arguments: ["command": "git status --short"],
+                localGrants: grants
+            )
+        )
+        try expect(missingWorkingDirectory.kind == .deny && missingWorkingDirectory.reason == .missingRequiredArgument, "raw shell should require an explicit granted working directory")
 
         let rawCommand = policy.decision(
             for: request(
@@ -286,7 +352,7 @@ enum AgentPermissionPolicyFixtureHarness {
                 localGrants: grants
             )
         )
-        try expect(rawReadOnly.kind == .deny && rawReadOnly.reason == .rawShellRequiresApproval, "raw shell should be denied in read-only mode")
+        try expect(rawReadOnly.kind == .deny && rawReadOnly.reason == .runModeDisallowsTool, "raw shell should be denied in read-only mode")
 
         let installCommand = policy.decision(
             for: request(
@@ -341,17 +407,27 @@ enum AgentPermissionPolicyFixtureHarness {
 
     private static func testProcessAndLocalServerPolicy() throws {
         let policy = AgentPermissionPolicy()
-        let grants = [grant("/Users/test/project", isDirectory: true, access: .readWrite)]
+        let grants = [grant("/Users/test/project", isDirectory: true)]
 
         let topProcesses = policy.decision(
             for: request(
                 providerTier: .tierBConstrainedStructuredText,
-                toolName: "run_finite_command",
-                arguments: ["command": "ps -axo pid,pcpu,pmem,comm -r"],
+                toolName: "get_process_snapshot",
+                arguments: ["limit": "12"],
                 localGrants: []
             )
         )
-        try expect(topProcesses.kind == .allow, "top-process inspection should emerge from the generic command tool")
+        try expect(topProcesses.kind == .allow && topProcesses.reason == .allowed, "typed process snapshots should be allowed without shell approval")
+
+        let listeners = policy.decision(
+            for: request(
+                providerTier: .tierBConstrainedStructuredText,
+                toolName: "get_local_listener_snapshot",
+                arguments: ["limit": "12"],
+                localGrants: []
+            )
+        )
+        try expect(listeners.kind == .allow && listeners.reason == .allowed, "typed local listener snapshots should be allowed without shell approval")
 
         let localhostListeners = policy.decision(
             for: request(
@@ -361,7 +437,7 @@ enum AgentPermissionPolicyFixtureHarness {
                 localGrants: []
             )
         )
-        try expect(localhostListeners.kind == .allow, "localhost listener inspection should emerge from the generic command tool")
+        try expect(localhostListeners.kind == .deny && localhostListeners.reason == .providerTierDisallowsTool, "Tier B should not be able to request raw shell")
 
         let startProcess = policy.decision(
             for: request(
@@ -391,8 +467,8 @@ enum AgentPermissionPolicyFixtureHarness {
         let malformedInteger = policy.decision(
             for: request(
                 providerTier: .tierBConstrainedStructuredText,
-                toolName: "run_finite_command",
-                arguments: ["command": "ps -axo pid,pcpu,pmem,comm -r", "timeoutSeconds": "not-a-timeout"],
+                toolName: "get_process_snapshot",
+                arguments: ["limit": "not-a-limit"],
                 localGrants: grants
             )
         )
@@ -428,13 +504,41 @@ enum AgentPermissionPolicyFixtureHarness {
                     "targetPath": "/Users/test/project/new.md",
                     "content": "hello"
                 ],
-                localGrants: [grant("/Users/test/project", isDirectory: true, access: .readWrite)],
-                supportedOperations: [.fileGrantList, .fileList, .fileSearch, .fileRead, .finiteCommand]
+                localGrants: [grant("/Users/test/project", isDirectory: true)],
+                supportedOperations: [.fileGrantList, .fileList, .fileSearch, .fileRead, .finiteCommand, .processSnapshot]
             )
         )
         try expect(
             unsupportedOperation.kind == .deny && unsupportedOperation.reason == .unsupportedOperation,
             "permission policy should deny tool calls whose operation is not supported by the active executor"
+        )
+
+        let unsupportedProcessSnapshot = policy.decision(
+            for: request(
+                providerTier: .tierBConstrainedStructuredText,
+                toolName: "get_process_snapshot",
+                arguments: ["limit": "8"],
+                localGrants: [],
+                supportedOperations: [.fileGrantList, .fileList, .fileSearch, .fileRead, .finiteCommand]
+            )
+        )
+        try expect(
+            unsupportedProcessSnapshot.kind == .deny && unsupportedProcessSnapshot.reason == .unsupportedOperation,
+            "permission policy should deny unsupported process snapshot calls"
+        )
+
+        let unsupportedListenerSnapshot = policy.decision(
+            for: request(
+                providerTier: .tierBConstrainedStructuredText,
+                toolName: "get_local_listener_snapshot",
+                arguments: ["limit": "8"],
+                localGrants: [],
+                supportedOperations: [.fileGrantList, .fileList, .fileSearch, .fileRead, .finiteCommand, .processSnapshot]
+            )
+        )
+        try expect(
+            unsupportedListenerSnapshot.kind == .deny && unsupportedListenerSnapshot.reason == .unsupportedOperation,
+            "permission policy should deny unsupported listener snapshot calls"
         )
     }
 
@@ -465,10 +569,9 @@ enum AgentPermissionPolicyFixtureHarness {
 
     private static func grant(
         _ path: String,
-        isDirectory: Bool,
-        access: AgentLocalFileGrantAccess = .readOnly
+        isDirectory: Bool
     ) -> AgentLocalFileGrant {
-        AgentLocalFileGrant(path: path, isDirectory: isDirectory, access: access)
+        AgentLocalFileGrant(path: path, isDirectory: isDirectory)
     }
 }
 

@@ -32,6 +32,7 @@ nonisolated enum AgentToolOperationKind: String, Codable, Equatable, Hashable, S
     case fileWriteDraft
     case visualContext
     case finiteCommand
+    case processSnapshot
     case processStart
     case processStatus
     case processStop
@@ -62,6 +63,7 @@ nonisolated enum AgentPermissionReason: String, Codable, Equatable, Sendable {
     case malformedArgument
     case deniedScope
     case missingFileGrant
+    // Legacy persisted value from the old read-only/read-write grant split. New policy emits missingFileGrant.
     case missingWriteGrant
     case sensitivePathDenied
     case approvalRequired
@@ -74,27 +76,19 @@ nonisolated enum AgentPermissionReason: String, Codable, Equatable, Sendable {
     case unsafeCommandDenied
 }
 
-nonisolated enum AgentLocalFileGrantAccess: String, Codable, Equatable, Sendable {
-    case readOnly
-    case readWrite
-}
-
 nonisolated struct AgentLocalFileGrant: Codable, Equatable, Identifiable, Sendable {
     let id: UUID
     let path: String
     let isDirectory: Bool
-    let access: AgentLocalFileGrantAccess
 
     init(
         id: UUID = UUID(),
         path: String,
-        isDirectory: Bool,
-        access: AgentLocalFileGrantAccess = .readOnly
+        isDirectory: Bool
     ) {
         self.id = id
         self.path = URL(fileURLWithPath: path).standardizedFileURL.path
         self.isDirectory = isDirectory
-        self.access = access
     }
 
     var url: URL {
@@ -102,17 +96,14 @@ nonisolated struct AgentLocalFileGrant: Codable, Equatable, Identifiable, Sendab
     }
 
     func allowsRead(_ candidatePath: String) -> Bool {
-        allows(candidatePath, requireWrite: false)
+        allows(candidatePath)
     }
 
     func allowsWrite(_ candidatePath: String) -> Bool {
-        access == .readWrite && allows(candidatePath, requireWrite: true)
+        allows(candidatePath)
     }
 
-    private func allows(_ candidatePath: String, requireWrite: Bool) -> Bool {
-        if requireWrite, access != .readWrite {
-            return false
-        }
+    private func allows(_ candidatePath: String) -> Bool {
         let candidate = URL(fileURLWithPath: candidatePath).standardizedFileURL.path
         if isDirectory {
             let root = path.hasSuffix("/") ? path : path + "/"
@@ -197,16 +188,13 @@ nonisolated struct AgentLocalPathResolver: Sendable {
             return failure(.emptyPath, "The local path is empty.")
         }
 
-        let allowedGrants = grants.filter { grant in
-            access == .write ? grant.access == .readWrite : true
-        }
-        guard !allowedGrants.isEmpty else {
+        guard !grants.isEmpty else {
             return failure(.noMatchingGrant, "No matching local file grant is available for this request.")
         }
 
         if cleaned.hasPrefix("/") {
             let candidatePath = URL(fileURLWithPath: cleaned).standardizedFileURL.path
-            let candidates = allowedGrants.compactMap { grant -> Candidate? in
+            let candidates = grants.compactMap { grant -> Candidate? in
                 isAllowed(candidatePath, by: grant, access: access)
                     ? Candidate(path: candidatePath, grant: grant, source: "absolute")
                     : nil
@@ -216,7 +204,7 @@ nonisolated struct AgentLocalPathResolver: Sendable {
 
         for group in relativeCandidateGroups(
             cleaned,
-            grants: allowedGrants,
+            grants: grants,
             preferredDirectoryPath: preferredDirectoryPath
         ) {
             let result = select(group.candidates, rawPath: cleaned, access: access, target: target, allowsFallback: group.allowsFallback)
@@ -587,7 +575,9 @@ nonisolated enum AgentToolExecutionCapabilities {
         .fileSearch,
         .fileRead,
         .fileWriteDraft,
-        .finiteCommand
+        .finiteCommand,
+        .processSnapshot,
+        .localServerDiscovery
     ]
 }
 
@@ -658,7 +648,6 @@ nonisolated struct AgentPermissionDecision: Codable, Equatable, Sendable {
 }
 
 nonisolated enum AgentCommandClass: String, Codable, Equatable, Sendable {
-    case safeRead
     case rawShell
     case fileMutation
     case install
@@ -746,65 +735,13 @@ nonisolated struct AgentCommandClassifier: Sendable {
             )
         }
 
-        if isSafeReadCommand(cleaned) {
-            return AgentCommandClassification(
-                commandClass: .safeRead,
-                reason: .allowed,
-                summary: AgentRunText("The command matches the deterministic read-only allowlist.")
-            )
-        }
-
         return AgentCommandClassification(
             commandClass: .rawShell,
             reason: .rawShellRequiresApproval,
-            summary: AgentRunText("Raw shell commands outside the read-only allowlist require approval.")
+            summary: AgentRunText("Raw shell commands require approval.")
         )
     }
 
-    private func isSafeReadCommand(_ command: String) -> Bool {
-        let lowercased = command.lowercased()
-        let disallowedOperators = ["|", ">", "<", ";", "&&", "||", "`", "$(", "\n"]
-        guard !disallowedOperators.contains(where: { lowercased.contains($0) }) else {
-            return false
-        }
-
-        let tokens = lowercased.split { $0 == " " || $0 == "\t" }.map(String.init)
-        guard let first = tokens.first else { return false }
-
-        switch first {
-        case "date":
-            return true
-        case "ps", "lsof", "netstat", "pgrep":
-            return true
-        case "top":
-            return tokens.contains("-l")
-        case "pwd", "ls", "rg", "grep", "cat", "wc", "head", "tail":
-            return true
-        case "sed":
-            return tokens.contains("-n")
-        case "find":
-            return !tokens.contains("-exec") && !tokens.contains("-delete")
-        case "git":
-            guard tokens.count >= 2 else { return false }
-            return ["status", "diff", "show", "log", "branch", "rev-parse"].contains(tokens[1])
-        default:
-            return false
-        }
-    }
-
-    func allowsOmittedWorkingDirectory(_ command: String) -> Bool {
-        let lowercased = command.lowercased()
-        let tokens = lowercased.split { $0 == " " || $0 == "\t" }.map(String.init)
-        guard let first = tokens.first else { return false }
-        switch first {
-        case "date", "ps", "lsof", "netstat", "pgrep":
-            return true
-        case "top":
-            return tokens.contains("-l")
-        default:
-            return false
-        }
-    }
 }
 
 nonisolated struct AgentToolCatalog: Sendable {
@@ -876,8 +813,8 @@ nonisolated struct AgentToolCatalog: Sendable {
                     reason = "withheld:deniedScope:\(deniedScope.rawValue)"
                 } else if spec.requiredScopes.contains(.fileRead), localGrants.isEmpty {
                     reason = "withheld:missingReadGrant"
-                } else if spec.requiredScopes.contains(.fileWrite), !localGrants.contains(where: { $0.access == .readWrite }) {
-                    reason = "withheld:missingWriteGrant"
+                } else if spec.requiredScopes.contains(.fileWrite), localGrants.isEmpty {
+                    reason = "withheld:missingFileGrant"
                 } else if let missingScope = spec.requiredScopes.first(where: { scope in
                     scope != .fileRead
                         && scope != .fileWrite
@@ -904,7 +841,7 @@ nonisolated struct AgentToolCatalog: Sendable {
         if spec.requiredScopes.contains(.fileRead), localGrants.isEmpty {
             return false
         }
-        if spec.requiredScopes.contains(.fileWrite), !localGrants.contains(where: { $0.access == .readWrite }) {
+        if spec.requiredScopes.contains(.fileWrite), localGrants.isEmpty {
             return false
         }
         let nonGrantScopes = spec.requiredScopes.filter { scope in
@@ -923,6 +860,7 @@ extension AgentToolCatalog {
         let tierA: [AgentModelCapabilityTier] = [.tierAFullAgent]
         let readProposalFull: [AgentRunPermissionMode] = [.readOnly, .proposalOnly, .fullAgent]
         let proposalFull: [AgentRunPermissionMode] = [.proposalOnly, .fullAgent]
+        let fullOnly: [AgentRunPermissionMode] = [.fullAgent]
         let readFull: [AgentRunPermissionMode] = [.readOnly, .fullAgent]
 
         return [
@@ -1007,19 +945,47 @@ extension AgentToolCatalog {
             ),
             AgentToolSpec(
                 schema: toolSchema(
+                    name: "get_process_snapshot",
+                    summary: "Read a bounded snapshot of currently running local processes, returning PID, CPU, memory, and executable name only.",
+                    arguments: [
+                        argument("limit", type: .integer, isRequired: false, summary: "Optional row limit from 1 to 20. Defaults to 8.")
+                    ]
+                ),
+                operationKind: .processSnapshot,
+                risk: .readOnly,
+                visibleRunModes: readProposalFull,
+                visibleProviderTiers: tierAB
+            ),
+            AgentToolSpec(
+                schema: toolSchema(
+                    name: "get_local_listener_snapshot",
+                    summary: "Read a bounded snapshot of local listening ports, returning port, address, PID, executable name, and granted working directory only.",
+                    arguments: [
+                        argument("port", type: .integer, isRequired: false, summary: "Optional port to inspect."),
+                        argument("rootPath", isRequired: false, summary: "Optional granted folder path or grant name used to filter listener working directories."),
+                        argument("limit", type: .integer, isRequired: false, summary: "Optional row limit from 1 to 20. Defaults to 8.")
+                    ]
+                ),
+                operationKind: .localServerDiscovery,
+                risk: .readOnly,
+                visibleRunModes: readProposalFull,
+                visibleProviderTiers: tierAB
+            ),
+            AgentToolSpec(
+                schema: toolSchema(
                     name: "run_finite_command",
-                    summary: "Run a bounded local shell command for terminal, process, system, file, and build observations. Read-only commands may run directly; risky or mutating commands require user approval before execution.",
+                    summary: "Request a bounded local shell command for terminal, file, build, or system work. Raw shell is available only in full-agent mode and requires app-owned approval or a matching approval grant.",
                     arguments: [
                         argument("command", summary: "Shell command to run."),
-                        argument("workingDirectory", isRequired: false, summary: "Optional granted working directory. Omit only for system-state commands that do not read local files."),
+                        argument("workingDirectory", summary: "Granted working directory for the command."),
                         argument("timeoutSeconds", type: .integer, isRequired: false, summary: "Optional timeout in seconds.")
                     ]
                 ),
                 operationKind: .finiteCommand,
                 risk: .command,
                 requiredScopes: [.workingDirectory],
-                visibleRunModes: readProposalFull,
-                visibleProviderTiers: tierAB
+                visibleRunModes: fullOnly,
+                visibleProviderTiers: tierA
             ),
             AgentToolSpec(
                 schema: toolSchema(
@@ -1316,8 +1282,7 @@ nonisolated struct AgentPermissionPolicy: Sendable {
                 return localPathFailureDecision(
                     failure,
                     rawPath: rawPath,
-                    spec: spec,
-                    isWrite: false
+                    spec: spec
                 )
             }
         }
@@ -1337,8 +1302,7 @@ nonisolated struct AgentPermissionPolicy: Sendable {
                 return localPathFailureDecision(
                     failure,
                     rawPath: rawPath,
-                    spec: spec,
-                    isWrite: true
+                    spec: spec
                 )
             }
         }
@@ -1357,8 +1321,7 @@ nonisolated struct AgentPermissionPolicy: Sendable {
                 return localPathFailureDecision(
                     failure,
                     rawPath: workingDirectory,
-                    spec: spec,
-                    isWrite: false
+                    spec: spec
                 )
             }
         }
@@ -1369,13 +1332,12 @@ nonisolated struct AgentPermissionPolicy: Sendable {
     private func localPathFailureDecision(
         _ failure: AgentLocalPathResolutionFailure,
         rawPath: String,
-        spec: AgentToolSpec,
-        isWrite: Bool
+        spec: AgentToolSpec
     ) -> AgentPermissionDecision {
         switch failure.code {
         case .noMatchingGrant:
             return ask(
-                reason: isWrite ? .missingWriteGrant : .missingFileGrant,
+                reason: .missingFileGrant,
                 summary: failure.summary.text,
                 toolName: spec.name,
                 risk: spec.risk,
@@ -1436,23 +1398,6 @@ nonisolated struct AgentPermissionPolicy: Sendable {
         let classification = commandClassifier.classify(command, sensitivePathRules: sensitivePathRules)
 
         switch classification.commandClass {
-        case .safeRead:
-            let workingDirectory = request.arguments["workingDirectory"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if workingDirectory.isEmpty && !commandClassifier.allowsOmittedWorkingDirectory(command) {
-                return deny(
-                    reason: .missingRequiredArgument,
-                    summary: "A granted working directory is required for file-oriented read commands.",
-                    toolName: spec.name,
-                    risk: spec.risk,
-                    metadata: ["argument": .string("workingDirectory")]
-                )
-            }
-            return allow(
-                reason: .allowed,
-                summary: classification.summary.text,
-                toolName: spec.name,
-                risk: spec.risk
-            )
         case .destructive:
             return deny(
                 reason: classification.reason,

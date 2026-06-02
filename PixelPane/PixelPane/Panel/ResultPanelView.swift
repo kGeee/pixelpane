@@ -9,7 +9,6 @@ struct ResultPanelView: View {
 
     let result: CaptureResult
     let routingSettings: AIRoutingSettings
-    let responseDetail: ResponseDetailLevel
     let localAICapabilities: AIBackendCapabilities
     @ObservedObject var localFileAccess: LocalFileAccessStore
     @ObservedObject var chatHistory: ChatHistoryStore
@@ -26,6 +25,7 @@ struct ResultPanelView: View {
     private let cloudAIBackend: any AIBackend
     private let mlxDetector = MLXVisionRuntimeDetector()
     private let mlxModelStore = MLXVisionModelStore()
+    private let agentModelConformanceStore = AgentModelConformanceStore()
     private let displayTextNormalizer = ModelDisplayTextNormalizer()
     @State private var selectedAction: PanelActionKind = .extractText
     @State private var loadingActions: Set<PanelActionKind> = []
@@ -59,7 +59,6 @@ struct ResultPanelView: View {
     init(
         result: CaptureResult,
         routingSettings: AIRoutingSettings,
-        responseDetail: ResponseDetailLevel,
         localAICapabilities: AIBackendCapabilities,
         localFileAccess: LocalFileAccessStore,
         chatHistory: ChatHistoryStore,
@@ -73,7 +72,6 @@ struct ResultPanelView: View {
     ) {
         self.result = result
         self.routingSettings = routingSettings
-        self.responseDetail = responseDetail
         self.localAICapabilities = localAICapabilities
         self.localFileAccess = localFileAccess
         self.chatHistory = chatHistory
@@ -286,18 +284,6 @@ struct ResultPanelView: View {
                 """
                 Active visual context (\(visualContext.label)):
                 \(Self.truncatedForDebugExport(excerpt, limit: 6_000))
-                """
-            )
-        }
-
-        if !localFileAccess.grants.isEmpty {
-            let grants = localFileAccess.grants
-                .map { "- \($0.kindLabel): \($0.path)" }
-                .joined(separator: "\n")
-            sections.append(
-                """
-                User-granted local file roots:
-                \(grants)
                 """
             )
         }
@@ -542,7 +528,6 @@ struct ResultPanelView: View {
             Spacer(minLength: 10)
 
             HStack(spacing: 6) {
-                EmptyAssistantStatusChip(title: responseDetail.title, systemImage: "text.alignleft")
                 EmptyAssistantStatusChip(
                     title: localFileAccess.grants.isEmpty ? "No Files" : "\(localFileAccess.grants.count) Files",
                     systemImage: localFileAccess.grants.isEmpty ? "folder" : "folder.fill"
@@ -1059,7 +1044,6 @@ struct ResultPanelView: View {
                         grants: localFileAccess.grants,
                         isDisabled: !loadingActions.isEmpty || isAskRunning,
                         onGrantFolder: localFileAccess.grantFolder,
-                        onGrantWritableFolder: localFileAccess.grantWritableFolder,
                         onGrantFile: localFileAccess.grantFile,
                         onRemove: localFileAccess.removeGrant,
                         onClear: localFileAccess.clearGrants
@@ -1150,7 +1134,6 @@ struct ResultPanelView: View {
             Exported: \(Self.chatExportDateString())
             Context: \(chatContextKind.displayName)
             Route: \(routingSettings.effectiveMode.displayName)
-            Response Style: \(responseDetail.title)
             Capture Context: \(hasCaptureContext ? "attached" : "none")
             Selected Action: \(selectedAction.title)
             Loading Actions: \(loadingActions.map(\.title).sorted().joined(separator: ", "))
@@ -1415,8 +1398,12 @@ struct ResultPanelView: View {
     private func debugModelAndProviderSnapshot(model: any AgentKernelModelAdapterV2) -> String {
         let descriptor = model.descriptor
         let capabilities = model.capabilities
-        let tier = AgentModelGateway.tier(for: capabilities)
         let selectedModel = mlxModelStore.selectedModel
+        let conformanceProfile = currentMLXAgentConformanceProfile()
+        let tier = AgentModelGateway.tier(
+            for: capabilities,
+            conformanceProfile: conformanceProfile
+        )
         let cloudModels = debugStatisticValues(named: "Cloud model")
         var lines: [String] = [
             "- Effective Model Being Used: \(debugEffectiveModelLabel(model: model))",
@@ -1430,6 +1417,12 @@ struct ResultPanelView: View {
             "- Adapter Route: \(descriptor.route.rawValue)",
             "- Adapter Model Name: \(descriptor.modelName ?? "none")",
             "- Capability Tier: \(tier.rawValue)",
+            "- Agent Conformance Tier: \(conformanceProfile?.derivedTier.rawValue ?? "not_checked")",
+            "- Agent Conformance Tested At: \(conformanceProfile.map { Self.chatExportDateString($0.testedAt) } ?? "none")",
+            "- Agent Conformance Plain Chat: \(conformanceProfile?.plainChat.status.rawValue ?? "none")",
+            "- Agent Conformance Structured JSON: \(conformanceProfile?.structuredJSON.status.rawValue ?? "none")",
+            "- Agent Conformance Tool Call: \(conformanceProfile?.toolCall.status.rawValue ?? "none")",
+            "- Agent Conformance Tool Follow-Up: \(conformanceProfile?.toolResultFollowUp.status.rawValue ?? "none")",
             "- Cloud-Assisted Local Tools: \(descriptor.route == .cloud && tier != .tierCPlainChat ? "enabled" : "disabled")",
             "- Tool Calling Mode: \(capabilities.toolCallingMode.rawValue)",
             "- Structured Output Reliability: \(capabilities.structuredOutputReliability.rawValue)",
@@ -1476,8 +1469,7 @@ struct ResultPanelView: View {
             "- Supported Operations: \(Self.debugJoinedList(configuration.context.supportedOperations.map(\.rawValue).sorted()))",
             "- Granted Scopes: \(Self.debugJoinedList(configuration.context.grantedScopes.map(\.rawValue).sorted()))",
             "- Denied Scopes: \(Self.debugJoinedList(configuration.context.deniedScopes.map(\.rawValue).sorted()))",
-            "- Runtime Local Grants: \(grants.count)",
-            "- Runtime Read/Write Grants: \(grants.filter { $0.access == .readWrite }.count)"
+            "- Runtime Local Grants: \(grants.count)"
         ]
 
         if !grants.isEmpty {
@@ -1485,7 +1477,7 @@ struct ResultPanelView: View {
             lines.append(
                 contentsOf: grants.prefix(20).map { grant in
                     let kind = grant.isDirectory ? "folder" : "file"
-                    return "  - \(kind) \(grant.access.rawValue): \(grant.path)"
+                    return "  - \(kind): \(grant.path)"
                 }
             )
             if grants.count > 20 {
@@ -1499,8 +1491,7 @@ struct ResultPanelView: View {
     private func debugPromptAndContextSnapshot() -> String {
         let latestUserMessage = latestAgentUserMessage()
         var lines: [String] = [
-            "- Response Detail: \(responseDetail.title)",
-            "- Ask Max Output Tokens: \(responseDetail.maxOutputTokens(for: .ask))",
+            "- Ask Max Output Tokens: \(AssistantResponsePolicy.maxOutputTokens(for: .ask))",
             "- Latest User Message Characters: \(latestUserMessage.count)",
             "- Ask Draft Characters: \(askInput.count)",
             "- Active Text Characters: \(activeText.count)",
@@ -2027,7 +2018,7 @@ struct ResultPanelView: View {
             return result.image
         }
 
-        guard responseDetail.usesImageInput(for: action) else { return nil }
+        guard AssistantResponsePolicy.usesImageInput(for: action) else { return nil }
         guard localAICapabilities.image.isAvailable else { return nil }
         return result.image
     }
@@ -2111,7 +2102,7 @@ struct ResultPanelView: View {
         - Return only the simplified text.
         - Keep the core meaning and important facts.
         - Prefer 1 short paragraph when the content allows it.
-        - \(responseDetail.outputGuidance)
+        - \(AssistantResponsePolicy.outputGuidance)
         - Do not explain the argument, add examples, or describe why it matters.
         - Do not add background, labels, headings, bullets, or commentary.
         - Do not invent facts.
@@ -2127,7 +2118,7 @@ struct ResultPanelView: View {
                     actionKind: .simplify,
                     prompt: prompt,
                     capturedImage: imageInput,
-                    maxOutputTokens: responseDetail.maxOutputTokens(for: .simplify),
+                    maxOutputTokens: AssistantResponsePolicy.maxOutputTokens(for: .simplify),
                     cloudOCRText: result.text,
                     cloudDetectedLanguage: cloudDetectedLanguage
                 )
@@ -2159,7 +2150,7 @@ struct ResultPanelView: View {
             Rules:
             - Return only the useful answer.
             - Use 1 to 2 short paragraphs or up to 4 bullets.
-            - \(responseDetail.outputGuidance)
+            - \(AssistantResponsePolicy.outputGuidance)
             - Explain the main point, relevant context, and why it matters.
             - Do not add background, labels, headings, or visual commentary.
             - Do not invent facts.
@@ -2173,7 +2164,7 @@ struct ResultPanelView: View {
             Rules:
             - Return only the useful answer.
             - Use 1 to 2 short paragraphs or up to 4 bullets.
-            - \(responseDetail.outputGuidance)
+            - \(AssistantResponsePolicy.outputGuidance)
             - Explain what the screenshot is saying, asking, or implying.
             - Include the relevant context and why it matters.
             - Mention visual context only if it changes the meaning.
@@ -2191,7 +2182,7 @@ struct ResultPanelView: View {
                     actionKind: .explain,
                     prompt: prompt,
                     capturedImage: imageInput,
-                    maxOutputTokens: responseDetail.maxOutputTokens(for: .explain),
+                    maxOutputTokens: AssistantResponsePolicy.maxOutputTokens(for: .explain),
                     cloudOCRText: result.text,
                     cloudDetectedLanguage: cloudDetectedLanguage
                 )
@@ -2222,7 +2213,7 @@ struct ResultPanelView: View {
         let prompt: String
         if imageInput == nil {
             prompt = """
-            Debug the following captured technical text. Explain the likely issue, cite the relevant error or code clue, and suggest concrete next steps. \(responseDetail.outputGuidance) Avoid inventing missing project context.
+            Debug the following captured technical text. Explain the likely issue, cite the relevant error or code clue, and suggest concrete next steps. \(AssistantResponsePolicy.outputGuidance) Avoid inventing missing project context.
 
             Classifier evidence: \(evidence)
 
@@ -2231,7 +2222,7 @@ struct ResultPanelView: View {
             """
         } else {
             prompt = """
-            Debug this captured technical screenshot. Use both the OCR text and visible UI context, such as highlighted lines, terminal prompts, IDE panels, or error overlays. Explain the likely issue and suggest concrete next steps. \(responseDetail.outputGuidance) Avoid inventing missing project context.
+            Debug this captured technical screenshot. Use both the OCR text and visible UI context, such as highlighted lines, terminal prompts, IDE panels, or error overlays. Explain the likely issue and suggest concrete next steps. \(AssistantResponsePolicy.outputGuidance) Avoid inventing missing project context.
 
             Classifier evidence: \(evidence)
 
@@ -2246,7 +2237,7 @@ struct ResultPanelView: View {
                     actionKind: .debug,
                     prompt: prompt,
                     capturedImage: imageInput,
-                    maxOutputTokens: responseDetail.maxOutputTokens(for: .debug),
+                    maxOutputTokens: AssistantResponsePolicy.maxOutputTokens(for: .debug),
                     cloudOCRText: result.text,
                     cloudDetectedLanguage: cloudDetectedLanguage
                 )
@@ -2280,6 +2271,7 @@ struct ResultPanelView: View {
         Task {
             do {
                 let model = await makeAgentKernelModelAdapter(userMessage: question)
+                let conformanceProfile = currentMLXAgentConformanceProfile()
                 let toolConfiguration = agentToolRunConfiguration(for: model)
                 try await agentRunViewModel.startRun(
                     userMessage: question,
@@ -2288,9 +2280,10 @@ struct ResultPanelView: View {
                     mode: toolConfiguration.mode,
                     tools: toolConfiguration.tools,
                     toolContext: toolConfiguration.context,
+                    modelConformanceProfile: conformanceProfile,
                     attachments: agentModelAttachmentsForAsk(),
                     systemPrompt: durableAgentSystemPrompt(),
-                    maxOutputTokens: responseDetail.maxOutputTokens(for: .ask)
+                    maxOutputTokens: AssistantResponsePolicy.maxOutputTokens(for: .ask)
                 )
                 setOutputState(askOutputState(backendLabel: backendLabel), for: .ask)
                 updateExpandedNotchSizeIfNeeded()
@@ -2340,13 +2333,25 @@ struct ResultPanelView: View {
                 supportsLocalToolProtocol: true
             )
         }
+        let baseCapabilities = AgentKernelModelAdapterCapabilitiesV2.aiBackendBridge(
+            descriptor: descriptor,
+            backendCapabilities: capabilities
+        )
+        let adjustedCapabilities = baseCapabilities.applyingAgentConformanceProfile(
+            currentMLXAgentConformanceProfile()
+        )
+        if provider == .mlxText {
+            return AgentKernelMLXNativeToolAdapterV2(
+                descriptor: descriptor,
+                backend: MLXTextBackend(store: mlxModelStore),
+                capabilities: adjustedCapabilities,
+                preferredProvider: .mlxText
+            )
+        }
         return AgentKernelAIBackendAdapterV2(
             descriptor: descriptor,
             backend: backend,
-            capabilities: .aiBackendBridge(
-                descriptor: descriptor,
-                backendCapabilities: capabilities
-            ),
+            capabilities: adjustedCapabilities,
             preferredProvider: provider
         )
     }
@@ -2405,17 +2410,22 @@ struct ResultPanelView: View {
     private func agentToolRunConfiguration(
         for model: any AgentKernelModelAdapterV2
     ) -> (mode: AgentModelGatewayMode, tools: [AgentKernelToolSchemaV2], context: AgentToolRunContext) {
-        let providerTier = AgentModelGateway.tier(for: model.capabilities)
+        let conformanceProfile = currentMLXAgentConformanceProfile()
+        let providerTier = AgentModelGateway.tier(
+            for: model.capabilities,
+            conformanceProfile: conformanceProfile
+        )
         let grants = agentRuntimeLocalGrants()
+        let usesLocalEvidenceSynthesis = model.descriptor.providerKind == .mlxLocal
+            && model.descriptor.route == .local
+            && providerTier == .tierCPlainChat
         let runMode: AgentRunPermissionMode
         if providerTier == .tierCPlainChat {
-            runMode = .plainChat
+            runMode = usesLocalEvidenceSynthesis ? .readOnly : .plainChat
         } else if grants.isEmpty {
             runMode = .readOnly
-        } else if grants.contains(where: { $0.access == .readWrite }) {
-            runMode = providerTier == .tierAFullAgent ? .fullAgent : .proposalOnly
         } else {
-            runMode = .readOnly
+            runMode = providerTier == .tierAFullAgent ? .fullAgent : .proposalOnly
         }
 
         let context = AgentToolRunContext(
@@ -2425,7 +2435,7 @@ struct ResultPanelView: View {
             deniedScopes: [.network, .processControl, .privileged],
             supportedOperations: AgentToolExecutionCapabilities.activeLocalRuntimeOperations
         )
-        guard runMode != .plainChat else {
+        guard providerTier != .tierCPlainChat, runMode != .plainChat else {
             return (.plainChat, [], context)
         }
 
@@ -2446,12 +2456,20 @@ struct ResultPanelView: View {
         return (mode, tools, context)
     }
 
+    private func currentMLXAgentConformanceProfile() -> AgentModelConformanceProfile? {
+        guard let selection = mlxModelStore.selectedModel else { return nil }
+        let target = AgentModelConformanceTarget.mlxText(
+            selection: selection,
+            textRuntimeURL: mlxDetector.mlxTextGenerateExecutableURL()
+        )
+        return agentModelConformanceStore.profile(for: target)
+    }
+
     private func agentRuntimeLocalGrants() -> [AgentLocalFileGrant] {
         localFileAccess.grants.map { grant in
             AgentLocalFileGrant(
                 path: grant.path,
-                isDirectory: grant.isDirectory,
-                access: grant.access
+                isDirectory: grant.isDirectory
             )
         }
     }
@@ -2468,9 +2486,11 @@ struct ResultPanelView: View {
         Task {
             do {
                 let model = await makeAgentKernelModelAdapter()
+                let conformanceProfile = currentMLXAgentConformanceProfile()
                 try await agentRunViewModel.approveWait(
                     approval.waitID,
-                    adapter: model
+                    adapter: model,
+                    modelConformanceProfile: conformanceProfile
                 )
                 showConfirmation("Approved")
                 setOutputState(askOutputState(), for: .ask)
@@ -2487,9 +2507,11 @@ struct ResultPanelView: View {
         Task {
             do {
                 let model = await makeAgentKernelModelAdapter()
+                let conformanceProfile = currentMLXAgentConformanceProfile()
                 try await agentRunViewModel.denyWait(
                     approval.waitID,
-                    adapter: model
+                    adapter: model,
+                    modelConformanceProfile: conformanceProfile
                 )
                 showConfirmation("Denied")
                 setOutputState(askOutputState(), for: .ask)
@@ -2659,7 +2681,7 @@ struct ResultPanelView: View {
         - Translate non-English text into English.
         - Keep text that is already English in English.
         - Preserve useful line breaks and section order.
-        - \(responseDetail.outputGuidance)
+        - \(AssistantResponsePolicy.outputGuidance)
         - Return only the translated text, with no notes or explanation.
 
         Detected source language: \(result.detectedLanguage.displayName)
@@ -2671,7 +2693,7 @@ struct ResultPanelView: View {
             actionKind: .translate,
             prompt: prompt,
             capturedImage: nil,
-            maxOutputTokens: responseDetail.maxOutputTokens(for: .translate),
+            maxOutputTokens: AssistantResponsePolicy.maxOutputTokens(for: .translate),
             cloudOCRText: result.text,
             cloudDetectedLanguage: cloudDetectedLanguage,
             cloudTargetLanguage: "English"
@@ -3496,7 +3518,6 @@ private struct FileSourceMenuButton: View {
     let grants: [LocalFileGrant]
     let isDisabled: Bool
     let onGrantFolder: () -> Void
-    let onGrantWritableFolder: () -> Void
     let onGrantFile: () -> Void
     let onRemove: (LocalFileGrant) -> Void
     let onClear: () -> Void
@@ -3507,12 +3528,6 @@ private struct FileSourceMenuButton: View {
                 onGrantFolder()
             } label: {
                 Label("Choose Folder", systemImage: "folder.badge.plus")
-            }
-
-            Button {
-                onGrantWritableFolder()
-            } label: {
-                Label("Choose Writable Folder", systemImage: "square.and.pencil")
             }
 
             Button {
@@ -3538,7 +3553,7 @@ private struct FileSourceMenuButton: View {
                         Label {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(grant.displayName)
-                                Text("\(grant.access == .readWrite ? "Read/write" : "Read-only"): \(grant.path)")
+                                Text("\(grant.kindLabel): \(grant.path)")
                                     .foregroundStyle(.secondary)
                             }
                         } icon: {
