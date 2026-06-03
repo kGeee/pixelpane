@@ -2271,6 +2271,11 @@ struct ResultPanelView: View {
         Task {
             do {
                 let model = await makeAgentKernelModelAdapter(userMessage: question)
+                // ROUTER-5: reflect the model the router actually chose (which may differ from
+                // the pre-run label) so the user sees the live model in the moment.
+                let routedLabel = routedBackendLabel(for: model)
+                actionBackendLabel = routedLabel
+                setOutputState(askOutputState(backendLabel: routedLabel), for: .ask)
                 let conformanceProfile = currentMLXAgentConformanceProfile(forRepositoryID: model.descriptor.modelName)
                 let toolConfiguration = agentToolRunConfiguration(for: model)
                 try await agentRunViewModel.startRun(
@@ -2285,7 +2290,7 @@ struct ResultPanelView: View {
                     systemPrompt: durableAgentSystemPrompt(),
                     maxOutputTokens: AssistantResponsePolicy.maxOutputTokens(for: .ask)
                 )
-                setOutputState(askOutputState(backendLabel: backendLabel), for: .ask)
+                setOutputState(askOutputState(backendLabel: routedLabel), for: .ask)
                 updateExpandedNotchSizeIfNeeded()
             } catch {
                 updateLastAskAnswer("The agent could not start: \(error)", backendLabel: backendLabel)
@@ -2497,6 +2502,19 @@ struct ResultPanelView: View {
         case .none:
             return fallback
         }
+    }
+
+    /// A user-facing label naming the model the router actually chose for this run, so the panel
+    /// can show the live model in the moment (e.g. "MLX Text: Qwen3.6-35B-A3B-6bit" or the cloud label).
+    private func routedBackendLabel(for model: any AgentKernelModelAdapter) -> String {
+        if model.descriptor.route == .cloud {
+            return Self.cloudBackendLabel
+        }
+        if let name = model.descriptor.modelName, !name.isEmpty {
+            let compact = name.split(separator: "/").last.map(String.init) ?? name
+            return "\(model.descriptor.displayName): \(compact)"
+        }
+        return model.descriptor.displayName
     }
 
     private func agentToolRunConfiguration(
