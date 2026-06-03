@@ -12,6 +12,7 @@ enum AgentModelGatewayFixtureHarness {
     }
 
     static func run() async throws {
+        try testModelRouterChoosesByCapabilityAndPolicy()
         try await testTierClassification()
         try testConformanceProfileTierDerivation()
         try await testLocalMLXDefaultsToPlainChatUntilChecked()
@@ -33,6 +34,59 @@ enum AgentModelGatewayFixtureHarness {
         try await testCloudChatAdapterIsPlainChatOnly()
         try await testCloudChatAdapterSupportsToolProtocolWhenEnabled()
         try await testTierCCloudRouteRejectsToolsBeforeAdapterCall()
+    }
+
+    private static func testModelRouterChoosesByCapabilityAndPolicy() throws {
+        let router = AgentModelRouter()
+        let cloud = AgentModelRouterCandidate(id: "cloud", displayName: "Pixel Pane Cloud", kind: .cloud, tier: .tierB)
+        let big = AgentModelRouterCandidate(id: "big", displayName: "Q-Large", kind: .local, tier: .tierB, isLoaded: false, latencyHint: 9)
+        let smallLoaded = AgentModelRouterCandidate(id: "small", displayName: "Q-Small", kind: .local, tier: .tierB, isLoaded: true, latencyHint: 2)
+        let chatOnly = AgentModelRouterCandidate(id: "chat", displayName: "Chat-only", kind: .local, tier: .tierC)
+
+        // Tool run, cloud enabled, prefer quality -> cloud wins.
+        guard case .selected(let q, _) = router.choose(AgentModelRouterInput(
+            need: .toolCapable, candidates: [chatOnly, big, smallLoaded, cloud],
+            cloudEnabled: true, preference: .preferQuality)) else {
+            throw HarnessError(description: "router should select for a tool run")
+        }
+        try expect(q.id == "cloud", "prefer-quality tool run should route to cloud")
+
+        // Cloud disabled -> a tool-capable local model is chosen (never the tierC chat-only).
+        guard case .selected(let local, _) = router.choose(AgentModelRouterInput(
+            need: .toolCapable, candidates: [chatOnly, big, smallLoaded, cloud],
+            cloudEnabled: false, preference: .preferQuality)) else {
+            throw HarnessError(description: "router should select a local model without cloud")
+        }
+        try expect(local.kind == .local && local.tier == .tierB, "tool run without cloud needs a tool-capable local model")
+
+        // Prefer-local-fast keeps the already-loaded local model even when cloud is on.
+        guard case .selected(let fast, _) = router.choose(AgentModelRouterInput(
+            need: .toolCapable, candidates: [big, smallLoaded, cloud],
+            cloudEnabled: true, preference: .preferLocalFast)) else {
+            throw HarnessError(description: "router should select for prefer-local-fast")
+        }
+        try expect(fast.id == "small", "prefer-local-fast should keep the loaded local model")
+
+        // Privacy lock excludes cloud even when enabled.
+        guard case .selected(let priv, _) = router.choose(AgentModelRouterInput(
+            need: .toolCapable, candidates: [smallLoaded, cloud],
+            cloudEnabled: true, privacyLockedToLocal: true, preference: .preferQuality)) else {
+            throw HarnessError(description: "router should select under privacy lock")
+        }
+        try expect(priv.kind == .local, "privacy lock must exclude cloud")
+
+        // Tool run with only a chat-only (tierC) model -> degraded, not selected.
+        guard case .degraded(let deg, _) = router.choose(AgentModelRouterInput(
+            need: .toolCapable, candidates: [chatOnly], cloudEnabled: false)) else {
+            throw HarnessError(description: "tool run with only tierC should degrade")
+        }
+        try expect(deg.id == "chat", "degraded fallback should be the chat-only model")
+
+        // No candidates -> unavailable.
+        guard case .unavailable = router.choose(AgentModelRouterInput(
+            need: .plainChat, candidates: [], cloudEnabled: false)) else {
+            throw HarnessError(description: "empty pool should be unavailable")
+        }
     }
 
     private static func testTierClassification() async throws {
