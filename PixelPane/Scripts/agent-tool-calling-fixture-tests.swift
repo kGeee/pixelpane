@@ -47,14 +47,19 @@ enum AgentToolCallingFixtureHarness {
         try await testBroadSearchObservationIsBudgeted()
         try await testContextOverflowRepackagesBeforeFailure()
         try await testWriteProposalApprovalExecutesAndContinues()
+        try await testApprovalContinuationUsesDurableReplayContext()
         try await testWriteRequestCannotCompleteFromReadEvidenceOnly()
         try await testRequiredWriteToolNonAdherenceBlocksBeforeIterationCap()
         try await testWriteProposalCanStillBeStagedWithoutPreclassifiedEditIntent()
         try await testStructuredOutputFailureBlocksWithRecoveryGuidance()
+        try await testInvalidToolCallRetriesBeforeEvidence()
+        try await testInvalidToolCallAfterEvidenceRecoversToFinalAnswer()
+        try await testUnobservedFinalAnswerPathsRepairThroughTools()
         try await testSpecificGrantBeatsBroadGrantForRandomTests()
         try await testMissingWriteParentIsRejectedBeforeApproval()
         try await testApprovedWriteFailureContinuesWithObservation()
         try await testDeniedWriteDoesNotExecute()
+        try await testDeniedCommandUsesGenericSideEffectProjection()
         try await testApprovedFiniteCommandExecutesAndContinues()
         try await testApprovedFiniteCommandFailureContinuesWithObservation()
     }
@@ -62,7 +67,7 @@ enum AgentToolCallingFixtureHarness {
     @MainActor
     private static func testTaskProfileClassifiesOperationIntent() async throws {
         let harness = try await makeHarness(prefix: "task-profile")
-        let adapter = FixtureAgentKernelAdapterV2(responses: [])
+        let adapter = FixtureAgentKernelAdapter(responses: [])
         let readOnly = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
         let proposal = toolConfig(grant: harness.grant, runMode: .proposalOnly, adapter: adapter)
 
@@ -118,7 +123,7 @@ enum AgentToolCallingFixtureHarness {
     @MainActor
     private static func testTaskFrameBuilderUsesStructuralSources() async throws {
         let harness = try await makeHarness(prefix: "task-frame-builder")
-        let adapter = FixtureAgentKernelAdapterV2(responses: [])
+        let adapter = FixtureAgentKernelAdapter(responses: [])
         let readOnly = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
         let proposal = toolConfig(grant: harness.grant, runMode: .proposalOnly, adapter: adapter)
         let noteURL = harness.workspace.appendingPathComponent("note.txt")
@@ -138,7 +143,7 @@ enum AgentToolCallingFixtureHarness {
             status: .completed,
             metadata: ["targetPath": .string(noteURL.path)]
         )
-        let attachment = AgentKernelModelAttachmentV2(
+        let attachment = AgentKernelModelAttachment(
             modality: .text,
             label: "Captured OCR",
             metadata: [
@@ -203,7 +208,7 @@ enum AgentToolCallingFixtureHarness {
     @MainActor
     private static func testModelRequestedProcessSnapshotRecordsEvidence() async throws {
         let harness = try await makeHarness(prefix: "tool-process-snapshot")
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [
                 .toolCall(name: "get_process_snapshot", arguments: ["limit": "5"], reason: nil),
                 .finalAnswer("The process snapshot was collected.")
@@ -393,9 +398,9 @@ enum AgentToolCallingFixtureHarness {
     @MainActor
     private static func testDeclaredProcessGroundingNeedsSnapshotEvidence() async throws {
         let harness = try await makeHarness(prefix: "grounding-process")
-        let processGrounding = AgentKernelAnswerGroundingV2(
+        let processGrounding = AgentKernelAnswerGrounding(
             basis: .localEvidence,
-            claims: [AgentKernelAnswerClaimV2(kind: .processSnapshot)]
+            claims: [AgentKernelAnswerClaim(kind: .processSnapshot)]
         )
         let adapter = tierBFixtureAdapter(
             responses: [
@@ -431,9 +436,9 @@ enum AgentToolCallingFixtureHarness {
     private static func testFolderEvidenceCannotSupportListenerGrounding() async throws {
         let harness = try await makeHarness(prefix: "grounding-listener-relevance")
         try "fixture".write(to: harness.workspace.appendingPathComponent("fixture.txt"), atomically: true, encoding: .utf8)
-        let listenerGrounding = AgentKernelAnswerGroundingV2(
+        let listenerGrounding = AgentKernelAnswerGrounding(
             basis: .localEvidence,
-            claims: [AgentKernelAnswerClaimV2(kind: .localListeners)]
+            claims: [AgentKernelAnswerClaim(kind: .localListeners)]
         )
         let adapter = tierBFixtureAdapter(
             responses: [
@@ -466,9 +471,9 @@ enum AgentToolCallingFixtureHarness {
     @MainActor
     private static func testModelRequestedListenerSnapshotRecordsEvidence() async throws {
         let harness = try await makeHarness(prefix: "tool-listener-snapshot")
-        let listenerGrounding = AgentKernelAnswerGroundingV2(
+        let listenerGrounding = AgentKernelAnswerGrounding(
             basis: .localEvidence,
-            claims: [AgentKernelAnswerClaimV2(kind: .localListeners, target: "1")]
+            claims: [AgentKernelAnswerClaim(kind: .localListeners, target: "1")]
         )
         let adapter = tierBFixtureAdapter(
             responses: [
@@ -502,7 +507,7 @@ enum AgentToolCallingFixtureHarness {
         let harness = try await makeHarness(prefix: "tool-list")
         try "alpha".write(to: harness.workspace.appendingPathComponent("alpha.txt"), atomically: true, encoding: .utf8)
         try "beta".write(to: harness.workspace.appendingPathComponent("beta.txt"), atomically: true, encoding: .utf8)
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [
                 .toolCall(name: "list_folder", arguments: ["path": harness.workspace.path], reason: "Need folder contents."),
                 .finalAnswer("The folder contains alpha.txt and beta.txt.")
@@ -545,7 +550,7 @@ enum AgentToolCallingFixtureHarness {
         </body>
         </html>
         """.write(to: profile, atomically: true, encoding: .utf8)
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [
                 .toolCall(name: "search_files", arguments: ["query": "experience"], reason: nil),
                 .toolCall(name: "read_file", arguments: ["path": "index.html"], reason: nil),
@@ -582,7 +587,7 @@ enum AgentToolCallingFixtureHarness {
             atomically: true,
             encoding: .utf8
         )
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [.finalAnswer("I found the quoted term.")]
         )
         let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
@@ -621,7 +626,7 @@ enum AgentToolCallingFixtureHarness {
             atomically: true,
             encoding: .utf8
         )
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [.finalAnswer("I found AlphaToken and BetaToken.")]
         )
         let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
@@ -655,7 +660,7 @@ enum AgentToolCallingFixtureHarness {
             atomically: true,
             encoding: .utf8
         )
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [.finalAnswer("I found a filename/path match for credentials.json.")]
         )
         let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
@@ -703,7 +708,7 @@ enum AgentToolCallingFixtureHarness {
     @MainActor
     private static func testVisualAttachmentRecordsEvidenceAndPromptContext() async throws {
         let harness = try await makeHarness(prefix: "tool-visual-context")
-        let attachment = AgentKernelModelAttachmentV2(
+        let attachment = AgentKernelModelAttachment(
             modality: .text,
             label: "Screen region",
             metadata: [
@@ -711,7 +716,7 @@ enum AgentToolCallingFixtureHarness {
                 "ocrText": .string("Build failed at Step 2")
             ]
         )
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [.finalAnswer("The visual context says the build failed at Step 2.")]
         )
         let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
@@ -732,9 +737,9 @@ enum AgentToolCallingFixtureHarness {
 
         let trace = try await harness.store.traceProjection(runID: runID)
         let firstRequest = await adapter.requests().first
-        let prompt = AgentKernelTextProtocolPromptBuilderV2().prompt(
-            for: AgentKernelModelAdapterRequestV2(
-                messages: [AgentKernelMessageV2(role: .user, content: "what does the current visual context show?")],
+        let prompt = AgentKernelTextProtocolPromptBuilder().prompt(
+            for: AgentKernelModelAdapterRequest(
+                messages: [AgentKernelMessage(role: .user, content: "what does the current visual context show?")],
                 attachments: [attachment]
             )
         )
@@ -776,7 +781,7 @@ enum AgentToolCallingFixtureHarness {
             AgentLocalFileGrant(path: siteProject.path, isDirectory: true)
         ]
         let context = AgentRunViewContext(title: "Evidence Planner", contextID: "tool-evidence-planner", contextKind: "assistant")
-        let firstAdapter = FixtureAgentKernelAdapterV2(responses: [.finalAnswer("Yes, I can see the local site project.")])
+        let firstAdapter = FixtureAgentKernelAdapter(responses: [.finalAnswer("Yes, I can see the local site project.")])
         let firstConfig = toolConfig(grants: grants, runMode: .readOnly, adapter: firstAdapter)
 
         _ = try await viewModel.startRun(
@@ -795,7 +800,7 @@ enum AgentToolCallingFixtureHarness {
 
         // Preflight scopes discovery to the referenced entity and the
         // model reads the specific file it needs; preflight does not blind-read files itself.
-        let secondAdapter = FixtureAgentKernelAdapterV2(
+        let secondAdapter = FixtureAgentKernelAdapter(
             responses: [
                 .toolCall(name: "read_file", arguments: ["path": siteProject.appendingPathComponent("whoami.html").path], reason: nil),
                 .finalAnswer("You have worked for Applied Materials, KLA, and Synopsys.")
@@ -839,7 +844,7 @@ enum AgentToolCallingFixtureHarness {
         let store = try AgentRunStore(rootDirectory: root.appendingPathComponent("store", isDirectory: true))
         let viewModel = AgentRunViewModel(store: store)
         let grant = AgentLocalFileGrant(path: emptyFolder.path, isDirectory: true)
-        let adapter = FixtureAgentKernelAdapterV2(responses: [.finalAnswer("The folder has no entries.")])
+        let adapter = FixtureAgentKernelAdapter(responses: [.finalAnswer("The folder has no entries.")])
         let config = toolConfig(grant: grant, runMode: .readOnly, adapter: adapter)
 
         let runID = try await viewModel.startRun(
@@ -868,7 +873,7 @@ enum AgentToolCallingFixtureHarness {
             atomically: true,
             encoding: .utf8
         )
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [.finalAnswer("I can access the granted workspace folder.")]
         )
         let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
@@ -911,7 +916,7 @@ enum AgentToolCallingFixtureHarness {
             atomically: true,
             encoding: .utf8
         )
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [.finalAnswer("I can use the visible local tools and will ask for approval for risky actions.")]
         )
         let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
@@ -951,7 +956,7 @@ enum AgentToolCallingFixtureHarness {
             AgentLocalFileGrant(path: first.path, isDirectory: true),
             AgentLocalFileGrant(path: second.path, isDirectory: true)
         ]
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [
                 .toolCall(name: "search_files", arguments: ["query": "experience"], reason: nil),
                 .finalAnswer("I found experience references in both granted folders.")
@@ -999,7 +1004,7 @@ enum AgentToolCallingFixtureHarness {
             AgentLocalFileGrant(path: site.path, isDirectory: true),
             AgentLocalFileGrant(path: other.path, isDirectory: true)
         ]
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [
                 .finalAnswer("The folder contains index.html."),
                 .toolCall(name: "read_file", arguments: ["path": index.path], reason: nil),
@@ -1054,7 +1059,7 @@ enum AgentToolCallingFixtureHarness {
             atomically: true,
             encoding: .utf8
         )
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [.finalAnswer("No previous chat context is available in this chat.")]
         )
         let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
@@ -1091,7 +1096,7 @@ enum AgentToolCallingFixtureHarness {
         let store = try AgentRunStore(rootDirectory: root.appendingPathComponent("store", isDirectory: true))
         let viewModel = AgentRunViewModel(store: store)
         let grant = AgentLocalFileGrant(path: site.path, isDirectory: true)
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [.finalAnswer("large.html is the largest HTML file.")]
         )
         let config = toolConfig(grant: grant, runMode: .readOnly, adapter: adapter)
@@ -1132,7 +1137,7 @@ enum AgentToolCallingFixtureHarness {
         let store = try AgentRunStore(rootDirectory: root.appendingPathComponent("store", isDirectory: true))
         let viewModel = AgentRunViewModel(store: store)
         let grant = AgentLocalFileGrant(path: site.path, isDirectory: true)
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [
                 .toolCall(name: "read_file", arguments: ["path": page.path], reason: nil),
                 .finalAnswer("The site lists durable runtime design.")
@@ -1174,7 +1179,7 @@ enum AgentToolCallingFixtureHarness {
         let store = try AgentRunStore(rootDirectory: root.appendingPathComponent("store", isDirectory: true))
         let viewModel = AgentRunViewModel(store: store)
         let grant = AgentLocalFileGrant(path: site.path, isDirectory: true)
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [
                 .toolCall(name: "read_file", arguments: ["path": page.path], reason: nil),
                 .finalAnswer("The site lists Swift, local AI, and agent runtime work.")
@@ -1216,7 +1221,7 @@ enum AgentToolCallingFixtureHarness {
         let store = try AgentRunStore(rootDirectory: root.appendingPathComponent("store", isDirectory: true))
         let viewModel = AgentRunViewModel(store: store)
         let grant = AgentLocalFileGrant(path: workspace.path, isDirectory: true)
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [.finalAnswer("long.txt is larger.")]
         )
         let config = toolConfig(grant: grant, runMode: .readOnly, adapter: adapter)
@@ -1247,7 +1252,7 @@ enum AgentToolCallingFixtureHarness {
         try """
         <html><body><h1>Experience</h1><p>Experience: AI systems, Swift, and agent runtime design.</p></body></html>
         """.write(to: harness.workspace.appendingPathComponent("whoami.html"), atomically: true, encoding: .utf8)
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [
                 .finalAnswer(#"{"answer":"I would need terminal access to inspect the website."}"#),
                 .toolCall(name: "search_files", arguments: ["query": "experience"], reason: nil),
@@ -1284,7 +1289,7 @@ enum AgentToolCallingFixtureHarness {
         let harness = try await makeHarness(prefix: "tool-no-target")
         try String(repeating: "irrelevant filler content. ", count: 4_000)
             .write(to: harness.workspace.appendingPathComponent("big.txt"), atomically: true, encoding: .utf8)
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [.finalAnswer("I can list folders, search and read files, and run bounded commands when you grant access.")]
         )
         let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
@@ -1317,7 +1322,7 @@ enum AgentToolCallingFixtureHarness {
             atomically: true,
             encoding: .utf8
         )
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [
                 .finalAnswer("This answer ignores the recorded local file evidence."),
                 .toolCall(name: "read_file", arguments: ["path": "index.html"], reason: nil),
@@ -1352,7 +1357,7 @@ enum AgentToolCallingFixtureHarness {
             atomically: true,
             encoding: .utf8
         )
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [
                 .toolCall(name: "read_file", arguments: ["path": "whoami.html"], reason: nil),
                 .finalAnswer("The page mentions AI engineering and Swift apps.")
@@ -1386,7 +1391,7 @@ enum AgentToolCallingFixtureHarness {
             let content = Array(repeating: "Bicycle Prestige Blue card size specifications \(index). ", count: 80).joined()
             try content.write(to: harness.workspace.appendingPathComponent("card-\(index).txt"), atomically: true, encoding: .utf8)
         }
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [
                 .toolCall(name: "search_files", arguments: ["query": "Bicycle Prestige Blue card size specifications"], reason: nil),
                 .finalAnswer("I found matching card specification files.")
@@ -1416,20 +1421,20 @@ enum AgentToolCallingFixtureHarness {
     @MainActor
     private static func testContextOverflowRepackagesBeforeFailure() async throws {
         let harness = try await makeHarness(prefix: "tool-context-repack")
-        let descriptor = AgentKernelModelDescriptorV2(
+        let descriptor = AgentKernelModelDescriptor(
             id: "fixture.small-context-repack",
             providerKind: .fixture,
             route: .local,
             displayName: "Fixture Small Context"
         )
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             descriptor: descriptor,
-            capabilities: AgentKernelModelAdapterCapabilitiesV2(
+            capabilities: AgentKernelModelAdapterCapabilities(
                 descriptor: descriptor,
                 toolCallingMode: .native,
                 structuredOutputReliability: .strict,
                 streamingMode: .events,
-                limits: AgentKernelModelLimitsV2(maxPromptCharacters: 1_000)
+                limits: AgentKernelModelLimits(maxPromptCharacters: 1_000)
             ),
             responses: [.finalAnswer("Recovered after repacking.")]
         )
@@ -1456,7 +1461,7 @@ enum AgentToolCallingFixtureHarness {
     private static func testWriteProposalApprovalExecutesAndContinues() async throws {
         let harness = try await makeHarness(prefix: "tool-write")
         let target = harness.workspace.appendingPathComponent("story.txt")
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [
                 .toolCall(
                     name: "stage_write_proposal",
@@ -1510,10 +1515,81 @@ enum AgentToolCallingFixtureHarness {
     }
 
     @MainActor
+    private static func testApprovalContinuationUsesDurableReplayContext() async throws {
+        let harness = try await makeHarness(prefix: "tool-approval-replay")
+        try "alpha".write(to: harness.workspace.appendingPathComponent("alpha.txt"), atomically: true, encoding: .utf8)
+        let target = harness.workspace.appendingPathComponent("notes.txt")
+        let adapter = FixtureAgentKernelAdapter(
+            responses: [
+                .toolCall(
+                    name: "list_folder",
+                    arguments: ["path": harness.workspace.path],
+                    reason: "Inspect the folder before writing."
+                ),
+                .toolCall(
+                    name: "stage_write_proposal",
+                    arguments: [
+                        "operation": "create",
+                        "targetPath": target.path,
+                        "content": "noted"
+                    ],
+                    reason: "Create the requested notes file."
+                ),
+                .finalAnswer("Done after inspecting alpha.txt and creating notes.txt.")
+            ]
+        )
+        let config = toolConfig(grant: harness.grant, runMode: .proposalOnly, adapter: adapter)
+
+        let runID = try await harness.viewModel.startRun(
+            userMessage: "Inspect the folder, then create a notes file.",
+            context: AgentRunViewContext(title: "Approval Replay", contextID: "tool-approval-replay", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use tools when available.",
+            timeout: 2
+        )
+        try await harness.viewModel.waitForIdle(timeout: 3)
+        await harness.viewModel.refresh()
+
+        let approval = try expectOne(harness.viewModel.state.pendingApprovals, "write proposal should create one approval after folder inspection")
+        try await harness.viewModel.approveWait(
+            approval.waitID,
+            adapter: adapter,
+            context: AgentRunViewContext(title: "Approval Replay", contextID: "tool-approval-replay", contextKind: "assistant"),
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use tools when available.",
+            timeout: 2
+        )
+        try await harness.viewModel.waitForIdle(timeout: 3)
+        await harness.viewModel.refresh()
+
+        let requests = await adapter.requests()
+        let finalRequest = requests.last
+        let finalObservations = finalRequest?.messages.filter { $0.role == .observation }.map(\.content).joined(separator: "\n") ?? ""
+        let trace = try await harness.store.traceProjection(runID: runID)
+        let modelRequests = trace.controlRecords.compactMap { record -> AgentModelGatewayRequest? in
+            guard case .modelRequest(let request) = record.payload else { return nil }
+            return request
+        }
+
+        try expect(harness.viewModel.state.activeStatus == .completed, "approved write should complete after replay continuation")
+        try expect(requests.count >= 3, "approval continuation should issue a post-approval model request")
+        try expect(finalObservations.contains("alpha.txt"), "post-approval request should keep the pre-approval folder observation")
+        try expect(finalObservations.contains("stage_write_proposal") && finalObservations.contains("status: succeeded"), "post-approval request should include the approved write result observation")
+        try expect(trace.controlRecords.contains(where: { $0.kind == .approvalResultObservation }), "approval result observation should be durable")
+        try expect(trace.controlRecords.contains(where: { $0.kind == .toolResult && $0.metadata["source"] == .string("approval_continuation") }), "approval continuation should record a durable tool result")
+        try expect(modelRequests.last?.messages.contains(where: { $0.role == .observation && $0.content.contains("alpha.txt") }) == true, "latest durable model request should preserve hidden replay context")
+    }
+
+    @MainActor
     private static func testWriteRequestCannotCompleteFromReadEvidenceOnly() async throws {
         let harness = try await makeHarness(prefix: "tool-write-skip")
         let target = harness.workspace.appendingPathComponent("report.txt")
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [
                 .finalAnswer("Failed to create report.txt because no matching files were found."),
                 .toolCall(
@@ -1617,7 +1693,7 @@ enum AgentToolCallingFixtureHarness {
 
         Experience: Swift apps and local agent tooling.
         """.write(to: target, atomically: true, encoding: .utf8)
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [
                 .toolCall(
                     name: "stage_write_proposal",
@@ -1660,7 +1736,7 @@ enum AgentToolCallingFixtureHarness {
     @MainActor
     private static func testStructuredOutputFailureBlocksWithRecoveryGuidance() async throws {
         let harness = try await makeHarness(prefix: "tool-structured-failure")
-        let adapter = FixtureAgentKernelAdapterV2(responses: [.malformedOutput("{not-valid-json")])
+        let adapter = FixtureAgentKernelAdapter(responses: [.malformedOutput("{not-valid-json")])
         let config = toolConfig(grant: harness.grant, runMode: .proposalOnly, adapter: adapter)
 
         _ = try await harness.viewModel.startRun(
@@ -1689,6 +1765,175 @@ enum AgentToolCallingFixtureHarness {
     }
 
     @MainActor
+    private static func testInvalidToolCallRetriesBeforeEvidence() async throws {
+        let harness = try await makeHarness(prefix: "tool-invalid-call-before-evidence")
+        try "Recoverable note content.".write(
+            to: harness.workspace.appendingPathComponent("note.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let adapter = FixtureAgentKernelAdapter(
+            responses: [
+                .toolCall(name: "read_file", arguments: [:], reason: nil),
+                .toolCall(name: "read_file", arguments: ["path": "note.txt"], reason: nil),
+                .finalAnswer("The note says Recoverable note content.")
+            ]
+        )
+        let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
+
+        let runID = try await harness.viewModel.startRun(
+            userMessage: "Use local tools to inspect the accessible note and summarize it.",
+            context: AgentRunViewContext(title: "Invalid Tool Call", contextID: "tool-invalid-call-before-evidence", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use tools when available.",
+            timeout: 2
+        )
+        try await harness.viewModel.waitForIdle(timeout: 3)
+        await harness.viewModel.refresh()
+
+        let trace = try await harness.store.traceProjection(runID: runID)
+        let recoveryRecords = trace.controlRecords.filter { $0.kind == .toolCallInvalidRecoveryObservation }
+        let recoveryRequests = trace.controlRecords.compactMap { record -> AgentModelGatewayRequest? in
+            guard record.metadata["phase"]?.stringValue == "tool_call_invalid_recovery",
+                  case .modelRequest(let request) = record.payload else {
+                return nil
+            }
+            return request
+        }
+        try expect(harness.viewModel.state.activeStatus == .completed, "invalid tool call should recover before evidence exists")
+        try expect(harness.viewModel.state.messages.last?.text.text.contains("Recoverable note content") == true, "final answer should come from the repaired tool path")
+        try expect(trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.fileRead.rawValue }), "repaired tool call should record file-read evidence")
+        try expect(recoveryRecords.contains(where: { $0.metadata["hasRecordedEvidence"]?.boolValue == false }), "recovery should record that no substantive evidence existed yet")
+        try expect(recoveryRequests.contains(where: { !$0.tools.isEmpty && $0.mode == config.mode }), "no-evidence recovery should keep the tool catalog available")
+        try expect(!harness.viewModel.state.statusSummary.contains("missing required arguments"), "validation error should not be the completed user-facing answer")
+    }
+
+    @MainActor
+    private static func testInvalidToolCallAfterEvidenceRecoversToFinalAnswer() async throws {
+        let harness = try await makeHarness(prefix: "tool-invalid-call-after-evidence")
+        try "Recorded evidence can answer this request.".write(
+            to: harness.workspace.appendingPathComponent("note.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let adapter = FixtureAgentKernelAdapter(
+            responses: [
+                .toolCall(name: "read_file", arguments: ["path": "note.txt"], reason: nil),
+                .toolCall(name: "read_file", arguments: [:], reason: nil),
+                .finalAnswer("The note says Recorded evidence can answer this request.")
+            ]
+        )
+        let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
+
+        let runID = try await harness.viewModel.startRun(
+            userMessage: "Use local tools to inspect the accessible note and summarize it.",
+            context: AgentRunViewContext(title: "Invalid Tool Call After Evidence", contextID: "tool-invalid-call-after-evidence", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use tools when available.",
+            timeout: 2
+        )
+        try await harness.viewModel.waitForIdle(timeout: 3)
+        await harness.viewModel.refresh()
+
+        let trace = try await harness.store.traceProjection(runID: runID)
+        let recoveryRecords = trace.controlRecords.filter { $0.kind == .toolCallInvalidRecoveryObservation }
+        let recoveryRequests = trace.controlRecords.compactMap { record -> AgentModelGatewayRequest? in
+            guard record.metadata["phase"]?.stringValue == "tool_call_invalid_recovery",
+                  case .modelRequest(let request) = record.payload else {
+                return nil
+            }
+            return request
+        }
+        try expect(harness.viewModel.state.activeStatus == .completed, "invalid tool call should recover after evidence exists")
+        try expect(harness.viewModel.state.messages.last?.text.text.contains("Recorded evidence") == true, "final answer should be synthesized from recorded evidence")
+        try expect(trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.fileRead.rawValue }), "initial tool call should record file-read evidence")
+        try expect(recoveryRecords.contains(where: { $0.metadata["hasRecordedEvidence"]?.boolValue == true }), "recovery should record that substantive evidence existed")
+        try expect(recoveryRecords.contains(where: { $0.metadata["toolsDisabled"]?.boolValue == false }), "partial evidence should not close the tool catalog")
+        try expect(recoveryRequests.contains(where: { !$0.tools.isEmpty && $0.mode == config.mode }), "partial-evidence recovery should keep tools available unless requirements are satisfied")
+        try expect(!harness.viewModel.state.statusSummary.contains("missing required arguments"), "validation error should not be projected after successful recovery")
+    }
+
+    @MainActor
+    private static func testUnobservedFinalAnswerPathsRepairThroughTools() async throws {
+        let harness = try await makeHarness(prefix: "tool-unobserved-answer-paths")
+        let details = harness.workspace.appendingPathComponent("details", isDirectory: true)
+        try FileManager.default.createDirectory(at: details, withIntermediateDirectories: true)
+        let first = details.appendingPathComponent("first.txt")
+        let second = details.appendingPathComponent("second.txt")
+        let instructions = harness.workspace.appendingPathComponent("instructions.md")
+        try "Alpha value.".write(to: first, atomically: true, encoding: .utf8)
+        try "Beta value.".write(to: second, atomically: true, encoding: .utf8)
+        try "Use details/first.txt and details/second.txt for the answer.".write(
+            to: instructions,
+            atomically: true,
+            encoding: .utf8
+        )
+        let adapter = FixtureAgentKernelAdapter(
+            responses: [
+                .toolCall(name: "list_folder", arguments: ["path": harness.workspace.path], reason: nil),
+                .toolCall(name: "read_file", arguments: ["path": "instructions.md"], reason: nil),
+                .toolCall(name: "read_file", arguments: [:], reason: nil),
+                .finalAnswer("I still need details/first.txt and details/second.txt."),
+                .toolCall(name: "read_file", arguments: ["path": "details/first.txt"], reason: nil),
+                .toolCall(name: "read_file", arguments: ["path": "details/second.txt"], reason: nil),
+                .finalAnswer("Alpha value. Beta value.")
+            ]
+        )
+        let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
+
+        let runID = try await harness.viewModel.startRun(
+            userMessage: "Use local tools to follow the workspace instructions and summarize the result.",
+            context: AgentRunViewContext(title: "Unobserved Answer Paths", contextID: "tool-unobserved-answer-paths", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use tools when available.",
+            timeout: 2
+        )
+        try await harness.viewModel.waitForIdle(timeout: 3)
+        await harness.viewModel.refresh()
+
+        let trace = try await harness.store.traceProjection(runID: runID)
+        let readPaths = Set(
+            trace.evidence
+                .filter { $0.kind == AgentEvidenceKind.fileRead.rawValue }
+                .compactMap { $0.metadata["path"]?.stringValue }
+                .map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+        )
+        let repairRecords = trace.controlRecords.filter { $0.kind == .finalAnswerRepairObservation }
+        let recoveryRequests = trace.controlRecords.compactMap { record -> AgentModelGatewayRequest? in
+            guard record.metadata["phase"]?.stringValue == "tool_call_invalid_recovery",
+                  case .modelRequest(let request) = record.payload else {
+                return nil
+            }
+            return request
+        }
+        let assistantMessages = harness.viewModel.state.messages.filter { $0.role == .assistant }.map(\.text.text)
+
+        try expect(harness.viewModel.state.activeStatus == .completed, "run should complete after observing referenced local paths")
+        try expect(harness.viewModel.state.messages.last?.text.text.contains("Alpha value. Beta value.") == true, "final answer should use the observed file contents")
+        try expect(readPaths.contains(URL(fileURLWithPath: instructions.path).standardizedFileURL.path), "instructions file should be read")
+        try expect(readPaths.contains(URL(fileURLWithPath: first.path).standardizedFileURL.path), "first referenced file should be read after repair")
+        try expect(readPaths.contains(URL(fileURLWithPath: second.path).standardizedFileURL.path), "second referenced file should be read after repair")
+        try expect(recoveryRequests.contains(where: { !$0.tools.isEmpty && $0.mode == config.mode }), "invalid-tool recovery should keep tools available while evidence is incomplete")
+        try expect(
+            repairRecords.contains(where: { $0.metadata["rejectionKind"]?.stringValue == "unsupportedLocalReferences" }),
+            "premature final answer should be repaired because referenced paths lacked evidence"
+        )
+        try expect(
+            !assistantMessages.contains(where: { $0.contains("I still need details/first.txt") }),
+            "premature unsupported answer should not be projected to chat"
+        )
+    }
+
+    @MainActor
     private static func testSpecificGrantBeatsBroadGrantForRandomTests() async throws {
         let root = try makeTemporaryRoot(prefix: "tool-random-tests")
         let documents = root.appendingPathComponent("Documents", isDirectory: true)
@@ -1704,7 +1949,7 @@ enum AgentToolCallingFixtureHarness {
         ]
         let target = randomTests.appendingPathComponent("short_story.txt")
         let shadowTarget = pixelPane.appendingPathComponent("random-tests/short_story.txt")
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [
                 .toolCall(
                     name: "stage_write_proposal",
@@ -1757,7 +2002,7 @@ enum AgentToolCallingFixtureHarness {
     @MainActor
     private static func testMissingWriteParentIsRejectedBeforeApproval() async throws {
         let harness = try await makeHarness(prefix: "tool-missing-parent")
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [
                 .toolCall(
                     name: "stage_write_proposal",
@@ -1796,7 +2041,7 @@ enum AgentToolCallingFixtureHarness {
     private static func testApprovedWriteFailureContinuesWithObservation() async throws {
         let harness = try await makeHarness(prefix: "tool-approved-fail")
         let missingTarget = harness.workspace.appendingPathComponent("missing-replace.txt")
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [
                 .toolCall(
                     name: "stage_write_proposal",
@@ -1856,7 +2101,7 @@ enum AgentToolCallingFixtureHarness {
     private static func testDeniedWriteDoesNotExecute() async throws {
         let harness = try await makeHarness(prefix: "tool-deny")
         let target = harness.workspace.appendingPathComponent("denied.txt")
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [
                 .toolCall(
                     name: "stage_write_proposal",
@@ -1899,6 +2144,59 @@ enum AgentToolCallingFixtureHarness {
 
         try expect(!FileManager.default.fileExists(atPath: target.path), "denied write should not create file")
         try expect(harness.viewModel.state.activeStatus == .blocked, "denied write should block the run")
+        try expect(harness.viewModel.state.messages.last?.text.text == "User denied the proposed file write.", "denied write should use typed side-effect denial text")
+        try expect(!harness.viewModel.state.messages.contains(where: { $0.text.text.contains("proposed file change") }), "denied write should not project the old file-specific canned answer")
+    }
+
+    @MainActor
+    private static func testDeniedCommandUsesGenericSideEffectProjection() async throws {
+        let harness = try await makeHarness(prefix: "tool-command-deny")
+        let adapter = FixtureAgentKernelAdapter(
+            responses: [
+                .toolCall(
+                    name: "run_finite_command",
+                    arguments: [
+                        "command": "echo no",
+                        "workingDirectory": harness.workspace.path,
+                        "timeoutSeconds": "5"
+                    ],
+                    reason: nil
+                )
+            ]
+        )
+        let config = toolConfig(grant: harness.grant, runMode: .fullAgent, adapter: adapter)
+
+        _ = try await harness.viewModel.startRun(
+            userMessage: "run a command I will deny",
+            context: AgentRunViewContext(title: "Tool Command Deny", contextID: "tool-command-deny", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use tools when available.",
+            timeout: 2
+        )
+        try await harness.viewModel.waitForIdle(timeout: 3)
+        await harness.viewModel.refresh()
+
+        let approval = try expectOne(harness.viewModel.state.pendingApprovals, "command denial should create one approval")
+        try expect(approval.kind == .command, "command denial fixture should stage a command approval")
+
+        try await harness.viewModel.denyWait(
+            approval.waitID,
+            adapter: adapter,
+            context: AgentRunViewContext(title: "Tool Command Deny", contextID: "tool-command-deny", contextKind: "assistant"),
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use tools when available.",
+            timeout: 2
+        )
+        await harness.viewModel.refresh()
+
+        try expect(harness.viewModel.state.activeStatus == .blocked, "denied command should block the run")
+        try expect(harness.viewModel.state.messages.last?.text.text == "User denied the proposed command.", "denied command should project command-specific denial text")
+        try expect(!harness.viewModel.state.messages.contains(where: { $0.text.text.contains("proposed file change") }), "denied command should not use file-write denial wording")
     }
 
     @MainActor
@@ -1910,7 +2208,7 @@ enum AgentToolCallingFixtureHarness {
         echo hello from script
         """.write(to: script, atomically: true, encoding: .utf8)
 
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [
                 .toolCall(
                     name: "run_finite_command",
@@ -1966,7 +2264,7 @@ enum AgentToolCallingFixtureHarness {
     @MainActor
     private static func testApprovedFiniteCommandFailureContinuesWithObservation() async throws {
         let harness = try await makeHarness(prefix: "tool-command-fail")
-        let adapter = FixtureAgentKernelAdapterV2(
+        let adapter = FixtureAgentKernelAdapter(
             responses: [
                 .toolCall(
                     name: "run_finite_command",
@@ -2026,12 +2324,12 @@ enum AgentToolCallingFixtureHarness {
 
     private static func groundedFinalAnswer(
         _ text: String,
-        basis: AgentKernelAnswerGroundingBasisV2,
-        claims: [AgentKernelAnswerClaimV2] = []
-    ) -> FixtureAgentKernelAdapterV2.ScriptedResponse {
+        basis: AgentKernelAnswerGroundingBasis,
+        claims: [AgentKernelAnswerClaim] = []
+    ) -> FixtureAgentKernelAdapter.ScriptedResponse {
         groundedFinalAnswer(
             text,
-            grounding: AgentKernelAnswerGroundingV2(
+            grounding: AgentKernelAnswerGrounding(
                 basis: basis,
                 claims: claims
             )
@@ -2040,11 +2338,11 @@ enum AgentToolCallingFixtureHarness {
 
     private static func groundedFinalAnswer(
         _ text: String,
-        grounding: AgentKernelAnswerGroundingV2
-    ) -> FixtureAgentKernelAdapterV2.ScriptedResponse {
+        grounding: AgentKernelAnswerGrounding
+    ) -> FixtureAgentKernelAdapter.ScriptedResponse {
         .events([
             .finalAnswer(
-                AgentKernelFinalAnswerV2(
+                AgentKernelFinalAnswer(
                     text: text,
                     grounding: grounding
                 )
@@ -2055,9 +2353,9 @@ enum AgentToolCallingFixtureHarness {
     private static func toolConfig(
         grant: AgentLocalFileGrant,
         runMode: AgentRunPermissionMode,
-        adapter: any AgentKernelModelAdapterV2,
+        adapter: any AgentKernelModelAdapter,
         modelConformanceProfile: AgentModelConformanceProfile? = nil
-    ) -> (mode: AgentModelGatewayMode, tools: [AgentKernelToolSchemaV2], context: AgentToolRunContext) {
+    ) -> (mode: AgentModelGatewayMode, tools: [AgentKernelToolSchema], context: AgentToolRunContext) {
         toolConfig(
             grants: [grant],
             runMode: runMode,
@@ -2069,9 +2367,9 @@ enum AgentToolCallingFixtureHarness {
     private static func toolConfig(
         grants: [AgentLocalFileGrant],
         runMode: AgentRunPermissionMode,
-        adapter: any AgentKernelModelAdapterV2,
+        adapter: any AgentKernelModelAdapter,
         modelConformanceProfile: AgentModelConformanceProfile? = nil
-    ) -> (mode: AgentModelGatewayMode, tools: [AgentKernelToolSchemaV2], context: AgentToolRunContext) {
+    ) -> (mode: AgentModelGatewayMode, tools: [AgentKernelToolSchema], context: AgentToolRunContext) {
         let tier = AgentModelGateway.tier(
             for: adapter.capabilities,
             conformanceProfile: modelConformanceProfile
@@ -2094,23 +2392,23 @@ enum AgentToolCallingFixtureHarness {
 
     private static func nativeMLXFixtureAdapter(
         target: AgentModelConformanceTarget,
-        responses: [FixtureAgentKernelAdapterV2.ScriptedResponse]
-    ) -> FixtureAgentKernelAdapterV2 {
-        let descriptor = AgentKernelModelDescriptorV2(
+        responses: [FixtureAgentKernelAdapter.ScriptedResponse]
+    ) -> FixtureAgentKernelAdapter {
+        let descriptor = AgentKernelModelDescriptor(
             id: target.adapterID,
             providerKind: target.providerKind,
             route: target.route,
             displayName: "Fixture Native MLX",
             modelName: target.modelID
         )
-        return FixtureAgentKernelAdapterV2(
+        return FixtureAgentKernelAdapter(
             descriptor: descriptor,
-            capabilities: AgentKernelModelAdapterCapabilitiesV2(
+            capabilities: AgentKernelModelAdapterCapabilities(
                 descriptor: descriptor,
                 toolCallingMode: .native,
                 structuredOutputReliability: .bestEffort,
                 streamingMode: .events,
-                limits: AgentKernelModelLimitsV2(contextWindowTokens: 4_096)
+                limits: AgentKernelModelLimits(contextWindowTokens: 4_096)
             ),
             responses: responses
         )
@@ -2147,22 +2445,22 @@ enum AgentToolCallingFixtureHarness {
     }
 
     private static func tierBFixtureAdapter(
-        responses: [FixtureAgentKernelAdapterV2.ScriptedResponse]
-    ) -> FixtureAgentKernelAdapterV2 {
-        let descriptor = AgentKernelModelDescriptorV2(
+        responses: [FixtureAgentKernelAdapter.ScriptedResponse]
+    ) -> FixtureAgentKernelAdapter {
+        let descriptor = AgentKernelModelDescriptor(
             id: "fixture.tier-b-text-protocol",
             providerKind: .fixture,
             route: .local,
             displayName: "Fixture Tier B Text Protocol"
         )
-        return FixtureAgentKernelAdapterV2(
+        return FixtureAgentKernelAdapter(
             descriptor: descriptor,
-            capabilities: AgentKernelModelAdapterCapabilitiesV2(
+            capabilities: AgentKernelModelAdapterCapabilities(
                 descriptor: descriptor,
                 toolCallingMode: .textProtocol,
                 structuredOutputReliability: .bestEffort,
                 streamingMode: .snapshots,
-                limits: AgentKernelModelLimitsV2(contextWindowTokens: 4_096)
+                limits: AgentKernelModelLimits(contextWindowTokens: 4_096)
             ),
             responses: responses
         )
@@ -2207,22 +2505,5 @@ struct AgentToolCallingFixtureMain {
             fputs("Agent tool-calling fixture tests failed: \(error)\n", stderr)
             exit(1)
         }
-    }
-}
-
-private extension AgentRunMetadataValue {
-    var stringValue: String? {
-        guard case .string(let value) = self else { return nil }
-        return value
-    }
-
-    var intValue: Int? {
-        guard case .int(let value) = self else { return nil }
-        return value
-    }
-
-    var boolValue: Bool? {
-        guard case .bool(let value) = self else { return nil }
-        return value
     }
 }

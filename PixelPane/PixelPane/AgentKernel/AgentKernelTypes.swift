@@ -1,6 +1,6 @@
 import Foundation
 
-nonisolated struct AgentKernelBoundedTextV2: Codable, Equatable, Sendable {
+nonisolated struct AgentKernelBoundedText: Codable, Equatable, Sendable {
     nonisolated static let defaultLimit = 12_000
 
     let text: String
@@ -20,22 +20,22 @@ nonisolated struct AgentKernelBoundedTextV2: Codable, Equatable, Sendable {
     }
 }
 
-nonisolated enum AgentKernelMetadataValueV2: Codable, Equatable, Sendable {
+nonisolated enum AgentKernelMetadataValue: Codable, Equatable, Sendable {
     case string(String)
     case int(Int)
     case double(Double)
     case bool(Bool)
 }
 
-nonisolated struct AgentKernelTerminalReasonV2: Error, Codable, Equatable, Sendable {
+nonisolated struct AgentKernelTerminalReason: Error, Codable, Equatable, Sendable {
     let code: String
-    let summary: AgentKernelBoundedTextV2
-    let metadata: [String: AgentKernelMetadataValueV2]
+    let summary: AgentKernelBoundedText
+    let metadata: [String: AgentKernelMetadataValue]
 
     nonisolated init(
         code: String,
-        summary: AgentKernelBoundedTextV2,
-        metadata: [String: AgentKernelMetadataValueV2] = [:]
+        summary: AgentKernelBoundedText,
+        metadata: [String: AgentKernelMetadataValue] = [:]
     ) {
         self.code = code
         self.summary = summary
@@ -43,26 +43,26 @@ nonisolated struct AgentKernelTerminalReasonV2: Error, Codable, Equatable, Senda
     }
 }
 
-nonisolated enum AgentKernelRoleV2: String, Codable, Equatable, Sendable {
+nonisolated enum AgentKernelRole: String, Codable, Equatable, Sendable {
     case system
     case user
     case assistant
     case observation
 }
 
-nonisolated struct AgentKernelMessageV2: Codable, Equatable, Identifiable, Sendable {
+nonisolated struct AgentKernelMessage: Codable, Equatable, Identifiable, Sendable {
     let id: UUID
-    let role: AgentKernelRoleV2
+    let role: AgentKernelRole
     let content: String
 
-    nonisolated init(id: UUID = UUID(), role: AgentKernelRoleV2, content: String) {
+    nonisolated init(id: UUID = UUID(), role: AgentKernelRole, content: String) {
         self.id = id
         self.role = role
         self.content = content
     }
 }
 
-nonisolated enum AgentKernelToolArgumentTypeV2: String, Codable, Equatable, Sendable {
+nonisolated enum AgentKernelToolArgumentType: String, Codable, Equatable, Sendable {
     case string
     case integer
     case number
@@ -70,15 +70,15 @@ nonisolated enum AgentKernelToolArgumentTypeV2: String, Codable, Equatable, Send
     case jsonString
 }
 
-nonisolated struct AgentKernelToolArgumentSchemaV2: Codable, Equatable, Sendable {
+nonisolated struct AgentKernelToolArgumentSchema: Codable, Equatable, Sendable {
     let name: String
-    let type: AgentKernelToolArgumentTypeV2
+    let type: AgentKernelToolArgumentType
     let isRequired: Bool
     let summary: String
 
     nonisolated init(
         name: String,
-        type: AgentKernelToolArgumentTypeV2,
+        type: AgentKernelToolArgumentType,
         isRequired: Bool = true,
         summary: String
     ) {
@@ -89,11 +89,11 @@ nonisolated struct AgentKernelToolArgumentSchemaV2: Codable, Equatable, Sendable
     }
 }
 
-nonisolated struct AgentKernelToolSchemaV2: Codable, Equatable, Identifiable, Sendable {
+nonisolated struct AgentKernelToolSchema: Codable, Equatable, Identifiable, Sendable {
     let id: String
     let name: String
     let summary: String
-    let arguments: [AgentKernelToolArgumentSchemaV2]
+    let arguments: [AgentKernelToolArgumentSchema]
     let requiredArguments: [String]
 
     private enum CodingKeys: String, CodingKey {
@@ -108,10 +108,10 @@ nonisolated struct AgentKernelToolSchemaV2: Codable, Equatable, Identifiable, Se
         name: String,
         summary: String,
         requiredArguments: [String] = [],
-        arguments: [AgentKernelToolArgumentSchemaV2]? = nil
+        arguments: [AgentKernelToolArgumentSchema]? = nil
     ) {
         let resolvedArguments = arguments ?? requiredArguments.map {
-            AgentKernelToolArgumentSchemaV2(
+            AgentKernelToolArgumentSchema(
                 name: $0,
                 type: .string,
                 summary: "Required argument."
@@ -131,7 +131,7 @@ nonisolated struct AgentKernelToolSchemaV2: Codable, Equatable, Identifiable, Se
         let name = try container.decode(String.self, forKey: .name)
         let summary = try container.decode(String.self, forKey: .summary)
         let requiredArguments = try container.decodeIfPresent([String].self, forKey: .requiredArguments) ?? []
-        let arguments = try container.decodeIfPresent([AgentKernelToolArgumentSchemaV2].self, forKey: .arguments)
+        let arguments = try container.decodeIfPresent([AgentKernelToolArgumentSchema].self, forKey: .arguments)
         self.init(name: name, summary: summary, requiredArguments: requiredArguments, arguments: arguments)
     }
 
@@ -140,7 +140,7 @@ nonisolated struct AgentKernelToolSchemaV2: Codable, Equatable, Identifiable, Se
     }
 }
 
-nonisolated struct AgentKernelToolCallV2: Codable, Equatable, Identifiable, Sendable {
+nonisolated struct AgentKernelToolCall: Codable, Equatable, Identifiable, Sendable {
     let id: UUID
     let name: String
     let arguments: [String: String]
@@ -159,13 +159,13 @@ nonisolated struct AgentKernelToolCallV2: Codable, Equatable, Identifiable, Send
     }
 }
 
-nonisolated enum AgentKernelAnswerGroundingBasisV2: String, Codable, Equatable, Sendable {
+nonisolated enum AgentKernelAnswerGroundingBasis: String, Codable, Equatable, Sendable {
     case generalKnowledge = "general_knowledge"
     case localEvidence = "local_evidence"
     case capabilityLimitation = "capability_limitation"
 }
 
-nonisolated enum AgentKernelAnswerClaimKindV2: String, Codable, Equatable, Hashable, Sendable {
+nonisolated enum AgentKernelAnswerClaimKind: String, Codable, Equatable, Hashable, Sendable {
     case fileGrants = "file_grants"
     case processSnapshot = "process_snapshot"
     case localListeners = "local_listeners"
@@ -176,50 +176,50 @@ nonisolated enum AgentKernelAnswerClaimKindV2: String, Codable, Equatable, Hasha
     case visualContext = "visual_context"
 }
 
-nonisolated struct AgentKernelAnswerClaimV2: Codable, Equatable, Sendable {
-    let kind: AgentKernelAnswerClaimKindV2
+nonisolated struct AgentKernelAnswerClaim: Codable, Equatable, Sendable {
+    let kind: AgentKernelAnswerClaimKind
     let target: String?
 
-    nonisolated init(kind: AgentKernelAnswerClaimKindV2, target: String? = nil) {
+    nonisolated init(kind: AgentKernelAnswerClaimKind, target: String? = nil) {
         self.kind = kind
         self.target = target
     }
 }
 
-nonisolated struct AgentKernelAnswerGroundingV2: Codable, Equatable, Sendable {
-    let basis: AgentKernelAnswerGroundingBasisV2
-    let claims: [AgentKernelAnswerClaimV2]
+nonisolated struct AgentKernelAnswerGrounding: Codable, Equatable, Sendable {
+    let basis: AgentKernelAnswerGroundingBasis
+    let claims: [AgentKernelAnswerClaim]
 
     nonisolated init(
-        basis: AgentKernelAnswerGroundingBasisV2,
-        claims: [AgentKernelAnswerClaimV2] = []
+        basis: AgentKernelAnswerGroundingBasis,
+        claims: [AgentKernelAnswerClaim] = []
     ) {
         self.basis = basis
         self.claims = claims
     }
 }
 
-nonisolated struct AgentKernelFinalAnswerV2: Codable, Equatable, Sendable {
+nonisolated struct AgentKernelFinalAnswer: Codable, Equatable, Sendable {
     let text: String
-    let grounding: AgentKernelAnswerGroundingV2?
+    let grounding: AgentKernelAnswerGrounding?
 
     nonisolated init(
         text: String,
-        grounding: AgentKernelAnswerGroundingV2? = nil
+        grounding: AgentKernelAnswerGrounding? = nil
     ) {
         self.text = text
         self.grounding = grounding
     }
 }
 
-nonisolated enum AgentKernelModelEventV2: Codable, Equatable, Sendable {
-    case finalAnswer(AgentKernelFinalAnswerV2)
-    case toolCall(AgentKernelToolCallV2)
+nonisolated enum AgentKernelModelEvent: Codable, Equatable, Sendable {
+    case finalAnswer(AgentKernelFinalAnswer)
+    case toolCall(AgentKernelToolCall)
     case malformedOutput(String)
     case emptyOutput
     case timedOut
 
     nonisolated static func finalAnswer(_ text: String) -> Self {
-        .finalAnswer(AgentKernelFinalAnswerV2(text: text))
+        .finalAnswer(AgentKernelFinalAnswer(text: text))
     }
 }

@@ -47,6 +47,7 @@ nonisolated struct AgentRunnerStep: Sendable {
 
 nonisolated struct AgentRunnerLaunchRecoveryResult: Codable, Equatable, Sendable {
     let interruptedRuns: [AgentRunRecord]
+    let interruptedSteps: [AgentRunStepRecord]
     let pendingWaits: [AgentRunWaitRecord]
 }
 
@@ -100,14 +101,16 @@ actor AgentRunner {
     func recoverOnLaunch(recoveredAt: Date = Date()) async throws -> AgentRunnerLaunchRecoveryResult {
         let interruptedCandidates = await store.runsNeedingLaunchRecovery()
         var interruptedRuns: [AgentRunRecord] = []
+        var interruptedSteps: [AgentRunStepRecord] = []
 
         for run in interruptedCandidates {
             if let activeStepID = run.activeStepID {
-                _ = try await store.finishStep(
+                let step = try await store.finishStep(
                     stepID: activeStepID,
                     status: .interrupted,
                     finishedAt: recoveredAt
                 )
+                interruptedSteps.append(step)
             }
             try await store.updateRunStatus(
                 runID: run.runID,
@@ -129,6 +132,7 @@ actor AgentRunner {
 
         return AgentRunnerLaunchRecoveryResult(
             interruptedRuns: interruptedRuns,
+            interruptedSteps: interruptedSteps,
             pendingWaits: await store.pendingWaits()
         )
     }

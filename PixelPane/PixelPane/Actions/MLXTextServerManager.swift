@@ -68,10 +68,10 @@ actor MLXTextServerManager {
     }
 
     func nativeToolResponse(
-        request: AgentKernelModelAdapterRequestV2,
+        request: AgentKernelModelAdapterRequest,
         modelURL: URL,
         executableURL: URL
-    ) async throws -> [AgentKernelModelAdapterEventV2] {
+    ) async throws -> [AgentKernelModelAdapterEvent] {
         let warmServer = try await readyServer(modelURL: modelURL, executableURL: executableURL)
         scheduleIdleShutdown()
 
@@ -225,9 +225,9 @@ actor MLXTextServerManager {
     }
 
     private func requestNativeToolResponse(
-        request adapterRequest: AgentKernelModelAdapterRequestV2,
+        request adapterRequest: AgentKernelModelAdapterRequest,
         server: WarmServer
-    ) async throws -> [AgentKernelModelAdapterEventV2] {
+    ) async throws -> [AgentKernelModelAdapterEvent] {
         guard let url = URL(string: "http://127.0.0.1:\(server.port)/v1/chat/completions") else {
             throw AIBackendError.unavailable(.generationFailed)
         }
@@ -273,7 +273,7 @@ actor MLXTextServerManager {
     }
 
     private func nativeMessages(
-        from messages: [AgentKernelMessageV2]
+        from messages: [AgentKernelMessage]
     ) -> [[String: Any]] {
         messages.flatMap { message -> [[String: Any]] in
             switch message.role {
@@ -342,7 +342,7 @@ actor MLXTextServerManager {
     }
 
     private func nativeToolSchema(
-        from tool: AgentKernelToolSchemaV2
+        from tool: AgentKernelToolSchema
     ) -> [String: Any] {
         var properties: [String: Any] = [:]
         for argument in tool.arguments {
@@ -366,7 +366,7 @@ actor MLXTextServerManager {
         ]
     }
 
-    private func nativeJSONSchemaType(_ type: AgentKernelToolArgumentTypeV2) -> String {
+    private func nativeJSONSchemaType(_ type: AgentKernelToolArgumentType) -> String {
         switch type {
         case .string, .jsonString:
             return "string"
@@ -381,7 +381,7 @@ actor MLXTextServerManager {
 
     private func nativeToolCallEvent(
         from toolCalls: [[String: Any]]
-    ) -> AgentKernelModelAdapterEventV2? {
+    ) -> AgentKernelModelAdapterEvent? {
         for rawCall in toolCalls {
             guard let function = rawCall["function"] as? [String: Any],
                   let name = function["name"] as? String,
@@ -390,7 +390,7 @@ actor MLXTextServerManager {
             }
             let arguments = nativeToolArguments(from: function["arguments"])
             return .toolCall(
-                AgentKernelToolCallV2(
+                AgentKernelToolCall(
                     name: name,
                     arguments: arguments
                 )

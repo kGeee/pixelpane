@@ -1,21 +1,21 @@
 import Foundation
 
-struct AgentKernelAIBackendAdapterV2: AgentKernelModelAdapterV2 {
-    let descriptor: AgentKernelModelDescriptorV2
-    let capabilities: AgentKernelModelAdapterCapabilitiesV2
+struct AgentKernelAIBackendAdapter: AgentKernelModelAdapter {
+    let descriptor: AgentKernelModelDescriptor
+    let capabilities: AgentKernelModelAdapterCapabilities
     private let backend: any AIBackend
     private let preferredProvider: AIBackendProvider?
-    private let promptBuilder: AgentKernelTextProtocolPromptBuilderV2
-    private let parser: AgentKernelTextProtocolParserV2
+    private let promptBuilder: AgentKernelTextProtocolPromptBuilder
+    private let parser: AgentKernelTextProtocolParser
     private let allowsSingleRepairAttempt: Bool
 
     nonisolated init(
-        descriptor: AgentKernelModelDescriptorV2,
+        descriptor: AgentKernelModelDescriptor,
         backend: any AIBackend,
-        capabilities: AgentKernelModelAdapterCapabilitiesV2,
+        capabilities: AgentKernelModelAdapterCapabilities,
         preferredProvider: AIBackendProvider? = nil,
-        promptBuilder: AgentKernelTextProtocolPromptBuilderV2 = AgentKernelTextProtocolPromptBuilderV2(),
-        parser: AgentKernelTextProtocolParserV2 = AgentKernelTextProtocolParserV2(),
+        promptBuilder: AgentKernelTextProtocolPromptBuilder = AgentKernelTextProtocolPromptBuilder(),
+        parser: AgentKernelTextProtocolParser = AgentKernelTextProtocolParser(),
         allowsSingleRepairAttempt: Bool = true
     ) {
         self.descriptor = descriptor
@@ -28,8 +28,8 @@ struct AgentKernelAIBackendAdapterV2: AgentKernelModelAdapterV2 {
     }
 
     nonisolated func response(
-        for request: AgentKernelModelAdapterRequestV2
-    ) async -> AgentKernelModelAdapterResponseV2 {
+        for request: AgentKernelModelAdapterRequest
+    ) async -> AgentKernelModelAdapterResponse {
         let shouldUseProtocol = !request.tools.isEmpty || request.responseFormat == .textProtocol
         let prompt = shouldUseProtocol
             ? promptBuilder.prompt(for: request)
@@ -41,31 +41,31 @@ struct AgentKernelAIBackendAdapterV2: AgentKernelModelAdapterV2 {
                 return await parseOrRepair(text, originalRequest: request)
             }
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            return AgentKernelModelAdapterResponseV2(
+            return AgentKernelModelAdapterResponse(
                 requestID: request.id,
                 descriptor: descriptor,
                 events: trimmed.isEmpty ? [.emptyOutput] : [.finalAnswer(trimmed)]
             )
         } catch is CancellationError {
-            return AgentKernelModelAdapterResponseV2(
+            return AgentKernelModelAdapterResponse(
                 requestID: request.id,
                 descriptor: descriptor,
                 events: [.timedOut],
-                diagnostics: AgentKernelBoundedTextV2("Request was canceled.")
+                diagnostics: AgentKernelBoundedText("Request was canceled.")
             )
         } catch {
-            return AgentKernelModelAdapterResponseV2(
+            return AgentKernelModelAdapterResponse(
                 requestID: request.id,
                 descriptor: descriptor,
                 events: [.malformedOutput(error.localizedDescription)],
-                diagnostics: AgentKernelBoundedTextV2(error.localizedDescription)
+                diagnostics: AgentKernelBoundedText(error.localizedDescription)
             )
         }
     }
 
     nonisolated func stream(
-        for request: AgentKernelModelAdapterRequestV2
-    ) -> AsyncStream<AgentKernelModelAdapterEventV2> {
+        for request: AgentKernelModelAdapterRequest
+    ) -> AsyncStream<AgentKernelModelAdapterEvent> {
         AsyncStream { continuation in
             let task = Task {
                 let shouldUseProtocol = !request.tools.isEmpty || request.responseFormat == .textProtocol
@@ -118,8 +118,8 @@ struct AgentKernelAIBackendAdapterV2: AgentKernelModelAdapterV2 {
 
     private nonisolated func parseOrRepair(
         _ text: String,
-        originalRequest request: AgentKernelModelAdapterRequestV2
-    ) async -> AgentKernelModelAdapterResponseV2 {
+        originalRequest request: AgentKernelModelAdapterRequest
+    ) async -> AgentKernelModelAdapterResponse {
         switch parser.parse(text, tools: request.tools) {
         case .success(let event):
             return response(for: request, events: [event])
@@ -152,7 +152,7 @@ struct AgentKernelAIBackendAdapterV2: AgentKernelModelAdapterV2 {
 
     private nonisolated func completeText(
         prompt: String,
-        request: AgentKernelModelAdapterRequestV2
+        request: AgentKernelModelAdapterRequest
     ) async throws -> String {
         let backendRequest = AIBackendRequest(
             actionKind: .chat,
@@ -180,11 +180,11 @@ struct AgentKernelAIBackendAdapterV2: AgentKernelModelAdapterV2 {
     }
 
     private nonisolated func response(
-        for request: AgentKernelModelAdapterRequestV2,
-        events: [AgentKernelModelAdapterEventV2],
-        diagnostics: AgentKernelBoundedTextV2? = nil
-    ) -> AgentKernelModelAdapterResponseV2 {
-        AgentKernelModelAdapterResponseV2(
+        for request: AgentKernelModelAdapterRequest,
+        events: [AgentKernelModelAdapterEvent],
+        diagnostics: AgentKernelBoundedText? = nil
+    ) -> AgentKernelModelAdapterResponse {
+        AgentKernelModelAdapterResponse(
             requestID: request.id,
             descriptor: descriptor,
             events: events,
@@ -192,26 +192,26 @@ struct AgentKernelAIBackendAdapterV2: AgentKernelModelAdapterV2 {
         )
     }
 
-    private nonisolated func plainPrompt(for messages: [AgentKernelMessageV2]) -> String {
+    private nonisolated func plainPrompt(for messages: [AgentKernelMessage]) -> String {
         messages.map { "\($0.role.rawValue): \($0.content)" }.joined(separator: "\n")
     }
 }
 
-extension AgentKernelModelAdapterCapabilitiesV2 {
+extension AgentKernelModelAdapterCapabilities {
     nonisolated static func aiBackendBridge(
-        descriptor: AgentKernelModelDescriptorV2,
+        descriptor: AgentKernelModelDescriptor,
         backendCapabilities: AIBackendCapabilities
-    ) -> AgentKernelModelAdapterCapabilitiesV2 {
-        var inputModalities: Set<AgentKernelModelInputModalityV2> = []
+    ) -> AgentKernelModelAdapterCapabilities {
+        var inputModalities: Set<AgentKernelModelInputModality> = []
         if backendCapabilities.text.isAvailable {
             inputModalities.insert(.text)
         }
         if backendCapabilities.image.isAvailable {
             inputModalities.insert(.image)
         }
-        let unavailableReason: AgentKernelBoundedTextV2?
+        let unavailableReason: AgentKernelBoundedText?
         if inputModalities.isEmpty {
-            unavailableReason = AgentKernelBoundedTextV2(backendCapabilities.text.detail)
+            unavailableReason = AgentKernelBoundedText(backendCapabilities.text.detail)
         } else {
             unavailableReason = nil
         }
@@ -221,14 +221,14 @@ extension AgentKernelModelAdapterCapabilitiesV2 {
         } else {
             textProvider = nil
         }
-        return AgentKernelModelAdapterCapabilitiesV2(
+        return AgentKernelModelAdapterCapabilities(
             descriptor: descriptor,
             inputModalities: inputModalities.isEmpty ? [.text] : inputModalities,
             outputModalities: [.text],
             toolCallingMode: textProvider == .mlxText ? .native : .textProtocol,
             structuredOutputReliability: .bestEffort,
             streamingMode: .snapshots,
-            limits: AgentKernelModelLimitsV2(
+            limits: AgentKernelModelLimits(
                 contextWindowTokens: backendCapabilities.contextWindowTokens,
                 maxPromptCharacters: backendCapabilities.maxPromptCharacters,
                 maxOutputTokens: backendCapabilities.maxOutputTokens

@@ -1,19 +1,19 @@
 import Foundation
 
-enum AgentKernelToolProtocolDecodeResultV2: Equatable, Sendable {
-    case event(AgentKernelModelAdapterEventV2)
+enum AgentKernelToolProtocolDecodeResult: Equatable, Sendable {
+    case event(AgentKernelModelAdapterEvent)
     case notProtocol
-    case failure(AgentKernelTerminalReasonV2)
+    case failure(AgentKernelTerminalReason)
 }
 
-struct AgentKernelToolProtocolDecoderV2: Sendable {
+struct AgentKernelToolProtocolDecoder: Sendable {
     nonisolated init() {}
 
     nonisolated func decode(
         _ text: String,
-        tools: [AgentKernelToolSchemaV2],
+        tools: [AgentKernelToolSchema],
         requiresProtocolEnvelope: Bool
-    ) -> AgentKernelToolProtocolDecodeResultV2 {
+    ) -> AgentKernelToolProtocolDecodeResult {
         let cleaned = protocolPayload(from: text)
         guard !cleaned.isEmpty else {
             return .event(.emptyOutput)
@@ -51,30 +51,30 @@ struct AgentKernelToolProtocolDecoderV2: Sendable {
         }
     }
 
-    private nonisolated func decodeFinalAnswer(_ json: [String: Any]) -> AgentKernelToolProtocolDecodeResultV2 {
+    private nonisolated func decodeFinalAnswer(_ json: [String: Any]) -> AgentKernelToolProtocolDecodeResult {
         guard let text = json["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return .failure(reason(code: "text_protocol_missing_final_text", summary: "Final answer output is missing non-empty text."))
         }
         guard let groundingValue = json["grounding"] else {
-            return .event(.finalAnswer(AgentKernelFinalAnswerV2(text: text)))
+            return .event(.finalAnswer(AgentKernelFinalAnswer(text: text)))
         }
         guard let groundingObject = groundingValue as? [String: Any] else {
             return .failure(reason(code: "text_protocol_grounding_not_object", summary: "Final answer grounding must be a JSON object."))
         }
         guard let basisValue = groundingObject["basis"] as? String,
-              let basis = AgentKernelAnswerGroundingBasisV2(rawValue: basisValue) else {
+              let basis = AgentKernelAnswerGroundingBasis(rawValue: basisValue) else {
             return .failure(reason(code: "text_protocol_unknown_grounding_basis", summary: "Final answer grounding basis is not supported."))
         }
 
         let rawClaims = groundingObject["claims"] as? [[String: Any]] ?? []
-        var claims: [AgentKernelAnswerClaimV2] = []
+        var claims: [AgentKernelAnswerClaim] = []
         for rawClaim in rawClaims {
             guard let kindValue = rawClaim["kind"] as? String,
-                  let kind = AgentKernelAnswerClaimKindV2(rawValue: kindValue) else {
+                  let kind = AgentKernelAnswerClaimKind(rawValue: kindValue) else {
                 return .failure(reason(code: "text_protocol_unknown_grounding_claim", summary: "Final answer grounding claim kind is not supported."))
             }
             claims.append(
-                AgentKernelAnswerClaimV2(
+                AgentKernelAnswerClaim(
                     kind: kind,
                     target: rawClaim["target"] as? String
                 )
@@ -83,9 +83,9 @@ struct AgentKernelToolProtocolDecoderV2: Sendable {
 
         return .event(
             .finalAnswer(
-                AgentKernelFinalAnswerV2(
+                AgentKernelFinalAnswer(
                     text: text,
-                    grounding: AgentKernelAnswerGroundingV2(
+                    grounding: AgentKernelAnswerGrounding(
                         basis: basis,
                         claims: claims
                     )
@@ -96,8 +96,8 @@ struct AgentKernelToolProtocolDecoderV2: Sendable {
 
     nonisolated func partialToolCallForValidation(
         _ text: String,
-        tools: [AgentKernelToolSchemaV2]
-    ) -> AgentKernelToolCallV2? {
+        tools: [AgentKernelToolSchema]
+    ) -> AgentKernelToolCall? {
         let cleaned = protocolPayload(from: text)
         guard let data = cleaned.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data),
@@ -119,27 +119,14 @@ struct AgentKernelToolProtocolDecoderV2: Sendable {
             rawArguments = [:]
         }
 
-        let repairedArguments = repairArguments(rawArguments, for: tool)
-        let knownArguments = tool.knownArgumentNames
-        guard repairedArguments.keys.allSatisfy({ knownArguments.contains($0) }) else {
+        let arguments: [String: String]
+        do {
+            arguments = try AgentToolCallArgumentNormalizer.normalizedArguments(rawArguments: rawArguments, tool: tool)
+        } catch {
             return nil
         }
 
-        var arguments: [String: String] = [:]
-        for (key, value) in repairedArguments {
-            arguments[key] = stringArgument(from: value)
-        }
-
-        for argument in tool.arguments {
-            guard let value = arguments[argument.name] else {
-                continue
-            }
-            guard isValid(value: value, for: argument.type) else {
-                return nil
-            }
-        }
-
-        return AgentKernelToolCallV2(
+        return AgentKernelToolCall(
             name: name,
             arguments: arguments,
             reason: json["reason"] as? String
@@ -148,8 +135,8 @@ struct AgentKernelToolProtocolDecoderV2: Sendable {
 
     private nonisolated func decodeToolCall(
         _ json: [String: Any],
-        tools: [AgentKernelToolSchemaV2]
-    ) -> AgentKernelToolProtocolDecodeResultV2 {
+        tools: [AgentKernelToolSchema]
+    ) -> AgentKernelToolProtocolDecodeResult {
         guard let name = json["name"] as? String, !name.isEmpty else {
             return .failure(reason(code: "text_protocol_missing_tool_name", summary: "Tool call output is missing tool name."))
         }
@@ -165,57 +152,18 @@ struct AgentKernelToolProtocolDecoderV2: Sendable {
         } else {
             rawArguments = [:]
         }
-        let repairedArguments = repairArguments(rawArguments, for: tool)
-
-        let knownArguments = tool.knownArgumentNames
-        if let unknown = repairedArguments.keys.filter({ !knownArguments.contains($0) }).sorted().first {
-            return .failure(
-                reason(
-                    code: "text_protocol_unknown_tool_argument",
-                    summary: "Tool call output included an argument that is not in the tool schema.",
-                    metadata: ["tool": .string(name), "argument": .string(unknown)]
-                )
-            )
-        }
-
-        var arguments: [String: String] = [:]
-        for (key, value) in repairedArguments {
-            arguments[key] = stringArgument(from: value)
-        }
-
-        let missing = tool.requiredArguments.filter { (arguments[$0] ?? "").isEmpty }
-        guard missing.isEmpty else {
-            return .failure(
-                reason(
-                    code: "text_protocol_missing_tool_argument",
-                    summary: "Tool call output is missing required argument(s).",
-                    metadata: ["tool": .string(name), "missing": .string(missing.joined(separator: ","))]
-                )
-            )
-        }
-
-        for argument in tool.arguments {
-            guard let value = arguments[argument.name] else {
-                continue
-            }
-            guard isValid(value: value, for: argument.type) else {
-                return .failure(
-                    reason(
-                        code: "text_protocol_malformed_tool_argument",
-                        summary: "Tool call output included an argument with the wrong type.",
-                        metadata: [
-                            "tool": .string(name),
-                            "argument": .string(argument.name),
-                            "type": .string(argument.type.rawValue)
-                        ]
-                    )
-                )
-            }
+        let arguments: [String: String]
+        do {
+            arguments = try AgentToolCallArgumentNormalizer.normalizedArguments(rawArguments: rawArguments, tool: tool)
+        } catch let error as AgentToolContractError {
+            return .failure(toolArgumentFailure(error, toolName: name))
+        } catch {
+            return .failure(reason(code: "text_protocol_malformed_tool_argument", summary: "Tool call output included malformed arguments."))
         }
 
         return .event(
             .toolCall(
-                AgentKernelToolCallV2(
+                AgentKernelToolCall(
                     name: name,
                     arguments: arguments,
                     reason: json["reason"] as? String
@@ -224,86 +172,56 @@ struct AgentKernelToolProtocolDecoderV2: Sendable {
         )
     }
 
-    private nonisolated func repairArguments(
-        _ rawArguments: [String: Any],
-        for tool: AgentKernelToolSchemaV2
-    ) -> [String: Any] {
-        guard tool.name == "stage_write_proposal" else {
-            return rawArguments
-        }
-
-        var repaired = rawArguments
-        if (stringValue(repaired["targetPath"]) ?? "").isEmpty,
-           let path = stringValue(repaired["path"]),
-           !path.isEmpty {
-            repaired["targetPath"] = path
-            repaired.removeValue(forKey: "path")
-        }
-
-        if (stringValue(repaired["operation"]) ?? "").isEmpty,
-           !(stringValue(repaired["targetPath"]) ?? "").isEmpty,
-           !(stringValue(repaired["content"]) ?? "").isEmpty {
-            repaired["operation"] = "create"
-        }
-
-        return repaired
-    }
-
-    private nonisolated func stringValue(_ value: Any?) -> String? {
-        guard let value else { return nil }
-        return stringArgument(from: value)
-    }
-
-    private nonisolated func stringArgument(from value: Any) -> String {
-        if let string = value as? String {
-            return string
-        }
-        if let bool = value as? Bool {
-            return bool ? "true" : "false"
-        }
-        if let int = value as? Int {
-            return "\(int)"
-        }
-        if let double = value as? Double {
-            return "\(double)"
-        }
-        if JSONSerialization.isValidJSONObject(value),
-           let encoded = try? JSONSerialization.data(withJSONObject: value),
-           let encodedString = String(data: encoded, encoding: .utf8) {
-            return encodedString
-        }
-        return "\(value)"
-    }
-
-    private nonisolated func isValid(
-        value: String,
-        for type: AgentKernelToolArgumentTypeV2
-    ) -> Bool {
-        switch type {
-        case .string:
-            return true
-        case .integer:
-            return Int(value) != nil
-        case .number:
-            return Double(value) != nil
-        case .boolean:
-            return value == "true" || value == "false"
-        case .jsonString:
-            guard let data = value.data(using: .utf8) else {
-                return false
-            }
-            return (try? JSONSerialization.jsonObject(with: data)) != nil
+    private nonisolated func toolArgumentFailure(
+        _ error: AgentToolContractError,
+        toolName: String
+    ) -> AgentKernelTerminalReason {
+        switch error {
+        case .unknownTool(let name):
+            return reason(
+                code: "text_protocol_unknown_tool",
+                summary: "Tool call output requested a tool that is not available.",
+                metadata: ["tool": .string(name)]
+            )
+        case .unknownArgument(let argument):
+            return reason(
+                code: "text_protocol_unknown_tool_argument",
+                summary: "Tool call output included an argument that is not in the tool schema.",
+                metadata: ["tool": .string(toolName), "argument": .string(argument)]
+            )
+        case .missingRequiredArgument(let argument):
+            return reason(
+                code: "text_protocol_missing_tool_argument",
+                summary: "Tool call output is missing required argument(s).",
+                metadata: ["tool": .string(toolName), "missing": .string(argument)]
+            )
+        case .malformedArgument(let argument, let type, _):
+            return reason(
+                code: "text_protocol_malformed_tool_argument",
+                summary: "Tool call output included an argument with the wrong type.",
+                metadata: [
+                    "tool": .string(toolName),
+                    "argument": .string(argument),
+                    "type": .string(type.rawValue)
+                ]
+            )
+        case .constraintViolation(let argument, let summary):
+            return reason(
+                code: "text_protocol_malformed_tool_argument",
+                summary: summary,
+                metadata: ["tool": .string(toolName), "argument": .string(argument)]
+            )
         }
     }
 
     private nonisolated func reason(
         code: String,
         summary: String,
-        metadata: [String: AgentKernelMetadataValueV2] = [:]
-    ) -> AgentKernelTerminalReasonV2 {
-        AgentKernelTerminalReasonV2(
+        metadata: [String: AgentKernelMetadataValue] = [:]
+    ) -> AgentKernelTerminalReason {
+        AgentKernelTerminalReason(
             code: code,
-            summary: AgentKernelBoundedTextV2(summary),
+            summary: AgentKernelBoundedText(summary),
             metadata: metadata
         )
     }
@@ -379,22 +297,22 @@ struct AgentKernelToolProtocolDecoderV2: Sendable {
     }
 }
 
-struct AgentKernelModelOutputNormalizerV2: Sendable {
-    private let decoder: AgentKernelToolProtocolDecoderV2
+struct AgentKernelModelOutputNormalizer: Sendable {
+    private let decoder: AgentKernelToolProtocolDecoder
 
-    nonisolated init(decoder: AgentKernelToolProtocolDecoderV2 = AgentKernelToolProtocolDecoderV2()) {
+    nonisolated init(decoder: AgentKernelToolProtocolDecoder = AgentKernelToolProtocolDecoder()) {
         self.decoder = decoder
     }
 
     nonisolated func normalize(
-        response: AgentKernelModelAdapterResponseV2,
-        tools: [AgentKernelToolSchemaV2]
-    ) -> AgentKernelModelAdapterResponseV2 {
+        response: AgentKernelModelAdapterResponse,
+        tools: [AgentKernelToolSchema]
+    ) -> AgentKernelModelAdapterResponse {
         let normalizedEvents = response.events.map { normalize(event: $0, tools: tools) }
         guard normalizedEvents != response.events else {
             return response
         }
-        return AgentKernelModelAdapterResponseV2(
+        return AgentKernelModelAdapterResponse(
             requestID: response.requestID,
             descriptor: response.descriptor,
             events: normalizedEvents,
@@ -403,9 +321,9 @@ struct AgentKernelModelOutputNormalizerV2: Sendable {
     }
 
     nonisolated func normalize(
-        event: AgentKernelModelAdapterEventV2,
-        tools: [AgentKernelToolSchemaV2]
-    ) -> AgentKernelModelAdapterEventV2 {
+        event: AgentKernelModelAdapterEvent,
+        tools: [AgentKernelToolSchema]
+    ) -> AgentKernelModelAdapterEvent {
         guard case .finalAnswer(let answer) = event else {
             return event
         }
@@ -414,8 +332,8 @@ struct AgentKernelModelOutputNormalizerV2: Sendable {
 
     nonisolated func normalizedFinalAnswer(
         _ text: String,
-        tools: [AgentKernelToolSchemaV2]
-    ) -> AgentKernelModelAdapterEventV2? {
+        tools: [AgentKernelToolSchema]
+    ) -> AgentKernelModelAdapterEvent? {
         switch decoder.decode(text, tools: tools, requiresProtocolEnvelope: false) {
         case .event(let event):
             return event

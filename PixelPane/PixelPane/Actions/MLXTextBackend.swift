@@ -96,8 +96,8 @@ final class MLXTextBackend: AIBackend, @unchecked Sendable {
     }
 
     nonisolated func nativeToolResponse(
-        for request: AgentKernelModelAdapterRequestV2
-    ) async throws -> [AgentKernelModelAdapterEventV2] {
+        for request: AgentKernelModelAdapterRequest
+    ) async throws -> [AgentKernelModelAdapterEvent] {
         let promptCharacters = request.messages.reduce(0) { $0 + $1.content.count }
         guard promptCharacters <= AIModelLimits.maxPromptCharacters else {
             throw AIBackendError.promptTooLarge(maxCharacters: AIModelLimits.maxPromptCharacters)

@@ -99,6 +99,8 @@ enum AgentRunnerFixtureHarness {
         let trace = try await store.traceProjection(runID: run.runID)
 
         try expect(recovery.interruptedRuns.map(\.runID) == [run.runID], "recovery should report interrupted run")
+        try expect(recovery.interruptedSteps.map(\.stepID) == [step.stepID], "recovery should report the interrupted active step")
+        try expect(recovery.interruptedSteps.map(\.kind) == [.modelRequest], "recovery should preserve interrupted step kind")
         try expect(trace.run.status == .interrupted, "running run should become interrupted")
         try expect(trace.steps.first { $0.stepID == step.stepID }?.status == .interrupted, "active step should become interrupted")
     }

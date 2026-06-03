@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 
 enum AgentRunStoreFixtureHarness {
     struct HarnessError: Error, CustomStringConvertible {
@@ -14,8 +15,11 @@ enum AgentRunStoreFixtureHarness {
     static func run() async throws {
         try await testAppendProjectionAndReload()
         try await testWaitEvidenceArtifactAndSideEffectRecords()
+        try await testControlRecordsReplayAndReload()
+        try await testSQLiteSchemaAndLegacyImport()
         try await testSchemaMigration()
         try await testInterruptedRunDetection()
+        try await testTerminalStatusGuard()
     }
 
     private static func testAppendProjectionAndReload() async throws {
@@ -59,6 +63,13 @@ enum AgentRunStoreFixtureHarness {
         try expect(reloadedMessages == messages, "visible projection should survive reload")
         let status = try await reloaded.statusProjection(runID: run.runID)
         try expect(status.status == .completed, "run status should survive reload")
+        let trace = try await store.traceProjection(runID: run.runID)
+        let reloadedTrace = try await reloaded.traceProjection(runID: run.runID)
+        try expect(reloadedTrace == trace, "trace projection should survive SQLite reload")
+        try expect(
+            FileManager.default.fileExists(atPath: root.appendingPathComponent(AgentRunSQLitePersistenceBackend.databaseFileName).path),
+            "run store should create the SQLite database"
+        )
     }
 
     private static func testWaitEvidenceArtifactAndSideEffectRecords() async throws {
@@ -117,6 +128,107 @@ enum AgentRunStoreFixtureHarness {
         try expect(remainingWaits.isEmpty, "resolved wait should not remain pending")
     }
 
+    private static func testControlRecordsReplayAndReload() async throws {
+        let root = try makeTemporaryRoot()
+        let store = try AgentRunStore(rootDirectory: root)
+        let session = try await store.createSession(title: "Control Records")
+        let run = try await store.createRun(sessionID: session.id, status: .running)
+        let step = try await store.beginStep(runID: run.runID, kind: .modelRequest)
+        let messages = [
+            AgentKernelMessage(role: .system, content: "You are Pixel Pane."),
+            AgentKernelMessage(role: .user, content: "Inspect the project."),
+            AgentKernelMessage(role: .observation, content: "Hidden preflight evidence.")
+        ]
+        let request = AgentModelGatewayRequest(
+            mode: .fullAgent,
+            messages: messages,
+            tools: [],
+            requestedMaxOutputTokens: 512,
+            metadata: ["fixture": .string("control-replay")]
+        )
+        let requestRecord = try await store.recordControl(
+            runID: run.runID,
+            stepID: step.stepID,
+            kind: .modelRequest,
+            payload: .modelRequest(request),
+            metadata: ["iteration": .int(1)]
+        )
+        let observation = AgentKernelMessage(
+            role: .observation,
+            content: "Tool result\nname: list_folder\nstatus: succeeded"
+        )
+        let observationRecord = try await store.recordControl(
+            runID: run.runID,
+            kind: .toolObservation,
+            payload: .modelMessage(observation),
+            metadata: ["toolName": .string("list_folder")]
+        )
+
+        try expect(requestRecord.sequence == 0, "first control record sequence should be zero")
+        try expect(observationRecord.sequence == 1, "control records should sequence per run")
+        let replay = await store.replayMessages(runID: run.runID)
+        try expect(replay == messages, "replay messages should come from the latest durable model request")
+        let trace = try await store.traceProjection(runID: run.runID)
+        try expect(trace.controlRecords.map(\.kind) == [.modelRequest, .toolObservation], "trace should include control records in order")
+
+        let reloaded = try AgentRunStore(rootDirectory: root)
+        let reloadedReplay = await reloaded.replayMessages(runID: run.runID)
+        try expect(reloadedReplay == messages, "replay messages should survive SQLite reload")
+        let reloadedControlKinds = await reloaded.controlRecords(runID: run.runID).map(\.kind)
+        try expect(reloadedControlKinds == [.modelRequest, .toolObservation], "control records should survive SQLite reload")
+    }
+
+    private static func testSQLiteSchemaAndLegacyImport() async throws {
+        let root = try makeTemporaryRoot()
+        let createdAt = Date(timeIntervalSince1970: 1_800_100_000)
+        let session = AgentRunSessionRecord(
+            title: "Legacy",
+            contextID: "legacy-context",
+            contextKind: "assistant",
+            createdAt: createdAt
+        )
+        let run = AgentRunRecord(
+            sessionID: session.id,
+            status: .completed,
+            createdAt: createdAt,
+            lastSequence: 0
+        )
+        let event = AgentRunEventRecord(
+            sessionID: session.id,
+            runID: run.runID,
+            sequence: 0,
+            kind: .assistantMessage,
+            payload: .text(AgentRunText("Imported answer")),
+            createdAt: createdAt.addingTimeInterval(1)
+        )
+        let oldSnapshot = AgentRunStoreSnapshot(
+            schemaVersion: 0,
+            sessions: [session],
+            runs: [run],
+            events: [event]
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(oldSnapshot).write(to: root.appendingPathComponent("store.json"), options: .atomic)
+
+        let store = try AgentRunStore(rootDirectory: root)
+        let schemaVersion = await store.schemaVersion()
+        try expect(schemaVersion == AgentRunStoreSchema.currentVersion, "legacy JSON import should migrate to the current schema")
+        let messages = await store.visibleMessages(sessionID: session.id)
+        try expect(messages.map(\.text.text) == ["Imported answer"], "legacy JSON import should preserve visible messages")
+
+        let databasePath = root.appendingPathComponent(AgentRunSQLitePersistenceBackend.databaseFileName).path
+        try expect(FileManager.default.fileExists(atPath: databasePath), "legacy JSON import should create the SQLite store")
+        let tableNames = try sqliteTableNames(root: root)
+        for expectedTable in ["sessions", "runs", "steps", "waits", "artifacts", "evidence", "side_effects", "control_records", "events", "store_metadata"] {
+            try expect(tableNames.contains(expectedTable), "SQLite schema should include \(expectedTable)")
+        }
+
+        let reloaded = try AgentRunStore(rootDirectory: root)
+        let reloadedMessages = await reloaded.visibleMessages(sessionID: session.id)
+        try expect(reloadedMessages == messages, "imported SQLite projection should survive reload")
+    }
+
     private static func testSchemaMigration() async throws {
         let root = try makeTemporaryRoot()
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -153,11 +265,67 @@ enum AgentRunStoreFixtureHarness {
         try expect(!recoveryIDs.contains(completed.runID), "completed runs should not need recovery")
     }
 
+    private static func testTerminalStatusGuard() async throws {
+        let root = try makeTemporaryRoot()
+        let store = try AgentRunStore(rootDirectory: root)
+        let session = try await store.createSession(title: "Terminal Guard")
+        let run = try await store.createRun(sessionID: session.id, status: .queued)
+
+        try await store.updateRunStatus(runID: run.runID, status: .canceled)
+        try await store.updateRunStatus(runID: run.runID, status: .running)
+        let guardedRun = try await store.runRecord(runID: run.runID)
+        try expect(guardedRun.status == .canceled, "late nonterminal status should not overwrite a terminal run")
+
+        try await store.updateRunStatus(
+            runID: run.runID,
+            status: .queued,
+            allowsTerminalTransition: true
+        )
+        let retriedRun = try await store.runRecord(runID: run.runID)
+        try expect(retriedRun.status == .queued, "explicit terminal transition should support retry/recovery flows")
+    }
+
     private static func makeTemporaryRoot() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("pixel-pane-agent-run-store-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+
+    private static func sqliteTableNames(root: URL) throws -> Set<String> {
+        let databaseURL = root.appendingPathComponent(AgentRunSQLitePersistenceBackend.databaseFileName, isDirectory: false)
+        var database: OpaquePointer?
+        guard sqlite3_open_v2(databaseURL.path, &database, SQLITE_OPEN_READONLY, nil) == SQLITE_OK,
+              let database else {
+            throw HarnessError(description: "could not open SQLite store")
+        }
+        defer { sqlite3_close(database) }
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            "SELECT name FROM sqlite_master WHERE type = 'table';",
+            -1,
+            &statement,
+            nil
+        ) == SQLITE_OK,
+              let statement else {
+            throw HarnessError(description: "could not inspect SQLite schema")
+        }
+        defer { sqlite3_finalize(statement) }
+
+        var names = Set<String>()
+        while true {
+            let result = sqlite3_step(statement)
+            if result == SQLITE_ROW {
+                guard let text = sqlite3_column_text(statement, 0) else { continue }
+                names.insert(String(cString: text))
+            } else if result == SQLITE_DONE {
+                return names
+            } else {
+                throw HarnessError(description: "could not read SQLite schema")
+            }
+        }
     }
 }
 

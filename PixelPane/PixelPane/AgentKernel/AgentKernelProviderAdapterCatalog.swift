@@ -1,20 +1,20 @@
 import Foundation
 
-enum AgentKernelProviderAdapterCatalogV2 {
+enum AgentKernelProviderAdapterCatalog {
     nonisolated static func appleLocalTextAdapter(
         backend: AppleFoundationModelsBackend = AppleFoundationModelsBackend()
-    ) async -> AgentKernelAIBackendAdapterV2 {
-        let descriptor = AgentKernelModelDescriptorV2(
+    ) async -> AgentKernelAIBackendAdapter {
+        let descriptor = AgentKernelModelDescriptor(
             id: "apple-foundation-models.v2",
             providerKind: .appleLocal,
             route: .local,
             displayName: backend.displayName
         )
-        let capabilities = AgentKernelModelAdapterCapabilitiesV2.aiBackendBridge(
+        let capabilities = AgentKernelModelAdapterCapabilities.aiBackendBridge(
             descriptor: descriptor,
             backendCapabilities: await backend.capabilities()
         )
-        return AgentKernelAIBackendAdapterV2(
+        return AgentKernelAIBackendAdapter(
             descriptor: descriptor,
             backend: backend,
             capabilities: capabilities,
@@ -24,18 +24,18 @@ enum AgentKernelProviderAdapterCatalogV2 {
 
     nonisolated static func mlxTextAdapter(
         backend: MLXTextBackend = MLXTextBackend()
-    ) async -> AgentKernelAIBackendAdapterV2 {
-        let descriptor = AgentKernelModelDescriptorV2(
+    ) async -> AgentKernelAIBackendAdapter {
+        let descriptor = AgentKernelModelDescriptor(
             id: "mlx-text.v2",
             providerKind: .mlxLocal,
             route: .local,
             displayName: backend.displayName
         )
-        let capabilities = AgentKernelModelAdapterCapabilitiesV2.aiBackendBridge(
+        let capabilities = AgentKernelModelAdapterCapabilities.aiBackendBridge(
             descriptor: descriptor,
             backendCapabilities: await backend.capabilities()
         )
-        return AgentKernelAIBackendAdapterV2(
+        return AgentKernelAIBackendAdapter(
             descriptor: descriptor,
             backend: backend,
             capabilities: capabilities,
@@ -45,15 +45,15 @@ enum AgentKernelProviderAdapterCatalogV2 {
 
     nonisolated static func pixelPaneCloudAdapter(
         backend: CloudAIBackend
-    ) async -> AgentKernelCloudChatAdapterV2 {
-        let descriptor = AgentKernelModelDescriptorV2(
+    ) async -> AgentKernelCloudChatAdapter {
+        let descriptor = AgentKernelModelDescriptor(
             id: "pixel-pane-cloud.v2",
             providerKind: .pixelPaneCloud,
             route: .cloud,
             displayName: backend.displayName
         )
         let capabilities = await backend.capabilities()
-        return AgentKernelCloudChatAdapterV2(
+        return AgentKernelCloudChatAdapter(
             descriptor: descriptor,
             backend: backend,
             backendCapabilities: capabilities,
@@ -66,9 +66,9 @@ enum AgentKernelProviderAdapterCatalogV2 {
         endpoint: URL = URL(string: "http://127.0.0.1:11434/v1/chat/completions")!,
         modelName: String? = nil,
         apiKey: String? = nil
-    ) -> AgentKernelOpenAICompatibleAdapterV2 {
-        AgentKernelOpenAICompatibleAdapterV2(
-            descriptor: AgentKernelModelDescriptorV2(
+    ) -> AgentKernelOpenAICompatibleAdapter {
+        AgentKernelOpenAICompatibleAdapter(
+            descriptor: AgentKernelModelDescriptor(
                 id: "openai-compatible.local.v2",
                 providerKind: .openAICompatible,
                 route: .local,
@@ -77,8 +77,8 @@ enum AgentKernelProviderAdapterCatalogV2 {
             ),
             endpoint: endpoint,
             apiKey: apiKey,
-            capabilities: AgentKernelModelAdapterCapabilitiesV2(
-                descriptor: AgentKernelModelDescriptorV2(
+            capabilities: AgentKernelModelAdapterCapabilities(
+                descriptor: AgentKernelModelDescriptor(
                     id: "openai-compatible.local.v2",
                     providerKind: .openAICompatible,
                     route: .local,
@@ -88,7 +88,7 @@ enum AgentKernelProviderAdapterCatalogV2 {
                 toolCallingMode: .textProtocol,
                 structuredOutputReliability: .bestEffort,
                 streamingMode: .unsupported,
-                limits: AgentKernelModelLimitsV2(contextWindowTokens: nil),
+                limits: AgentKernelModelLimits(contextWindowTokens: nil),
                 isAvailable: true
             )
         )

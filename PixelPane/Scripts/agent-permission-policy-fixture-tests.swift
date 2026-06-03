@@ -19,6 +19,7 @@ enum AgentPermissionPolicyFixtureHarness {
         try testWriteProposalApprovalPolicy()
         try testCommandPolicy()
         try testProcessAndLocalServerPolicy()
+        try testToolContractNormalization()
         try testArgumentAndScopeFailures()
     }
 
@@ -455,6 +456,69 @@ enum AgentPermissionPolicyFixtureHarness {
         try expect(startProcess.kind == .ask && startProcess.reason == .approvalRequired, "process start should ask for approval")
     }
 
+    private static func testToolContractNormalization() throws {
+        let registry = AgentToolContractRegistry.default
+
+        let write = try registry.contract(named: "stage_write_proposal")?.normalizedInvocation(
+            rawArguments: [
+                "path": "/Users/test/project/new.md",
+                "content": "hello"
+            ]
+        )
+        try expect(write?.normalizedArguments["targetPath"] == "/Users/test/project/new.md", "write contract should repair path alias to targetPath")
+        try expect(write?.normalizedArguments["path"] == nil, "write contract should not keep repaired alias arguments")
+        try expect(write?.normalizedArguments["operation"] == "create", "write contract should apply operation default")
+
+        let search = try registry.contract(named: "search_files")?.normalizedInvocation(
+            rawArguments: [
+                "query": "needle",
+                "filenameOnly": "yes"
+            ]
+        )
+        try expect(search?.normalizedArguments["filenameOnly"] == "true", "contract should normalize boolean aliases")
+
+        let process = try registry.contract(named: "get_process_snapshot")?.normalizedInvocation(
+            rawArguments: ["limit": "99"]
+        )
+        try expect(process?.normalizedArguments["limit"] == "20", "contract should clamp bounded process snapshot limits")
+
+        do {
+            _ = try registry.contract(named: "get_local_listener_snapshot")?.normalizedInvocation(
+                rawArguments: ["port": "70000"]
+            )
+            throw HarnessError(description: "out-of-range listener port should throw")
+        } catch AgentToolContractError.constraintViolation(let argument, _) {
+            try expect(argument == "port", "listener port range violation should identify port argument")
+        }
+
+        let tools = AgentToolCatalog().visibleModelSchemas(
+            providerTier: .tierBConstrainedStructuredText,
+            runMode: .proposalOnly,
+            localGrants: [grant("/Users/test/project", isDirectory: true)]
+        )
+        let decoder = AgentKernelToolProtocolDecoder()
+        let protocolResult = decoder.decode(
+            #"{"type":"tool_call","name":"stage_write_proposal","arguments":{"path":"/Users/test/project/new.md","content":"hello"}}"#,
+            tools: tools,
+            requiresProtocolEnvelope: true
+        )
+        guard case .event(.toolCall(let call)) = protocolResult else {
+            throw HarnessError(description: "text-protocol parser should use contract repair for write proposals")
+        }
+        try expect(call.arguments["targetPath"] == "/Users/test/project/new.md", "text protocol should repair path alias through contract")
+        try expect(call.arguments["operation"] == "create", "text protocol should apply contract default operation")
+
+        let booleanResult = decoder.decode(
+            #"{"type":"tool_call","name":"search_files","arguments":{"query":"needle","filenameOnly":"yes"}}"#,
+            tools: tools,
+            requiresProtocolEnvelope: true
+        )
+        guard case .event(.toolCall(let booleanCall)) = booleanResult else {
+            throw HarnessError(description: "text-protocol parser should accept contract boolean aliases")
+        }
+        try expect(booleanCall.arguments["filenameOnly"] == "true", "text protocol should normalize boolean aliases through contract")
+    }
+
     private static func testArgumentAndScopeFailures() throws {
         let policy = AgentPermissionPolicy()
         let grants = [grant("/Users/test/project", isDirectory: true)]
@@ -473,6 +537,26 @@ enum AgentPermissionPolicyFixtureHarness {
             )
         )
         try expect(malformedInteger.kind == .deny && malformedInteger.reason == .malformedArgument, "malformed integer arg should deny")
+
+        let booleanAlias = policy.decision(
+            for: request(
+                providerTier: .tierBConstrainedStructuredText,
+                toolName: "search_files",
+                arguments: ["query": "needle", "filenameOnly": "yes"],
+                localGrants: grants
+            )
+        )
+        try expect(booleanAlias.kind == .allow, "permission policy should accept executor-supported boolean aliases")
+
+        let malformedBoolean = policy.decision(
+            for: request(
+                providerTier: .tierBConstrainedStructuredText,
+                toolName: "search_files",
+                arguments: ["query": "needle", "filenameOnly": "sometimes"],
+                localGrants: grants
+            )
+        )
+        try expect(malformedBoolean.kind == .deny && malformedBoolean.reason == .malformedArgument, "unsupported boolean spellings should deny")
 
         let tierDenied = policy.decision(
             for: request(

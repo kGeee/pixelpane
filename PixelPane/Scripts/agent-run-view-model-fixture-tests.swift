@@ -14,10 +14,13 @@ enum AgentRunViewModelFixtureHarness {
     @MainActor
     static func run() async throws {
         try await testSendProjectsDurableMessages()
+        try await testDetachedRunAutoRefreshesProjection()
         try await testPendingApprovalProjectionAndDecisions()
         try await testApprovalContinuationProjectsImmediately()
         try await testApprovalContinuationRequiresSavedAdapter()
         try await testCancelUpdatesRunStatus()
+        try await testCancelDoesNotOverwriteCompletedRun()
+        try await testToolCapableRunRejectsConcurrentStart()
         try await testTerminalFailureProjectionDoesNotReuseProgress()
         try await testLaunchRecoveryProjectsInterruptedRun()
         try await testTerminalHandledRecoveryProjectionClears()
@@ -43,6 +46,32 @@ enum AgentRunViewModelFixtureHarness {
         try expect(viewModel.state.messages.map(\.text.text) == ["Hello", "Projected answer"], "visible messages should project from durable events")
         let sessionCount = await store.allSessions().count
         try expect(sessionCount == 1, "send should create one durable session")
+    }
+
+    @MainActor
+    private static func testDetachedRunAutoRefreshesProjection() async throws {
+        let (_, viewModel) = try await makeHarness()
+        let context = AgentRunViewContext(title: "Assistant", contextID: "ctx-auto-refresh", contextKind: "assistant")
+        let adapter = FixtureAgentModelAdapter(
+            events: [.finalAnswer("Auto-projected answer")],
+            delayNanoseconds: 80_000_000
+        )
+
+        _ = try await viewModel.startRun(
+            userMessage: "Auto refresh",
+            context: context,
+            adapter: adapter,
+            maxOutputTokens: 128
+        )
+        try expect(viewModel.state.isBusy, "detached run should initially project busy state")
+
+        try await waitUntil(timeout: 3, "detached run should project completion without manual refresh") {
+            viewModel.state.activeStatus == .completed
+        }
+        try expect(
+            viewModel.state.messages.map(\.text.text) == ["Auto refresh", "Auto-projected answer"],
+            "automatic projection refresh should expose the assistant answer"
+        )
     }
 
     @MainActor
@@ -169,7 +198,7 @@ enum AgentRunViewModelFixtureHarness {
                     adapterDescriptor: firstAdapter.descriptor,
                     request: AgentModelGatewayRequest(
                         mode: .plainChat,
-                        messages: [AgentKernelMessageV2(role: .user, content: "approve saved config")],
+                        messages: [AgentKernelMessage(role: .user, content: "approve saved config")],
                         metadata: [
                             "sessionID": .string(sessionID.uuidString),
                             "runID": .string(run.runID.uuidString)
@@ -217,6 +246,79 @@ enum AgentRunViewModelFixtureHarness {
 
         await viewModel.cancelRun()
         try expect(viewModel.state.activeStatus == .canceled, "cancel should checkpoint canceled status")
+    }
+
+    @MainActor
+    private static func testCancelDoesNotOverwriteCompletedRun() async throws {
+        let (_, viewModel) = try await makeHarness()
+        let adapter = FixtureAgentModelAdapter(events: [.finalAnswer("Already done")])
+        _ = try await viewModel.startRun(
+            userMessage: "Finish before stale cancel",
+            context: AgentRunViewContext(title: "Completed Cancel", contextID: "ctx-completed-cancel", contextKind: "assistant"),
+            adapter: adapter
+        )
+        try await waitUntil(timeout: 3, "run should complete before stale cancel") {
+            viewModel.state.activeStatus == .completed
+        }
+
+        await viewModel.cancelRun()
+        try expect(viewModel.state.activeStatus == .completed, "cancel should not overwrite an already completed run")
+        try expect(
+            viewModel.state.messages.map(\.text.text) == ["Finish before stale cancel", "Already done"],
+            "completed answer should remain visible after stale cancel"
+        )
+    }
+
+    @MainActor
+    private static func testToolCapableRunRejectsConcurrentStart() async throws {
+        let (_, viewModel) = try await makeHarness()
+        let context = AgentRunViewContext(
+            title: "Tool Duplicate",
+            contextID: "ctx-tool-duplicate",
+            contextKind: "assistant"
+        )
+        let adapter = FixtureAgentModelAdapter(
+            events: [.finalAnswer("late")],
+            delayNanoseconds: 2_000_000_000,
+            toolCallingMode: .native,
+            structuredOutputReliability: .strict
+        )
+        let tools = [
+            AgentKernelToolSchema(
+                name: "get_current_time",
+                summary: "Return the current local time."
+            )
+        ]
+        let toolContext = AgentToolRunContext(runMode: .readOnly)
+
+        let firstRunID = try await viewModel.startRun(
+            userMessage: "Use a tool-capable route.",
+            context: context,
+            adapter: adapter,
+            mode: .fullAgent,
+            tools: tools,
+            toolContext: toolContext,
+            timeout: 4
+        )
+        try expect(viewModel.state.isBusy, "tool-capable run should be busy before duplicate start")
+
+        do {
+            _ = try await viewModel.startRun(
+                userMessage: "Start another tool-capable route.",
+                context: context,
+                adapter: adapter,
+                mode: .fullAgent,
+                tools: tools,
+                toolContext: toolContext,
+                timeout: 4
+            )
+            throw HarnessError(description: "runtime should reject a concurrent tool-capable run")
+        } catch AgentRunViewModelError.activeRunInProgress(let runID) {
+            try expect(runID == firstRunID, "duplicate rejection should identify the active run")
+        }
+
+        await viewModel.cancelRun()
+        try expect(viewModel.state.activeStatus == .canceled, "duplicate-run cleanup should cancel the active run")
     }
 
     @MainActor
@@ -310,40 +412,58 @@ enum AgentRunViewModelFixtureHarness {
         return url
     }
 
+    @MainActor
+    private static func waitUntil(
+        timeout: TimeInterval,
+        _ message: String,
+        condition: @escaping @MainActor () -> Bool
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() {
+                return
+            }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        throw HarnessError(description: message)
+    }
+
 }
 
-struct FixtureAgentModelAdapter: AgentKernelModelAdapterV2 {
-    let descriptor: AgentKernelModelDescriptorV2
-    let capabilities: AgentKernelModelAdapterCapabilitiesV2
-    let events: [AgentKernelModelAdapterEventV2]
+struct FixtureAgentModelAdapter: AgentKernelModelAdapter {
+    let descriptor: AgentKernelModelDescriptor
+    let capabilities: AgentKernelModelAdapterCapabilities
+    let events: [AgentKernelModelAdapterEvent]
     let delayNanoseconds: UInt64
 
     init(
         id: String = "fixture.chat",
-        events: [AgentKernelModelAdapterEventV2],
-        delayNanoseconds: UInt64 = 0
+        events: [AgentKernelModelAdapterEvent],
+        delayNanoseconds: UInt64 = 0,
+        toolCallingMode: AgentKernelToolCallingMode = .none,
+        structuredOutputReliability: AgentKernelStructuredOutputReliability = .unsupported
     ) {
-        descriptor = AgentKernelModelDescriptorV2(
+        descriptor = AgentKernelModelDescriptor(
             id: id,
             providerKind: .fixture,
             route: .local,
             displayName: "Fixture"
         )
-        capabilities = AgentKernelModelAdapterCapabilitiesV2(
+        capabilities = AgentKernelModelAdapterCapabilities(
             descriptor: descriptor,
-            toolCallingMode: .none,
-            structuredOutputReliability: .unsupported,
+            toolCallingMode: toolCallingMode,
+            structuredOutputReliability: structuredOutputReliability,
             streamingMode: .unsupported
         )
         self.events = events
         self.delayNanoseconds = delayNanoseconds
     }
 
-    func response(for request: AgentKernelModelAdapterRequestV2) async -> AgentKernelModelAdapterResponseV2 {
+    func response(for request: AgentKernelModelAdapterRequest) async -> AgentKernelModelAdapterResponse {
         if delayNanoseconds > 0 {
             try? await Task.sleep(nanoseconds: delayNanoseconds)
         }
-        return AgentKernelModelAdapterResponseV2(
+        return AgentKernelModelAdapterResponse(
             requestID: request.id,
             descriptor: descriptor,
             events: events

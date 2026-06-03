@@ -68,6 +68,10 @@ nonisolated struct AgentRunTraceExporter: Sendable {
             sections.append("## Side Effects\n\(sideEffectsSection(trace.sideEffects))")
         }
 
+        if !trace.controlRecords.isEmpty {
+            sections.append("## Control Records\n\(controlRecordsSection(trace.controlRecords))")
+        }
+
         if !trace.evidence.isEmpty {
             sections.append("## Evidence\n\(evidenceSection(trace.evidence))")
         }
@@ -127,6 +131,13 @@ nonisolated struct AgentRunTraceExporter: Sendable {
         .joined(separator: "\n")
     }
 
+    private nonisolated func controlRecordsSection(_ records: [AgentRunControlRecord]) -> String {
+        records.map { record in
+            "- #\(record.sequence) \(record.kind.rawValue) record=\(record.recordID.uuidString) step=\(record.stepID?.uuidString ?? "none") metadata=\(metadataSummary(record.metadata)) payload=\(controlPayloadSummary(record.payload))"
+        }
+        .joined(separator: "\n")
+    }
+
     private nonisolated func evidenceSection(_ evidence: [AgentRunEvidenceRecord]) -> String {
         evidence.map { record in
             "- \(record.kind) evidence=\(record.evidenceID.uuidString) source=\(record.sourceID) artifact=\(record.artifactID?.uuidString ?? "none") summary=\(record.summary.text) metadata=\(metadataSummary(record.metadata))"
@@ -168,6 +179,25 @@ nonisolated struct AgentRunTraceExporter: Sendable {
             return metadataSummary(metadata)
         case .runConfiguration(let configuration):
             return "runConfiguration adapter=\(configuration.adapterDescriptor.id) mode=\(configuration.request.mode.rawValue) tools=\(configuration.request.tools.count)"
+        }
+    }
+
+    private nonisolated func controlPayloadSummary(_ payload: AgentRunControlPayload) -> String {
+        switch payload {
+        case .modelRequest(let request):
+            return "modelRequest id=\(request.id.uuidString) mode=\(request.mode.rawValue) messages=\(request.messages.count) tools=\(request.tools.count)"
+        case .modelResponse(let response):
+            return "modelResponse request=\(response.requestID.uuidString) adapter=\(response.adapterID) tier=\(response.tier.rawValue) format=\(response.responseFormat.rawValue) events=\(response.events.count)"
+        case .modelFailure(let failure):
+            return "modelFailure adapter=\(failure.adapterID) kind=\(failure.kind.rawValue) message=\(redactFreeText(failure.message.text))"
+        case .modelMessage(let message):
+            return "message role=\(message.role.rawValue) content=\(redactFreeText(message.content))"
+        case .toolCall(let call):
+            return "toolCall name=\(call.name) arguments=\(call.arguments.keys.sorted().joined(separator: ","))"
+        case .toolResult(let result):
+            return "toolResult name=\(result.toolName) status=\(result.status) evidence=\(result.evidenceIDs.count) artifacts=\(result.artifactIDs.count) wait=\(result.waitID?.uuidString ?? "none") sideEffect=\(result.sideEffectID?.uuidString ?? "none") summary=\(redactFreeText(result.summary.text))"
+        case .metadata(let metadata):
+            return metadataSummary(metadata)
         }
     }
 
