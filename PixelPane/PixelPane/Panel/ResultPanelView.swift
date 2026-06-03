@@ -2310,21 +2310,26 @@ struct ResultPanelView: View {
     }
 
     private func makeAgentKernelModelAdapter(userMessage: String? = nil) async -> any AgentKernelModelAdapter {
-        let backend = selectedAIBackend
+        // Model router (local-first, Cloud as fallback): pick the route from measured
+        // capability instead of the manual Cloud toggle. Cloud is used only when it is
+        // enabled AND no local model can meet the run's need.
+        let route = resolvedAgentRoute(need: agentRouteNeed())
+        let isCloudRoute = route == .cloud
+        let backend: any AIBackend = isCloudRoute ? cloudAIBackend : localAIBackend
         let capabilities = await backend.capabilities()
-        let modeID: String = routingSettings.effectiveMode == .cloud ? "cloud" : "local"
-        let provider = effectiveAskProvider(capabilities: capabilities)
+        let modeID: String = isCloudRoute ? "cloud" : "local"
+        let provider = effectiveAskProvider(capabilities: capabilities, cloudRoute: isCloudRoute)
         let providerKind = agentProviderKind(for: provider)
         let modelName = agentModelName(for: provider)
         let displayName = agentDisplayName(for: provider, fallback: askBackendLabelForNextTurn())
         let descriptor = AgentKernelModelDescriptor(
             id: "\(modeID).\(backend.id).chat",
             providerKind: providerKind,
-            route: routingSettings.effectiveMode == .cloud ? .cloud : .local,
+            route: isCloudRoute ? .cloud : .local,
             displayName: displayName,
             modelName: modelName
         )
-        if routingSettings.effectiveMode == .cloud {
+        if isCloudRoute {
             return AgentKernelCloudChatAdapter(
                 descriptor: descriptor,
                 backend: backend,
@@ -2356,14 +2361,67 @@ struct ResultPanelView: View {
         )
     }
 
-    private func effectiveAskProvider(capabilities: AIBackendCapabilities) -> AIBackendProvider? {
-        if routingSettings.effectiveMode == .cloud {
+    private func effectiveAskProvider(
+        capabilities: AIBackendCapabilities,
+        cloudRoute: Bool? = nil
+    ) -> AIBackendProvider? {
+        let isCloud = cloudRoute ?? (routingSettings.effectiveMode == .cloud)
+        if isCloud {
             return .pixelPaneCloud
         }
         if case .available(let provider) = capabilities.text {
             return provider
         }
         return nil
+    }
+
+    /// What the upcoming run needs from a model. When local file grants exist the run is
+    /// agentic (tool loop over files) and needs a tool-capable model; otherwise plain chat.
+    private func agentRouteNeed() -> AgentModelRunNeed {
+        agentRuntimeLocalGrants().isEmpty ? .plainChat : .toolCapable
+    }
+
+    /// Local-first routing: choose local vs cloud from measured capability. Cloud joins the
+    /// pool only when enabled, and the router prefers any need-meeting local model over it.
+    /// Falls back to the existing manual mode if the router has nothing to decide on.
+    private func resolvedAgentRoute(need: AgentModelRunNeed) -> AIRoutingMode {
+        let cloudEnabled = routingSettings.useCloudModels && AIRoutingSettings.cloudBackendAvailable
+        var candidates: [AgentModelRouterCandidate] = []
+        if mlxModelStore.selectedModel != nil {
+            let tier = currentMLXAgentConformanceProfile()?.derivedTier ?? .unavailable
+            candidates.append(
+                AgentModelRouterCandidate(
+                    id: "local",
+                    displayName: Self.mlxTextBackendLabel,
+                    kind: .local,
+                    tier: tier,
+                    isLoaded: true
+                )
+            )
+        }
+        if cloudEnabled {
+            candidates.append(
+                AgentModelRouterCandidate(
+                    id: "cloud",
+                    displayName: Self.cloudBackendLabel,
+                    kind: .cloud,
+                    tier: .tierB
+                )
+            )
+        }
+        switch AgentModelRouter().choose(
+            AgentModelRouterInput(
+                need: need,
+                candidates: candidates,
+                cloudEnabled: cloudEnabled,
+                preference: .preferLocalFast
+            )
+        ) {
+        case .selected(let candidate, _), .degraded(let candidate, _):
+            return candidate.kind == .cloud ? .cloud : .local
+        case .unavailable:
+            return routingSettings.effectiveMode
+        }
     }
 
     private func agentProviderKind(for provider: AIBackendProvider?) -> AgentKernelModelProviderKind {
