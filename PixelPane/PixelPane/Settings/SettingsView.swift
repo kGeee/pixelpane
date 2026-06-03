@@ -159,10 +159,6 @@ struct SettingsView: View {
             routingModeSection
 
             modelRouterSection
-
-            Section("Local AI") {
-                localAISectionContent
-            }
         }
         .formStyle(.grouped)
     }
@@ -198,6 +194,10 @@ struct SettingsView: View {
                     }
                 }
             }
+
+            Divider()
+
+            localAISectionContent
         }
     }
 
