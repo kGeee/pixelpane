@@ -17,6 +17,9 @@ swiftc \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentRunTypes.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentModelGateway.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentToolContracts.swift" \
+  "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentPermissionTypes.swift" \
+  "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentLocalPathResolver.swift" \
+  "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentToolCatalog.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentPermissionPolicy.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentRunStorePersistence.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentRunStore.swift" \
