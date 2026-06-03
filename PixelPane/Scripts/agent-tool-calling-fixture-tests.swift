@@ -27,11 +27,15 @@ enum AgentToolCallingFixtureHarness {
         try expect(controller.isRepeatedFailingCall(status: .failed, priorCount: 0) == false, "first failure is not repeated")
         try expect(controller.isRepeatedFailingCall(status: .failed, priorCount: 1) == true, "failure after a prior call is repeated")
 
-        // No-progress guard halts only once the same call has failed with priorCount >= 2.
+        // No-progress guard halts once the same call signature is issued a third
+        // time, regardless of success/failure: re-issuing an identical call makes
+        // no progress (chat1/chat2 repeated-read loop).
         try expect(controller.noProgressDecision(status: .failed, priorCount: 0) == .continue(repeatedFailingCall: false), "first failure continues")
         try expect(controller.noProgressDecision(status: .failed, priorCount: 1) == .continue(repeatedFailingCall: true), "second failure continues but flags repeat")
         try expect(controller.noProgressDecision(status: .failed, priorCount: 2) == .halt, "third repeated failure halts")
-        try expect(controller.noProgressDecision(status: .succeeded, priorCount: 9) == .continue(repeatedFailingCall: false), "success continues even with history")
+        try expect(controller.noProgressDecision(status: .succeeded, priorCount: 0) == .continue(repeatedFailingCall: false), "first success continues")
+        try expect(controller.noProgressDecision(status: .succeeded, priorCount: 1) == .continue(repeatedFailingCall: false), "second identical success continues")
+        try expect(controller.noProgressDecision(status: .succeeded, priorCount: 2) == .halt, "third identical successful call halts (no new information)")
 
         // Terminal-block reason reflects the configured cap.
         try expect(controller.maxIterationsBlockReason().contains("12"), "max-iterations reason names the cap")

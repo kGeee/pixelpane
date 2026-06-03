@@ -33,6 +33,13 @@ nonisolated struct AgentToolLoopController: Sendable {
         status == .failed && priorCount >= 1
     }
 
+    /// The same exact tool call (name + arguments) issued this many prior times
+    /// is treated as no progress. A repeated deterministic call (e.g. re-reading
+    /// the same file) yields no new information, and a repeated failing call is
+    /// stuck; either way the loop should stop and synthesize a best-effort answer
+    /// from what it already gathered rather than burning the whole budget.
+    static let repeatedCallHaltThreshold = 2
+
     enum NoProgressDecision: Equatable {
         /// Stop looping: attempt a best-effort answer, then block if that fails.
         case halt
@@ -41,14 +48,15 @@ nonisolated struct AgentToolLoopController: Sendable {
     }
 
     /// Decides whether the loop should halt for lack of progress after a tool
-    /// result. Mirrors the original guard: halt only once the same call has
-    /// failed repeatedly (RELY-004 / RC-4).
+    /// result. Halts once the same call signature has been issued
+    /// `repeatedCallHaltThreshold` times, regardless of whether those calls
+    /// succeeded or failed: re-issuing an identical call makes no progress
+    /// (RELY-004 / RC-4; chat1/chat2 repeated-read loop).
     func noProgressDecision(status: AgentToolExecutionStatus, priorCount: Int) -> NoProgressDecision {
-        let repeated = isRepeatedFailingCall(status: status, priorCount: priorCount)
-        if repeated && priorCount >= 2 {
+        if priorCount >= Self.repeatedCallHaltThreshold {
             return .halt
         }
-        return .continue(repeatedFailingCall: repeated)
+        return .continue(repeatedFailingCall: isRepeatedFailingCall(status: status, priorCount: priorCount))
     }
 
     // MARK: - Model-facing text
