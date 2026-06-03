@@ -6,17 +6,26 @@ final class MLXTextBackend: AIBackend, @unchecked Sendable {
 
     private let detector: MLXVisionRuntimeDetector
     private let store: MLXVisionModelStore
+    private let modelSelectionOverride: MLXVisionModelSelection?
     private let timeoutSeconds: TimeInterval
     private let runtimeCache = MLXTextRuntimeCache()
 
     nonisolated init(
         detector: MLXVisionRuntimeDetector = MLXVisionRuntimeDetector(),
         store: MLXVisionModelStore = MLXVisionModelStore(),
+        modelSelectionOverride: MLXVisionModelSelection? = nil,
         timeoutSeconds: TimeInterval = 120
     ) {
         self.detector = detector
         self.store = store
+        self.modelSelectionOverride = modelSelectionOverride
         self.timeoutSeconds = timeoutSeconds
+    }
+
+    /// The model this backend will run: an explicit router-chosen model when provided,
+    /// otherwise the user/store's current selection.
+    private nonisolated var activeSelection: MLXVisionModelSelection? {
+        modelSelectionOverride ?? store.selectedModel
     }
 
     nonisolated func capabilities() async -> AIBackendCapabilities {
@@ -116,7 +125,7 @@ final class MLXTextBackend: AIBackend, @unchecked Sendable {
     }
 
     private nonisolated func resolveRuntime() throws -> MLXTextResolvedRuntime {
-        guard let selection = store.selectedModel else {
+        guard let selection = activeSelection else {
             throw AIBackendError.unavailable(.mlxModelMissing)
         }
 
