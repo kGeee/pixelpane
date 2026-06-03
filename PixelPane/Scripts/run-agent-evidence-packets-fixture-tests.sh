@@ -28,6 +28,9 @@ swiftc \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentSideEffectController.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentLocalEvidencePlanner.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentEvidencePackets.swift" \
+  "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentEvidenceRecorder.swift" \
+  "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentEvidenceController.swift" \
+  "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentFinalAnswerSupportRecorder.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentTaskFrame.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentRunTaskClassification.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentLocalToolExecutor.swift" \
