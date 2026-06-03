@@ -11,8 +11,36 @@ enum AgentToolCallingFixtureHarness {
         }
     }
 
+    // Phase A: behavior-preserving extraction of the loop-control decisions.
+    // Pins the current no-progress semantics so Phase B can change them deliberately.
+    static func testToolLoopControllerNoProgressDecisions() async throws {
+        var controller = AgentToolLoopController(maxIterations: 12)
+
+        // registerToolCall returns the count seen before this call and increments.
+        try expect(controller.registerToolCall(signature: "read_file:path=a") == 0, "first registration should report 0 prior")
+        try expect(controller.registerToolCall(signature: "read_file:path=a") == 1, "second registration should report 1 prior")
+        try expect(controller.registerToolCall(signature: "read_file:path=b") == 0, "distinct signature should report 0 prior")
+
+        // A succeeded result is never a repeated failing call, regardless of priors.
+        try expect(controller.isRepeatedFailingCall(status: .succeeded, priorCount: 5) == false, "succeeded is never repeated-failing")
+        // A first-time failure is not yet "repeated".
+        try expect(controller.isRepeatedFailingCall(status: .failed, priorCount: 0) == false, "first failure is not repeated")
+        try expect(controller.isRepeatedFailingCall(status: .failed, priorCount: 1) == true, "failure after a prior call is repeated")
+
+        // No-progress guard halts only once the same call has failed with priorCount >= 2.
+        try expect(controller.noProgressDecision(status: .failed, priorCount: 0) == .continue(repeatedFailingCall: false), "first failure continues")
+        try expect(controller.noProgressDecision(status: .failed, priorCount: 1) == .continue(repeatedFailingCall: true), "second failure continues but flags repeat")
+        try expect(controller.noProgressDecision(status: .failed, priorCount: 2) == .halt, "third repeated failure halts")
+        try expect(controller.noProgressDecision(status: .succeeded, priorCount: 9) == .continue(repeatedFailingCall: false), "success continues even with history")
+
+        // Terminal-block reason reflects the configured cap.
+        try expect(controller.maxIterationsBlockReason().contains("12"), "max-iterations reason names the cap")
+        try expect(controller.noProgressBlockReason(summary: "boom").contains("boom"), "no-progress reason includes the result summary")
+    }
+
     @MainActor
     static func run() async throws {
+        try await testToolLoopControllerNoProgressDecisions()
         try await testTaskProfileClassifiesOperationIntent()
         try await testTaskFrameBuilderUsesStructuralSources()
         try await testModelRequestedProcessSnapshotRecordsEvidence()

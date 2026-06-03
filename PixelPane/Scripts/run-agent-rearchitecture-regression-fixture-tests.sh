@@ -36,6 +36,7 @@ swiftc \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentTaskFrame.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentRunTaskClassification.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentLocalToolExecutor.swift" \
+  "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentToolLoopController.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentToolOrchestrator.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentRunTraceExport.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentRuntime.swift" \
