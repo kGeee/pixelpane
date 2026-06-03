@@ -158,11 +158,47 @@ struct SettingsView: View {
         Form {
             routingModeSection
 
+            modelRouterSection
+
             Section("Local AI") {
                 localAISectionContent
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var installedTextModels: [MLXVisionModel] {
+        appState.mlxVisionSetupSnapshot.installedModels.filter { $0.isTextCompatible && $0.isInstalled }
+    }
+
+    @ViewBuilder
+    private var modelRouterSection: some View {
+        Section("Model Router") {
+            VStack(alignment: .leading, spacing: 6) {
+                Label("Automatic model routing", systemImage: "arrow.triangle.branch")
+                    .font(.headline)
+                Text("Pixel Pane picks the best available model for each request — on-device first, and Pixel Pane Cloud only as a fallback when Cloud is enabled above. Check a model to measure its agent-tool readiness and make it eligible for routing.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 2)
+
+            if installedTextModels.isEmpty {
+                Text("No local models detected. Download an MLX text model so the router has something to route to.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(installedTextModels) { model in
+                    ModelRouterRow(
+                        model: model,
+                        tier: appState.agentReadinessTier(for: model),
+                        isChecking: appState.isRunningAgentModelConformanceCheck
+                    ) {
+                        appState.checkAgentReadiness(for: model)
+                    }
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -542,6 +578,54 @@ struct SettingsView: View {
             .yellow
         case .failed:
             .orange
+        }
+    }
+}
+
+private struct ModelRouterRow: View {
+    let model: MLXVisionModel
+    let tier: AgentModelConformanceDerivedTier?
+    let isChecking: Bool
+    let onCheck: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.repositoryID)
+                    .font(.callout)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(model.approximateDiskSize)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            readinessBadge
+            Button("Check", action: onCheck)
+                .disabled(isChecking)
+        }
+        .padding(.vertical, 2)
+    }
+
+    @ViewBuilder
+    private var readinessBadge: some View {
+        switch tier {
+        case .tierA, .tierB:
+            Label("Agent-ready", systemImage: "checkmark.seal.fill")
+                .font(.caption)
+                .foregroundStyle(.green)
+        case .tierC:
+            Label("Chat only", systemImage: "bubble.left")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        case .unavailable:
+            Label("Check failed", systemImage: "xmark.seal")
+                .font(.caption)
+                .foregroundStyle(.red)
+        case .none:
+            Label("Not checked", systemImage: "questionmark.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }
