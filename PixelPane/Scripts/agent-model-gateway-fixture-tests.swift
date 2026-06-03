@@ -111,7 +111,7 @@ enum AgentModelGatewayFixtureHarness {
         try expect(plainResult.response?.events == [.finalAnswer("plain")], "unchecked local MLX should remain usable for plain chat")
         try expect(requests.count == 1, "only the plain chat request should reach the adapter")
         try expect(requests.first?.tools.isEmpty == true, "plain chat should not receive tool schemas")
-        try expect(requests.first?.responseFormat == AgentKernelToolCallingModeV2.none, "plain chat should not request JSON protocol")
+        try expect(requests.first?.responseFormat == AgentKernelToolCallingMode.none, "plain chat should not request JSON protocol")
     }
 
     private static func testLocalMLXConformanceProfileEnablesTierB() async throws {
@@ -328,7 +328,7 @@ enum AgentModelGatewayFixtureHarness {
 
         try expect(result.response?.events == [.finalAnswer("plain answer")], "plain chat should still synthesize")
         try expect(lastRequest?.tools.isEmpty == true, "plain chat should not expose tools")
-        try expect(lastRequest?.responseFormat == AgentKernelToolCallingModeV2.none, "plain chat should request no structured tool format")
+        try expect(lastRequest?.responseFormat == AgentKernelToolCallingMode.none, "plain chat should request no structured tool format")
     }
 
     private static func testProviderFailureMapping() async throws {
@@ -349,7 +349,7 @@ enum AgentModelGatewayFixtureHarness {
     private static func testContextOverflow() async throws {
         let adapter = fixtureAdapter(
             id: "fixture.small",
-            limits: AgentKernelModelLimitsV2(maxPromptCharacters: 4),
+            limits: AgentKernelModelLimits(maxPromptCharacters: 4),
             responses: [.finalAnswer("unused")]
         )
         let gateway = AgentModelGateway(adapters: [adapter])
@@ -357,7 +357,7 @@ enum AgentModelGatewayFixtureHarness {
             adapterID: adapter.descriptor.id,
             request: AgentModelGatewayRequest(
                 mode: .plainChat,
-                messages: [AgentKernelMessageV2(role: .user, content: "too long")]
+                messages: [AgentKernelMessage(role: .user, content: "too long")]
             )
         )
 
@@ -409,16 +409,16 @@ enum AgentModelGatewayFixtureHarness {
         try expect(displayText.contains(" necho"), "display formatter fixture should reproduce newline escape corruption")
 
         let backend = FixtureRawProtocolBackend(rawText: rawProtocol, displayText: displayText)
-        let descriptor = AgentKernelModelDescriptorV2(
+        let descriptor = AgentKernelModelDescriptor(
             id: "fixture.ai-backend-raw",
             providerKind: .fixture,
             route: .local,
             displayName: "Fixture Raw Backend"
         )
-        let adapter = AgentKernelAIBackendAdapterV2(
+        let adapter = AgentKernelAIBackendAdapter(
             descriptor: descriptor,
             backend: backend,
-            capabilities: AgentKernelModelAdapterCapabilitiesV2(
+            capabilities: AgentKernelModelAdapterCapabilities(
                 descriptor: descriptor,
                 toolCallingMode: .textProtocol,
                 structuredOutputReliability: .bestEffort,
@@ -430,7 +430,7 @@ enum AgentModelGatewayFixtureHarness {
             adapterID: descriptor.id,
             request: AgentModelGatewayRequest(
                 mode: .constrainedStructuredText,
-                messages: [AgentKernelMessageV2(role: .user, content: "write script")],
+                messages: [AgentKernelMessage(role: .user, content: "write script")],
                 tools: [stageWriteTool()]
             )
         )
@@ -444,13 +444,13 @@ enum AgentModelGatewayFixtureHarness {
 
     private static func testCloudChatAdapterIsPlainChatOnly() async throws {
         let backend = FixtureCloudChatBackend(responseText: "cloud answer")
-        let descriptor = AgentKernelModelDescriptorV2(
+        let descriptor = AgentKernelModelDescriptor(
             id: "fixture.cloud-chat",
             providerKind: .pixelPaneCloud,
             route: .cloud,
             displayName: "Fixture Cloud"
         )
-        let adapter = AgentKernelCloudChatAdapterV2(
+        let adapter = AgentKernelCloudChatAdapter(
             descriptor: descriptor,
             backend: backend,
             backendCapabilities: await backend.capabilities()
@@ -463,11 +463,11 @@ enum AgentModelGatewayFixtureHarness {
             request: AgentModelGatewayRequest(
                 mode: .plainChat,
                 messages: [
-                    AgentKernelMessageV2(role: .system, content: "local-only system prompt"),
-                    AgentKernelMessageV2(role: .user, content: "hello"),
-                    AgentKernelMessageV2(role: .assistant, content: "hi"),
-                    AgentKernelMessageV2(role: .observation, content: "local file evidence"),
-                    AgentKernelMessageV2(role: .user, content: "answer from cloud")
+                    AgentKernelMessage(role: .system, content: "local-only system prompt"),
+                    AgentKernelMessage(role: .user, content: "hello"),
+                    AgentKernelMessage(role: .assistant, content: "hi"),
+                    AgentKernelMessage(role: .observation, content: "local file evidence"),
+                    AgentKernelMessage(role: .user, content: "answer from cloud")
                 ],
                 requestedMaxOutputTokens: 256
             )
@@ -486,13 +486,13 @@ enum AgentModelGatewayFixtureHarness {
         let backend = FixtureCloudChatBackend(
             responseText: ##"{"type":"tool_call","name":"read_file","arguments":{"path":"notes.txt"},"reason":"Need local evidence."}"##
         )
-        let descriptor = AgentKernelModelDescriptorV2(
+        let descriptor = AgentKernelModelDescriptor(
             id: "fixture.cloud-tools",
             providerKind: .pixelPaneCloud,
             route: .cloud,
             displayName: "Fixture Cloud Tools"
         )
-        let adapter = AgentKernelCloudChatAdapterV2(
+        let adapter = AgentKernelCloudChatAdapter(
             descriptor: descriptor,
             backend: backend,
             backendCapabilities: await backend.capabilities(),
@@ -505,7 +505,7 @@ enum AgentModelGatewayFixtureHarness {
             adapterID: descriptor.id,
             request: AgentModelGatewayRequest(
                 mode: .constrainedStructuredText,
-                messages: [AgentKernelMessageV2(role: .user, content: "read notes")],
+                messages: [AgentKernelMessage(role: .user, content: "read notes")],
                 tools: [readFileTool()],
                 requestedMaxOutputTokens: 256
             )
@@ -536,7 +536,7 @@ enum AgentModelGatewayFixtureHarness {
             adapterID: cloud.descriptor.id,
             request: AgentModelGatewayRequest(
                 mode: .constrainedStructuredText,
-                messages: [AgentKernelMessageV2(role: .user, content: "read local file")],
+                messages: [AgentKernelMessage(role: .user, content: "read local file")],
                 tools: [readFileTool()]
             )
         )
@@ -553,16 +553,16 @@ enum AgentModelGatewayFixtureHarness {
         ```<|im_end|>
         """##
         let backend = FixtureRawProtocolBackend(rawText: rawProtocol, displayText: rawProtocol)
-        let descriptor = AgentKernelModelDescriptorV2(
+        let descriptor = AgentKernelModelDescriptor(
             id: "fixture.wrapped-protocol",
             providerKind: .fixture,
             route: .local,
             displayName: "Fixture Wrapped Protocol"
         )
-        let adapter = AgentKernelAIBackendAdapterV2(
+        let adapter = AgentKernelAIBackendAdapter(
             descriptor: descriptor,
             backend: backend,
-            capabilities: AgentKernelModelAdapterCapabilitiesV2(
+            capabilities: AgentKernelModelAdapterCapabilities(
                 descriptor: descriptor,
                 toolCallingMode: .textProtocol,
                 structuredOutputReliability: .bestEffort,
@@ -574,7 +574,7 @@ enum AgentModelGatewayFixtureHarness {
             adapterID: descriptor.id,
             request: AgentModelGatewayRequest(
                 mode: .constrainedStructuredText,
-                messages: [AgentKernelMessageV2(role: .user, content: "answer")],
+                messages: [AgentKernelMessage(role: .user, content: "answer")],
                 tools: [readFileTool()]
             )
         )
@@ -584,66 +584,66 @@ enum AgentModelGatewayFixtureHarness {
 
     private static func request(
         mode: AgentModelGatewayMode,
-        tools: [AgentKernelToolSchemaV2] = [],
+        tools: [AgentKernelToolSchema] = [],
         timeout: TimeInterval? = nil
     ) -> AgentModelGatewayRequest {
         AgentModelGatewayRequest(
             mode: mode,
-            messages: [AgentKernelMessageV2(role: .user, content: "hello")],
+            messages: [AgentKernelMessage(role: .user, content: "hello")],
             tools: tools,
             timeout: timeout
         )
     }
 
-    private static func readFileTool() -> AgentKernelToolSchemaV2 {
-        AgentKernelToolSchemaV2(
+    private static func readFileTool() -> AgentKernelToolSchema {
+        AgentKernelToolSchema(
             name: "read_file",
             summary: "Read a granted file.",
             requiredArguments: ["path"]
         )
     }
 
-    private static func stageWriteTool() -> AgentKernelToolSchemaV2 {
-        AgentKernelToolSchemaV2(
+    private static func stageWriteTool() -> AgentKernelToolSchema {
+        AgentKernelToolSchema(
             name: "stage_write_proposal",
             summary: "Stage a write proposal.",
             requiredArguments: ["operation", "targetPath", "content"],
             arguments: [
-                AgentKernelToolArgumentSchemaV2(name: "operation", type: .string, isRequired: true, summary: "Operation."),
-                AgentKernelToolArgumentSchemaV2(name: "targetPath", type: .string, isRequired: true, summary: "Target path."),
-                AgentKernelToolArgumentSchemaV2(name: "content", type: .string, isRequired: true, summary: "Content.")
+                AgentKernelToolArgumentSchema(name: "operation", type: .string, isRequired: true, summary: "Operation."),
+                AgentKernelToolArgumentSchema(name: "targetPath", type: .string, isRequired: true, summary: "Target path."),
+                AgentKernelToolArgumentSchema(name: "content", type: .string, isRequired: true, summary: "Content.")
             ]
         )
     }
 
     private static func fixtureAdapter(
         id: String = UUID().uuidString,
-        providerKind: AgentKernelModelProviderKindV2 = .fixture,
-        route: AgentKernelModelRouteV2 = .local,
+        providerKind: AgentKernelModelProviderKind = .fixture,
+        route: AgentKernelModelRoute = .local,
         modelName: String? = nil,
-        toolCallingMode: AgentKernelToolCallingModeV2 = .native,
-        structured: AgentKernelStructuredOutputReliabilityV2 = .strict,
-        limits: AgentKernelModelLimitsV2 = AgentKernelModelLimitsV2(contextWindowTokens: 8_192),
+        toolCallingMode: AgentKernelToolCallingMode = .native,
+        structured: AgentKernelStructuredOutputReliability = .strict,
+        limits: AgentKernelModelLimits = AgentKernelModelLimits(contextWindowTokens: 8_192),
         isAvailable: Bool = true,
-        responses: [FixtureAgentKernelAdapterV2.ScriptedResponse]
-    ) -> FixtureAgentKernelAdapterV2 {
-        let descriptor = AgentKernelModelDescriptorV2(
+        responses: [FixtureAgentKernelAdapter.ScriptedResponse]
+    ) -> FixtureAgentKernelAdapter {
+        let descriptor = AgentKernelModelDescriptor(
             id: id,
             providerKind: providerKind,
             route: route,
             displayName: id,
             modelName: modelName
         )
-        let capabilities = AgentKernelModelAdapterCapabilitiesV2(
+        let capabilities = AgentKernelModelAdapterCapabilities(
             descriptor: descriptor,
             toolCallingMode: toolCallingMode,
             structuredOutputReliability: structured,
             streamingMode: .events,
             limits: limits,
             isAvailable: isAvailable,
-            unavailableReason: isAvailable ? nil : AgentKernelBoundedTextV2("Fixture unavailable")
+            unavailableReason: isAvailable ? nil : AgentKernelBoundedText("Fixture unavailable")
         )
-        return FixtureAgentKernelAdapterV2(
+        return FixtureAgentKernelAdapter(
             descriptor: descriptor,
             capabilities: capabilities,
             responses: responses

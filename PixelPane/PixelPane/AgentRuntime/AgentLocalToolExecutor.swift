@@ -114,7 +114,7 @@ actor AgentLocalToolExecutor {
     }
 
     func execute(
-        call: AgentKernelToolCallV2,
+        call: AgentKernelToolCall,
         runID: UUID,
         stepID: UUID?,
         providerTier: AgentModelCapabilityTier,
@@ -392,7 +392,7 @@ actor AgentLocalToolExecutor {
     }
 
     private func listGrants(
-        call: AgentKernelToolCallV2,
+        call: AgentKernelToolCall,
         runID: UUID,
         stepID: UUID?,
         grants: [AgentLocalFileGrant]
@@ -432,7 +432,7 @@ actor AgentLocalToolExecutor {
     }
 
     private func listFolder(
-        call: AgentKernelToolCallV2,
+        call: AgentKernelToolCall,
         runID: UUID,
         stepID: UUID?,
         grants: [AgentLocalFileGrant]
@@ -508,7 +508,7 @@ actor AgentLocalToolExecutor {
     }
 
     private func searchFiles(
-        call: AgentKernelToolCallV2,
+        call: AgentKernelToolCall,
         runID: UUID,
         stepID: UUID?,
         grants: [AgentLocalFileGrant]
@@ -612,7 +612,7 @@ actor AgentLocalToolExecutor {
     }
 
     private func readFile(
-        call: AgentKernelToolCallV2,
+        call: AgentKernelToolCall,
         runID: UUID,
         stepID: UUID?,
         grants: [AgentLocalFileGrant]
@@ -661,7 +661,7 @@ actor AgentLocalToolExecutor {
     }
 
     private func getProcessSnapshot(
-        call: AgentKernelToolCallV2,
+        call: AgentKernelToolCall,
         runID: UUID,
         stepID: UUID?
     ) async throws -> AgentToolExecutionResult {
@@ -701,7 +701,7 @@ actor AgentLocalToolExecutor {
     }
 
     private func getLocalListenerSnapshot(
-        call: AgentKernelToolCallV2,
+        call: AgentKernelToolCall,
         runID: UUID,
         stepID: UUID?,
         context: AgentToolRunContext
@@ -768,7 +768,7 @@ actor AgentLocalToolExecutor {
     }
 
     private func stageWriteProposal(
-        call: AgentKernelToolCallV2,
+        call: AgentKernelToolCall,
         runID: UUID,
         stepID: UUID?,
         context: AgentToolRunContext
@@ -845,7 +845,7 @@ actor AgentLocalToolExecutor {
     }
 
     private func stageCommandProposal(
-        call: AgentKernelToolCallV2,
+        call: AgentKernelToolCall,
         runID: UUID,
         stepID: UUID?,
         context: AgentToolRunContext,
@@ -868,7 +868,7 @@ actor AgentLocalToolExecutor {
     }
 
     private func runAllowedFiniteCommand(
-        call: AgentKernelToolCallV2,
+        call: AgentKernelToolCall,
         runID: UUID,
         stepID: UUID?,
         context: AgentToolRunContext
@@ -893,7 +893,7 @@ actor AgentLocalToolExecutor {
     }
 
     private func commandDraft(
-        call: AgentKernelToolCallV2,
+        call: AgentKernelToolCall,
         context: AgentToolRunContext
     ) throws -> AgentCommandDraft {
         let command = call.arguments["command"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

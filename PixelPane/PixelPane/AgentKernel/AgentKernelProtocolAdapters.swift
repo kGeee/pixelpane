@@ -1,14 +1,14 @@
 import Foundation
 
-struct AgentKernelNativeToolCallAdapterV2: AgentKernelModelAdapterV2 {
-    let descriptor: AgentKernelModelDescriptorV2
-    let capabilities: AgentKernelModelAdapterCapabilitiesV2
-    private let upstream: any AgentKernelModelAdapterV2
+struct AgentKernelNativeToolCallAdapter: AgentKernelModelAdapter {
+    let descriptor: AgentKernelModelDescriptor
+    let capabilities: AgentKernelModelAdapterCapabilities
+    private let upstream: any AgentKernelModelAdapter
 
-    nonisolated init(upstream: any AgentKernelModelAdapterV2) {
+    nonisolated init(upstream: any AgentKernelModelAdapter) {
         self.upstream = upstream
         self.descriptor = upstream.descriptor
-        self.capabilities = AgentKernelModelAdapterCapabilitiesV2(
+        self.capabilities = AgentKernelModelAdapterCapabilities(
             descriptor: upstream.capabilities.descriptor,
             inputModalities: upstream.capabilities.inputModalities,
             outputModalities: upstream.capabilities.outputModalities,
@@ -22,10 +22,10 @@ struct AgentKernelNativeToolCallAdapterV2: AgentKernelModelAdapterV2 {
     }
 
     nonisolated func response(
-        for request: AgentKernelModelAdapterRequestV2
-    ) async -> AgentKernelModelAdapterResponseV2 {
+        for request: AgentKernelModelAdapterRequest
+    ) async -> AgentKernelModelAdapterResponse {
         await upstream.response(
-            for: AgentKernelModelAdapterRequestV2(
+            for: AgentKernelModelAdapterRequest(
                 id: request.id,
                 messages: request.messages,
                 tools: request.tools,
@@ -38,10 +38,10 @@ struct AgentKernelNativeToolCallAdapterV2: AgentKernelModelAdapterV2 {
     }
 
     nonisolated func stream(
-        for request: AgentKernelModelAdapterRequestV2
-    ) -> AsyncStream<AgentKernelModelAdapterEventV2> {
+        for request: AgentKernelModelAdapterRequest
+    ) -> AsyncStream<AgentKernelModelAdapterEvent> {
         upstream.stream(
-            for: AgentKernelModelAdapterRequestV2(
+            for: AgentKernelModelAdapterRequest(
                 id: request.id,
                 messages: request.messages,
                 tools: request.tools,
@@ -54,19 +54,19 @@ struct AgentKernelNativeToolCallAdapterV2: AgentKernelModelAdapterV2 {
     }
 }
 
-enum AgentKernelTextProtocolTransportEventV2: Equatable, Sendable {
+enum AgentKernelTextProtocolTransportEvent: Equatable, Sendable {
     case text(String)
     case timedOut
 }
 
-protocol AgentKernelTextProtocolTransportV2: Sendable {
-    nonisolated func complete(prompt: String, request: AgentKernelModelAdapterRequestV2) async -> AgentKernelTextProtocolTransportEventV2
+protocol AgentKernelTextProtocolTransport: Sendable {
+    nonisolated func complete(prompt: String, request: AgentKernelModelAdapterRequest) async -> AgentKernelTextProtocolTransportEvent
 }
 
-struct AgentKernelTextProtocolPromptBuilderV2: Sendable {
+struct AgentKernelTextProtocolPromptBuilder: Sendable {
     nonisolated init() {}
 
-    nonisolated func prompt(for request: AgentKernelModelAdapterRequestV2) -> String {
+    nonisolated func prompt(for request: AgentKernelModelAdapterRequest) -> String {
         let tools = request.tools.map { tool in
             let arguments: String
             if tool.arguments.isEmpty {
@@ -90,7 +90,7 @@ struct AgentKernelTextProtocolPromptBuilderV2: Sendable {
                 lines.append("  source: \(source)")
             }
             if let ocrText = Self.metadataString(attachment.metadata["ocrText"]), !ocrText.isEmpty {
-                lines.append("  ocrText: \(AgentKernelBoundedTextV2(ocrText, characterLimit: 4_000).text)")
+                lines.append("  ocrText: \(AgentKernelBoundedText(ocrText, characterLimit: 4_000).text)")
             }
             return lines.joined(separator: "\n")
         }.joined(separator: "\n")
@@ -113,7 +113,7 @@ struct AgentKernelTextProtocolPromptBuilderV2: Sendable {
         """
     }
 
-    private nonisolated static func metadataString(_ value: AgentKernelMetadataValueV2?) -> String? {
+    private nonisolated static func metadataString(_ value: AgentKernelMetadataValue?) -> String? {
         guard case .string(let text) = value else { return nil }
         return text
     }
@@ -121,7 +121,7 @@ struct AgentKernelTextProtocolPromptBuilderV2: Sendable {
     nonisolated func repairPrompt(
         malformedOutput: String,
         reason: String,
-        originalRequest: AgentKernelModelAdapterRequestV2
+        originalRequest: AgentKernelModelAdapterRequest
     ) -> String {
         """
         The previous response did not match the required JSON protocol.
@@ -134,25 +134,25 @@ struct AgentKernelTextProtocolPromptBuilderV2: Sendable {
     }
 }
 
-struct AgentKernelTextProtocolParserV2: Sendable {
-    private let decoder: AgentKernelToolProtocolDecoderV2
+struct AgentKernelTextProtocolParser: Sendable {
+    private let decoder: AgentKernelToolProtocolDecoder
 
-    nonisolated init(decoder: AgentKernelToolProtocolDecoderV2 = AgentKernelToolProtocolDecoderV2()) {
+    nonisolated init(decoder: AgentKernelToolProtocolDecoder = AgentKernelToolProtocolDecoder()) {
         self.decoder = decoder
     }
 
     nonisolated func parse(
         _ text: String,
-        tools: [AgentKernelToolSchemaV2]
-    ) -> Result<AgentKernelModelAdapterEventV2, AgentKernelTerminalReasonV2> {
+        tools: [AgentKernelToolSchema]
+    ) -> Result<AgentKernelModelAdapterEvent, AgentKernelTerminalReason> {
         switch decoder.decode(text, tools: tools, requiresProtocolEnvelope: true) {
         case .event(let event):
             return .success(event)
         case .notProtocol:
             return .failure(
-                AgentKernelTerminalReasonV2(
+                AgentKernelTerminalReason(
                     code: "text_protocol_missing_type",
-                    summary: AgentKernelBoundedTextV2("Text protocol output is missing a type field.")
+                    summary: AgentKernelBoundedText("Text protocol output is missing a type field.")
                 )
             )
         case .failure(let reason):
@@ -162,27 +162,27 @@ struct AgentKernelTextProtocolParserV2: Sendable {
 
     nonisolated func partialToolCallForValidation(
         _ text: String,
-        tools: [AgentKernelToolSchemaV2]
-    ) -> AgentKernelToolCallV2? {
+        tools: [AgentKernelToolSchema]
+    ) -> AgentKernelToolCall? {
         decoder.partialToolCallForValidation(text, tools: tools)
     }
 }
 
-struct AgentKernelTextProtocolAdapterV2: AgentKernelModelAdapterV2 {
-    let descriptor: AgentKernelModelDescriptorV2
-    let capabilities: AgentKernelModelAdapterCapabilitiesV2
+struct AgentKernelTextProtocolAdapter: AgentKernelModelAdapter {
+    let descriptor: AgentKernelModelDescriptor
+    let capabilities: AgentKernelModelAdapterCapabilities
 
-    private let transport: any AgentKernelTextProtocolTransportV2
-    private let promptBuilder: AgentKernelTextProtocolPromptBuilderV2
-    private let parser: AgentKernelTextProtocolParserV2
+    private let transport: any AgentKernelTextProtocolTransport
+    private let promptBuilder: AgentKernelTextProtocolPromptBuilder
+    private let parser: AgentKernelTextProtocolParser
     private let allowsSingleRepairAttempt: Bool
 
     nonisolated init(
-        descriptor: AgentKernelModelDescriptorV2,
-        transport: any AgentKernelTextProtocolTransportV2,
-        limits: AgentKernelModelLimitsV2 = AgentKernelModelLimitsV2(),
-        promptBuilder: AgentKernelTextProtocolPromptBuilderV2 = AgentKernelTextProtocolPromptBuilderV2(),
-        parser: AgentKernelTextProtocolParserV2 = AgentKernelTextProtocolParserV2(),
+        descriptor: AgentKernelModelDescriptor,
+        transport: any AgentKernelTextProtocolTransport,
+        limits: AgentKernelModelLimits = AgentKernelModelLimits(),
+        promptBuilder: AgentKernelTextProtocolPromptBuilder = AgentKernelTextProtocolPromptBuilder(),
+        parser: AgentKernelTextProtocolParser = AgentKernelTextProtocolParser(),
         allowsSingleRepairAttempt: Bool = true
     ) {
         self.descriptor = descriptor
@@ -190,7 +190,7 @@ struct AgentKernelTextProtocolAdapterV2: AgentKernelModelAdapterV2 {
         self.promptBuilder = promptBuilder
         self.parser = parser
         self.allowsSingleRepairAttempt = allowsSingleRepairAttempt
-        self.capabilities = AgentKernelModelAdapterCapabilitiesV2(
+        self.capabilities = AgentKernelModelAdapterCapabilities(
             descriptor: descriptor,
             toolCallingMode: .textProtocol,
             structuredOutputReliability: .bestEffort,
@@ -200,9 +200,9 @@ struct AgentKernelTextProtocolAdapterV2: AgentKernelModelAdapterV2 {
     }
 
     nonisolated func response(
-        for request: AgentKernelModelAdapterRequestV2
-    ) async -> AgentKernelModelAdapterResponseV2 {
-        let protocolRequest = AgentKernelModelAdapterRequestV2(
+        for request: AgentKernelModelAdapterRequest
+    ) async -> AgentKernelModelAdapterResponse {
+        let protocolRequest = AgentKernelModelAdapterRequest(
             id: request.id,
             messages: request.messages,
             tools: request.tools,
@@ -223,8 +223,8 @@ struct AgentKernelTextProtocolAdapterV2: AgentKernelModelAdapterV2 {
 
     private nonisolated func parseOrRepair(
         _ text: String,
-        request: AgentKernelModelAdapterRequestV2
-    ) async -> AgentKernelModelAdapterResponseV2 {
+        request: AgentKernelModelAdapterRequest
+    ) async -> AgentKernelModelAdapterResponse {
         switch parser.parse(text, tools: request.tools) {
         case .success(let event):
             return response(for: request, events: [event])
@@ -257,11 +257,11 @@ struct AgentKernelTextProtocolAdapterV2: AgentKernelModelAdapterV2 {
     }
 
     private nonisolated func response(
-        for request: AgentKernelModelAdapterRequestV2,
-        events: [AgentKernelModelAdapterEventV2],
-        diagnostics: AgentKernelBoundedTextV2? = nil
-    ) -> AgentKernelModelAdapterResponseV2 {
-        AgentKernelModelAdapterResponseV2(
+        for request: AgentKernelModelAdapterRequest,
+        events: [AgentKernelModelAdapterEvent],
+        diagnostics: AgentKernelBoundedText? = nil
+    ) -> AgentKernelModelAdapterResponse {
+        AgentKernelModelAdapterResponse(
             requestID: request.id,
             descriptor: descriptor,
             events: events,
@@ -270,18 +270,18 @@ struct AgentKernelTextProtocolAdapterV2: AgentKernelModelAdapterV2 {
     }
 }
 
-actor FixtureTextProtocolTransportV2: AgentKernelTextProtocolTransportV2 {
-    private var responses: [AgentKernelTextProtocolTransportEventV2]
+actor FixtureTextProtocolTransport: AgentKernelTextProtocolTransport {
+    private var responses: [AgentKernelTextProtocolTransportEvent]
     private(set) var prompts: [String] = []
 
-    init(responses: [AgentKernelTextProtocolTransportEventV2]) {
+    init(responses: [AgentKernelTextProtocolTransportEvent]) {
         self.responses = responses
     }
 
     func complete(
         prompt: String,
-        request: AgentKernelModelAdapterRequestV2
-    ) async -> AgentKernelTextProtocolTransportEventV2 {
+        request: AgentKernelModelAdapterRequest
+    ) async -> AgentKernelTextProtocolTransportEvent {
         prompts.append(prompt)
         guard !responses.isEmpty else {
             return .text("")

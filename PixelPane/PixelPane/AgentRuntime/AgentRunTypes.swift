@@ -457,19 +457,19 @@ nonisolated enum AgentRunControlRecordKind: String, Codable, Equatable, Sendable
 nonisolated struct AgentRunModelResponseRecord: Codable, Equatable, Sendable {
     let requestID: UUID
     let adapterID: String
-    let descriptor: AgentKernelModelDescriptorV2
+    let descriptor: AgentKernelModelDescriptor
     let tier: AgentModelCapabilityTier
-    let responseFormat: AgentKernelToolCallingModeV2
-    let events: [AgentKernelModelAdapterEventV2]
+    let responseFormat: AgentKernelToolCallingMode
+    let events: [AgentKernelModelAdapterEvent]
     let diagnostics: AgentRunText?
 
     init(
         requestID: UUID,
         adapterID: String,
-        descriptor: AgentKernelModelDescriptorV2,
+        descriptor: AgentKernelModelDescriptor,
         tier: AgentModelCapabilityTier,
-        responseFormat: AgentKernelToolCallingModeV2,
-        events: [AgentKernelModelAdapterEventV2],
+        responseFormat: AgentKernelToolCallingMode,
+        events: [AgentKernelModelAdapterEvent],
         diagnostics: AgentRunText? = nil
     ) {
         self.requestID = requestID
@@ -509,8 +509,8 @@ nonisolated enum AgentRunControlPayload: Codable, Equatable, Sendable {
     case modelRequest(AgentModelGatewayRequest)
     case modelResponse(AgentRunModelResponseRecord)
     case modelFailure(AgentModelGatewayFailure)
-    case modelMessage(AgentKernelMessageV2)
-    case toolCall(AgentKernelToolCallV2)
+    case modelMessage(AgentKernelMessage)
+    case toolCall(AgentKernelToolCall)
     case toolResult(AgentRunToolResultRecord)
     case metadata([String: AgentRunMetadataValue])
 }
@@ -552,13 +552,13 @@ nonisolated struct AgentRunControlRecord: Codable, Equatable, Identifiable, Send
 }
 
 nonisolated struct AgentRunModelConfigurationRecord: Codable, Equatable, Sendable {
-    let adapterDescriptor: AgentKernelModelDescriptorV2
+    let adapterDescriptor: AgentKernelModelDescriptor
     let request: AgentModelGatewayRequest
     let toolContext: AgentToolRunContext
     let createdAt: Date
 
     init(
-        adapterDescriptor: AgentKernelModelDescriptorV2,
+        adapterDescriptor: AgentKernelModelDescriptor,
         request: AgentModelGatewayRequest,
         toolContext: AgentToolRunContext,
         createdAt: Date = Date()

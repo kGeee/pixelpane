@@ -26,7 +26,7 @@ extension AgentRunMetadataValue {
     }
 }
 
-extension AgentKernelMetadataValueV2 {
+extension AgentKernelMetadataValue {
     nonisolated var stringValue: String? {
         guard case .string(let value) = self else { return nil }
         return value

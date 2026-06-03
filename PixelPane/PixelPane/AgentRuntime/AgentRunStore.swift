@@ -706,7 +706,7 @@ actor AgentRunStore {
             .first
     }
 
-    func replayMessages(runID: UUID) -> [AgentKernelMessageV2] {
+    func replayMessages(runID: UUID) -> [AgentKernelMessage] {
         latestModelRequest(runID: runID)?.messages ?? []
     }
 

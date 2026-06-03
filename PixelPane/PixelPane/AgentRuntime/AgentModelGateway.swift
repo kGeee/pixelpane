@@ -92,8 +92,8 @@ nonisolated enum AgentModelConformanceDerivedTier: String, Codable, Equatable, S
 nonisolated struct AgentModelConformanceTarget: Codable, Equatable, Sendable {
     static let localMLXChatAdapterID = "local.hybrid-local.chat"
 
-    let providerKind: AgentKernelModelProviderKindV2
-    let route: AgentKernelModelRouteV2
+    let providerKind: AgentKernelModelProviderKind
+    let route: AgentKernelModelRoute
     let adapterID: String
     let modelID: String
     let modelPath: String?
@@ -101,8 +101,8 @@ nonisolated struct AgentModelConformanceTarget: Codable, Equatable, Sendable {
     let runtimeVersion: String?
 
     init(
-        providerKind: AgentKernelModelProviderKindV2,
-        route: AgentKernelModelRouteV2,
+        providerKind: AgentKernelModelProviderKind,
+        route: AgentKernelModelRoute,
         adapterID: String,
         modelID: String,
         modelPath: String? = nil,
@@ -130,7 +130,7 @@ nonisolated struct AgentModelConformanceTarget: Codable, Equatable, Sendable {
         ].joined(separator: "\u{1F}")
     }
 
-    func matches(descriptor: AgentKernelModelDescriptorV2) -> Bool {
+    func matches(descriptor: AgentKernelModelDescriptor) -> Bool {
         guard providerKind == descriptor.providerKind,
               route == descriptor.route,
               adapterID == descriptor.id else {
@@ -272,7 +272,7 @@ nonisolated struct AgentModelConformanceRunner: Sendable {
     }
 
     func run(
-        adapter: any AgentKernelModelAdapterV2,
+        adapter: any AgentKernelModelAdapter,
         target: AgentModelConformanceTarget,
         requestedMaxOutputTokens: Int = 128
     ) async -> AgentModelConformanceProfile {
@@ -327,12 +327,12 @@ nonisolated struct AgentModelConformanceRunner: Sendable {
     }
 
     private func probePlainChat(
-        adapter: any AgentKernelModelAdapterV2,
+        adapter: any AgentKernelModelAdapter,
         requestedMaxOutputTokens: Int
     ) async -> AgentModelConformanceProbeResult {
-        let request = AgentKernelModelAdapterRequestV2(
+        let request = AgentKernelModelAdapterRequest(
             messages: [
-                AgentKernelMessageV2(role: .user, content: "Conformance probe: what is 2+2? Reply with a short answer.")
+                AgentKernelMessage(role: .user, content: "Conformance probe: what is 2+2? Reply with a short answer.")
             ],
             requestedMaxOutputTokens: requestedMaxOutputTokens,
             responseFormat: .none,
@@ -347,12 +347,12 @@ nonisolated struct AgentModelConformanceRunner: Sendable {
     }
 
     private func probeStructuredJSON(
-        adapter: any AgentKernelModelAdapterV2,
+        adapter: any AgentKernelModelAdapter,
         requestedMaxOutputTokens: Int
     ) async -> AgentModelConformanceProbeResult {
-        let request = AgentKernelModelAdapterRequestV2(
+        let request = AgentKernelModelAdapterRequest(
             messages: [
-                AgentKernelMessageV2(role: .user, content: "Conformance probe: return a final answer saying structured-ok.")
+                AgentKernelMessage(role: .user, content: "Conformance probe: return a final answer saying structured-ok.")
             ],
             requestedMaxOutputTokens: requestedMaxOutputTokens,
             responseFormat: .textProtocol,
@@ -367,16 +367,16 @@ nonisolated struct AgentModelConformanceRunner: Sendable {
     }
 
     private func probeToolCall(
-        adapter: any AgentKernelModelAdapterV2,
+        adapter: any AgentKernelModelAdapter,
         requestedMaxOutputTokens: Int
     ) async -> AgentModelConformanceProbeResult {
         let tool = Self.echoToolSchema()
         let responseFormat = adapter.capabilities.toolCallingMode == .native
-            ? AgentKernelToolCallingModeV2.native
+            ? AgentKernelToolCallingMode.native
             : .textProtocol
-        let request = AgentKernelModelAdapterRequestV2(
+        let request = AgentKernelModelAdapterRequest(
             messages: [
-                AgentKernelMessageV2(role: .user, content: "Conformance probe: call pixelpane_probe_echo with text probe-ok.")
+                AgentKernelMessage(role: .user, content: "Conformance probe: call pixelpane_probe_echo with text probe-ok.")
             ],
             tools: [tool],
             requestedMaxOutputTokens: requestedMaxOutputTokens,
@@ -395,16 +395,16 @@ nonisolated struct AgentModelConformanceRunner: Sendable {
     }
 
     private func probeToolResultFollowUp(
-        adapter: any AgentKernelModelAdapterV2,
+        adapter: any AgentKernelModelAdapter,
         requestedMaxOutputTokens: Int
     ) async -> AgentModelConformanceProbeResult {
         let responseFormat = adapter.capabilities.toolCallingMode == .native
-            ? AgentKernelToolCallingModeV2.native
+            ? AgentKernelToolCallingMode.native
             : .textProtocol
-        let request = AgentKernelModelAdapterRequestV2(
+        let request = AgentKernelModelAdapterRequest(
             messages: [
-                AgentKernelMessageV2(role: .user, content: "Conformance probe: answer from the observation."),
-                AgentKernelMessageV2(role: .observation, content: "Tool result\nname: pixelpane_probe_echo\nstatus: succeeded\nobservation: probe-ok")
+                AgentKernelMessage(role: .user, content: "Conformance probe: answer from the observation."),
+                AgentKernelMessage(role: .observation, content: "Tool result\nname: pixelpane_probe_echo\nstatus: succeeded\nobservation: probe-ok")
             ],
             tools: [Self.echoToolSchema()],
             requestedMaxOutputTokens: requestedMaxOutputTokens,
@@ -423,9 +423,9 @@ nonisolated struct AgentModelConformanceRunner: Sendable {
     }
 
     private func responseProbe(
-        adapter: any AgentKernelModelAdapterV2,
-        request: AgentKernelModelAdapterRequestV2,
-        validate: @escaping @Sendable (AgentKernelModelAdapterResponseV2, Double) -> AgentModelConformanceProbeResult
+        adapter: any AgentKernelModelAdapter,
+        request: AgentKernelModelAdapterRequest,
+        validate: @escaping @Sendable (AgentKernelModelAdapterResponse, Double) -> AgentModelConformanceProbeResult
     ) async -> AgentModelConformanceProbeResult {
         let startedAt = Date()
         do {
@@ -453,10 +453,10 @@ nonisolated struct AgentModelConformanceRunner: Sendable {
     }
 
     private func withTimeout(
-        _ operation: @escaping @Sendable () async -> AgentKernelModelAdapterResponseV2
-    ) async throws -> AgentKernelModelAdapterResponseV2 {
+        _ operation: @escaping @Sendable () async -> AgentKernelModelAdapterResponse
+    ) async throws -> AgentKernelModelAdapterResponse {
         try Task.checkCancellation()
-        return try await withThrowingTaskGroup(of: AgentKernelModelAdapterResponseV2.self) { group in
+        return try await withThrowingTaskGroup(of: AgentKernelModelAdapterResponse.self) { group in
             group.addTask {
                 try Task.checkCancellation()
                 return await operation()
@@ -479,13 +479,13 @@ nonisolated struct AgentModelConformanceRunner: Sendable {
         }
     }
 
-    private static func echoToolSchema() -> AgentKernelToolSchemaV2 {
-        AgentKernelToolSchemaV2(
+    private static func echoToolSchema() -> AgentKernelToolSchema {
+        AgentKernelToolSchema(
             name: "pixelpane_probe_echo",
             summary: "Conformance probe echo tool. The app owns execution.",
             requiredArguments: ["text"],
             arguments: [
-                AgentKernelToolArgumentSchemaV2(
+                AgentKernelToolArgumentSchema(
                     name: "text",
                     type: .string,
                     isRequired: true,
@@ -495,7 +495,7 @@ nonisolated struct AgentModelConformanceRunner: Sendable {
         )
     }
 
-    private static func finalAnswer(from events: [AgentKernelModelAdapterEventV2]) -> AgentKernelFinalAnswerV2? {
+    private static func finalAnswer(from events: [AgentKernelModelAdapterEvent]) -> AgentKernelFinalAnswer? {
         for event in events.reversed() {
             if case .finalAnswer(let answer) = event,
                !answer.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -505,7 +505,7 @@ nonisolated struct AgentModelConformanceRunner: Sendable {
         return nil
     }
 
-    private static func firstToolCall(from events: [AgentKernelModelAdapterEventV2]) -> AgentKernelToolCallV2? {
+    private static func firstToolCall(from events: [AgentKernelModelAdapterEvent]) -> AgentKernelToolCall? {
         for event in events {
             if case .toolCall(let call) = event {
                 return call
@@ -514,7 +514,7 @@ nonisolated struct AgentModelConformanceRunner: Sendable {
         return nil
     }
 
-    private static func firstMalformedOutput(in events: [AgentKernelModelAdapterEventV2]) -> String? {
+    private static func firstMalformedOutput(in events: [AgentKernelModelAdapterEvent]) -> String? {
         for event in events {
             if case .malformedOutput(let text) = event {
                 return text
@@ -523,13 +523,13 @@ nonisolated struct AgentModelConformanceRunner: Sendable {
         return nil
     }
 
-    private static func isSingleEmptyOutput(_ events: [AgentKernelModelAdapterEventV2]) -> Bool {
+    private static func isSingleEmptyOutput(_ events: [AgentKernelModelAdapterEvent]) -> Bool {
         guard events.count == 1 else { return false }
         guard case .emptyOutput = events[0] else { return false }
         return true
     }
 
-    private static func rawOutput(from events: [AgentKernelModelAdapterEventV2]) -> String {
+    private static func rawOutput(from events: [AgentKernelModelAdapterEvent]) -> String {
         events.map { event in
             switch event {
             case .snapshot(let text):
@@ -603,9 +603,9 @@ nonisolated struct AgentModelGatewayFailure: Error, Codable, Equatable, Sendable
 nonisolated struct AgentModelGatewayRequest: Identifiable, Codable, Equatable, Sendable {
     let id: UUID
     let mode: AgentModelGatewayMode
-    let messages: [AgentKernelMessageV2]
-    let tools: [AgentKernelToolSchemaV2]
-    let attachments: [AgentKernelModelAttachmentV2]
+    let messages: [AgentKernelMessage]
+    let tools: [AgentKernelToolSchema]
+    let attachments: [AgentKernelModelAttachment]
     let requestedMaxOutputTokens: Int
     let timeout: TimeInterval?
     let metadata: [String: AgentRunMetadataValue]
@@ -613,9 +613,9 @@ nonisolated struct AgentModelGatewayRequest: Identifiable, Codable, Equatable, S
     init(
         id: UUID = UUID(),
         mode: AgentModelGatewayMode,
-        messages: [AgentKernelMessageV2],
-        tools: [AgentKernelToolSchemaV2] = [],
-        attachments: [AgentKernelModelAttachmentV2] = [],
+        messages: [AgentKernelMessage],
+        tools: [AgentKernelToolSchema] = [],
+        attachments: [AgentKernelModelAttachment] = [],
         requestedMaxOutputTokens: Int = 1_024,
         timeout: TimeInterval? = nil,
         metadata: [String: AgentRunMetadataValue] = [:]
@@ -634,10 +634,10 @@ nonisolated struct AgentModelGatewayRequest: Identifiable, Codable, Equatable, S
 nonisolated struct AgentModelGatewayResponse: Sendable {
     let requestID: UUID
     let adapterID: String
-    let descriptor: AgentKernelModelDescriptorV2
+    let descriptor: AgentKernelModelDescriptor
     let tier: AgentModelCapabilityTier
-    let responseFormat: AgentKernelToolCallingModeV2
-    let events: [AgentKernelModelAdapterEventV2]
+    let responseFormat: AgentKernelToolCallingMode
+    let events: [AgentKernelModelAdapterEvent]
     let diagnostics: AgentRunText?
 }
 
@@ -657,19 +657,19 @@ nonisolated enum AgentModelGatewayResult: Sendable {
 }
 
 actor AgentModelGateway {
-    private var adapters: [String: any AgentKernelModelAdapterV2]
+    private var adapters: [String: any AgentKernelModelAdapter]
     private var conformanceProfiles: [String: AgentModelConformanceProfile]
-    private let outputNormalizer = AgentKernelModelOutputNormalizerV2()
+    private let outputNormalizer = AgentKernelModelOutputNormalizer()
 
     init(
-        adapters: [any AgentKernelModelAdapterV2] = [],
+        adapters: [any AgentKernelModelAdapter] = [],
         conformanceProfiles: [AgentModelConformanceProfile] = []
     ) {
         self.adapters = Dictionary(uniqueKeysWithValues: adapters.map { ($0.descriptor.id, $0) })
         self.conformanceProfiles = Dictionary(uniqueKeysWithValues: conformanceProfiles.map { ($0.target.adapterID, $0) })
     }
 
-    func register(_ adapter: any AgentKernelModelAdapterV2) {
+    func register(_ adapter: any AgentKernelModelAdapter) {
         adapters[adapter.descriptor.id] = adapter
     }
 
@@ -780,7 +780,7 @@ actor AgentModelGateway {
     }
 
     nonisolated static func tier(
-        for capabilities: AgentKernelModelAdapterCapabilitiesV2,
+        for capabilities: AgentKernelModelAdapterCapabilities,
         conformanceProfile: AgentModelConformanceProfile? = nil
     ) -> AgentModelCapabilityTier {
         if let conformanceProfile,
@@ -806,7 +806,7 @@ actor AgentModelGateway {
     private nonisolated func validate(
         _ request: AgentModelGatewayRequest,
         adapterID: String,
-        capabilities: AgentKernelModelAdapterCapabilitiesV2,
+        capabilities: AgentKernelModelAdapterCapabilities,
         tier: AgentModelCapabilityTier
     ) -> AgentModelGatewayFailure? {
         let promptCharacters = request.messages.reduce(0) { $0 + $1.content.count }
@@ -843,7 +843,7 @@ actor AgentModelGateway {
     }
 
     private func conformanceProfile(
-        for descriptor: AgentKernelModelDescriptorV2
+        for descriptor: AgentKernelModelDescriptor
     ) -> AgentModelConformanceProfile? {
         guard let profile = conformanceProfiles[descriptor.id],
               profile.target.matches(descriptor: descriptor) else {
@@ -853,7 +853,7 @@ actor AgentModelGateway {
     }
 
     private nonisolated func validate(
-        _ response: AgentKernelModelAdapterResponseV2,
+        _ response: AgentKernelModelAdapterResponse,
         gatewayRequest: AgentModelGatewayRequest,
         adapterID: String
     ) -> AgentModelGatewayFailure? {
@@ -925,11 +925,11 @@ actor AgentModelGateway {
 
     private nonisolated func makeAdapterRequest(
         _ request: AgentModelGatewayRequest,
-        capabilities: AgentKernelModelAdapterCapabilitiesV2,
+        capabilities: AgentKernelModelAdapterCapabilities,
         tier: AgentModelCapabilityTier
-    ) -> AgentKernelModelAdapterRequestV2 {
-        let tools: [AgentKernelToolSchemaV2]
-        let responseFormat: AgentKernelToolCallingModeV2
+    ) -> AgentKernelModelAdapterRequest {
+        let tools: [AgentKernelToolSchema]
+        let responseFormat: AgentKernelToolCallingMode
 
         switch request.mode {
         case .plainChat:
@@ -946,7 +946,7 @@ actor AgentModelGateway {
             }
         }
 
-        return AgentKernelModelAdapterRequestV2(
+        return AgentKernelModelAdapterRequest(
             id: request.id,
             messages: request.messages,
             tools: tools,
@@ -960,15 +960,15 @@ actor AgentModelGateway {
     }
 
     private nonisolated func execute(
-        adapter: any AgentKernelModelAdapterV2,
-        request: AgentKernelModelAdapterRequestV2,
+        adapter: any AgentKernelModelAdapter,
+        request: AgentKernelModelAdapterRequest,
         timeout: TimeInterval?
-    ) async throws -> AgentKernelModelAdapterResponseV2 {
+    ) async throws -> AgentKernelModelAdapterResponse {
         guard let timeout, timeout > 0 else {
             return await adapter.response(for: request)
         }
 
-        return try await withThrowingTaskGroup(of: AgentKernelModelAdapterResponseV2.self) { group in
+        return try await withThrowingTaskGroup(of: AgentKernelModelAdapterResponse.self) { group in
             group.addTask {
                 await adapter.response(for: request)
             }
@@ -1001,13 +1001,13 @@ actor AgentModelGateway {
         )
     }
 
-    private nonisolated func isSingleEmptyOutput(_ events: [AgentKernelModelAdapterEventV2]) -> Bool {
+    private nonisolated func isSingleEmptyOutput(_ events: [AgentKernelModelAdapterEvent]) -> Bool {
         guard events.count == 1 else { return false }
         guard case .emptyOutput = events[0] else { return false }
         return true
     }
 
-    private nonisolated func firstMalformedOutput(in events: [AgentKernelModelAdapterEventV2]) -> String? {
+    private nonisolated func firstMalformedOutput(in events: [AgentKernelModelAdapterEvent]) -> String? {
         for event in events {
             if case .malformedOutput(let text) = event {
                 return text
@@ -1027,7 +1027,7 @@ actor AgentModelGateway {
         }
     }
 
-    private nonisolated func kernelMetadataValue(from value: AgentRunMetadataValue) -> AgentKernelMetadataValueV2 {
+    private nonisolated func kernelMetadataValue(from value: AgentRunMetadataValue) -> AgentKernelMetadataValue {
         switch value {
         case .string(let value):
             .string(value)
@@ -1041,10 +1041,10 @@ actor AgentModelGateway {
     }
 }
 
-extension AgentKernelModelAdapterCapabilitiesV2 {
+extension AgentKernelModelAdapterCapabilities {
     nonisolated func applyingAgentConformanceProfile(
         _ profile: AgentModelConformanceProfile?
-    ) -> AgentKernelModelAdapterCapabilitiesV2 {
+    ) -> AgentKernelModelAdapterCapabilities {
         guard descriptor.providerKind == .mlxLocal, descriptor.route == .local else {
             return self
         }
@@ -1054,7 +1054,7 @@ extension AgentKernelModelAdapterCapabilitiesV2 {
         case .tierAFullAgent, .tierBConstrainedStructuredText:
             return self
         case .tierCPlainChat:
-            return AgentKernelModelAdapterCapabilitiesV2(
+            return AgentKernelModelAdapterCapabilities(
                 descriptor: descriptor,
                 inputModalities: inputModalities,
                 outputModalities: outputModalities,

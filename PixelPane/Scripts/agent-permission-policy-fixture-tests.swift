@@ -496,7 +496,7 @@ enum AgentPermissionPolicyFixtureHarness {
             runMode: .proposalOnly,
             localGrants: [grant("/Users/test/project", isDirectory: true)]
         )
-        let decoder = AgentKernelToolProtocolDecoderV2()
+        let decoder = AgentKernelToolProtocolDecoder()
         let protocolResult = decoder.decode(
             #"{"type":"tool_call","name":"stage_write_proposal","arguments":{"path":"/Users/test/project/new.md","content":"hello"}}"#,
             tools: tools,

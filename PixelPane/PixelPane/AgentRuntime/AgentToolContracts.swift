@@ -93,7 +93,7 @@ nonisolated enum AgentToolArgumentValue: Codable, Equatable, Sendable {
 
 nonisolated struct AgentToolArgumentContract: Codable, Equatable, Sendable {
     let name: String
-    let type: AgentKernelToolArgumentTypeV2
+    let type: AgentKernelToolArgumentType
     let isRequired: Bool
     let summary: String
     let aliases: [String]
@@ -103,7 +103,7 @@ nonisolated struct AgentToolArgumentContract: Codable, Equatable, Sendable {
 
     init(
         _ name: String,
-        type: AgentKernelToolArgumentTypeV2 = .string,
+        type: AgentKernelToolArgumentType = .string,
         isRequired: Bool = true,
         summary: String,
         aliases: [String] = [],
@@ -121,8 +121,8 @@ nonisolated struct AgentToolArgumentContract: Codable, Equatable, Sendable {
         self.pathRole = pathRole
     }
 
-    var schema: AgentKernelToolArgumentSchemaV2 {
-        AgentKernelToolArgumentSchemaV2(
+    var schema: AgentKernelToolArgumentSchema {
+        AgentKernelToolArgumentSchema(
             name: name,
             type: type,
             isRequired: isRequired,
@@ -135,7 +135,7 @@ nonisolated enum AgentToolContractError: Error, Equatable, CustomStringConvertib
     case unknownTool(String)
     case unknownArgument(String)
     case missingRequiredArgument(String)
-    case malformedArgument(name: String, type: AgentKernelToolArgumentTypeV2, value: String)
+    case malformedArgument(name: String, type: AgentKernelToolArgumentType, value: String)
     case constraintViolation(name: String, summary: String)
 
     var description: String {
@@ -198,8 +198,8 @@ nonisolated struct AgentToolInvocation: Codable, Equatable, Sendable {
         arguments[name]?.boolValue
     }
 
-    var kernelToolCall: AgentKernelToolCallV2 {
-        AgentKernelToolCallV2(
+    var kernelToolCall: AgentKernelToolCall {
+        AgentKernelToolCall(
             id: id,
             name: toolName,
             arguments: normalizedArguments,
@@ -246,8 +246,8 @@ nonisolated struct AgentToolContract: Identifiable, Codable, Equatable, Sendable
         self.arguments = arguments
     }
 
-    var schema: AgentKernelToolSchemaV2 {
-        AgentKernelToolSchemaV2(
+    var schema: AgentKernelToolSchema {
+        AgentKernelToolSchema(
             name: name,
             summary: summary,
             arguments: arguments.map(\.schema)
@@ -406,7 +406,7 @@ nonisolated struct AgentToolContractRegistry: Sendable {
         contractsByName[name]
     }
 
-    func normalizedInvocation(for call: AgentKernelToolCallV2) throws -> AgentToolInvocation {
+    func normalizedInvocation(for call: AgentKernelToolCall) throws -> AgentToolInvocation {
         guard let contract = contract(named: call.name) else {
             throw AgentToolContractError.unknownTool(call.name)
         }
@@ -423,18 +423,18 @@ nonisolated enum AgentToolCallArgumentNormalizer {
         name: String,
         rawArguments: [String: Any],
         reason: String?,
-        tools: [AgentKernelToolSchemaV2]
-    ) throws -> AgentKernelToolCallV2 {
+        tools: [AgentKernelToolSchema]
+    ) throws -> AgentKernelToolCall {
         guard let tool = tools.first(where: { $0.name == name }) else {
             throw AgentToolContractError.unknownTool(name)
         }
         let arguments = try normalizedArguments(rawArguments: rawArguments, tool: tool)
-        return AgentKernelToolCallV2(name: name, arguments: arguments, reason: reason)
+        return AgentKernelToolCall(name: name, arguments: arguments, reason: reason)
     }
 
     static func normalizedArguments(
         rawArguments: [String: Any],
-        tool: AgentKernelToolSchemaV2
+        tool: AgentKernelToolSchema
     ) throws -> [String: String] {
         let stringArguments = rawArguments.mapValues(stringArgument)
         if let contract = AgentToolContractRegistry.default.contract(named: tool.name) {
@@ -445,7 +445,7 @@ nonisolated enum AgentToolCallArgumentNormalizer {
 
     static func normalizedArguments(
         rawArguments: [String: String],
-        tool: AgentKernelToolSchemaV2
+        tool: AgentKernelToolSchema
     ) throws -> [String: String] {
         if let contract = AgentToolContractRegistry.default.contract(named: tool.name) {
             return try contract.normalizedInvocation(rawArguments: rawArguments).normalizedArguments
@@ -455,7 +455,7 @@ nonisolated enum AgentToolCallArgumentNormalizer {
 
     private static func schemaNormalizedArguments(
         _ rawArguments: [String: String],
-        tool: AgentKernelToolSchemaV2
+        tool: AgentKernelToolSchema
     ) throws -> [String: String] {
         let knownArguments = tool.knownArgumentNames
         for key in rawArguments.keys where !knownArguments.contains(key) {
@@ -477,7 +477,7 @@ nonisolated enum AgentToolCallArgumentNormalizer {
 
     private static func schemaNormalizedValue(
         _ rawValue: String,
-        argument: AgentKernelToolArgumentSchemaV2
+        argument: AgentKernelToolArgumentSchema
     ) throws -> String {
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
         switch argument.type {

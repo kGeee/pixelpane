@@ -1,6 +1,6 @@
 import Foundation
 
-actor FixtureAgentKernelAdapterV2: AgentKernelModelAdapterV2 {
+actor FixtureAgentKernelAdapter: AgentKernelModelAdapter {
     enum ScriptedResponse: Sendable {
         case finalAnswer(String)
         case toolCall(name: String, arguments: [String: String], reason: String?)
@@ -8,42 +8,42 @@ actor FixtureAgentKernelAdapterV2: AgentKernelModelAdapterV2 {
         case emptyOutput
         case timeout
         case delayedFinalAnswer(String, nanoseconds: UInt64)
-        case events([AgentKernelModelAdapterEventV2])
+        case events([AgentKernelModelAdapterEvent])
     }
 
-    let descriptor: AgentKernelModelDescriptorV2
-    let capabilities: AgentKernelModelAdapterCapabilitiesV2
+    let descriptor: AgentKernelModelDescriptor
+    let capabilities: AgentKernelModelAdapterCapabilities
 
     private var responses: [ScriptedResponse]
-    private(set) var receivedRequests: [AgentKernelModelAdapterRequestV2] = []
+    private(set) var receivedRequests: [AgentKernelModelAdapterRequest] = []
 
     init(
-        descriptor: AgentKernelModelDescriptorV2 = AgentKernelModelDescriptorV2(
+        descriptor: AgentKernelModelDescriptor = AgentKernelModelDescriptor(
             id: "fixture.adapter",
             providerKind: .fixture,
             route: .local,
             displayName: "Fixture Adapter"
         ),
-        capabilities: AgentKernelModelAdapterCapabilitiesV2? = nil,
+        capabilities: AgentKernelModelAdapterCapabilities? = nil,
         responses: [ScriptedResponse]
     ) {
         self.descriptor = descriptor
-        self.capabilities = capabilities ?? AgentKernelModelAdapterCapabilitiesV2(
+        self.capabilities = capabilities ?? AgentKernelModelAdapterCapabilities(
             descriptor: descriptor,
             toolCallingMode: .native,
             structuredOutputReliability: .strict,
             streamingMode: .events,
-            limits: AgentKernelModelLimitsV2(contextWindowTokens: 8_192)
+            limits: AgentKernelModelLimits(contextWindowTokens: 8_192)
         )
         self.responses = responses
     }
 
     func response(
-        for request: AgentKernelModelAdapterRequestV2
-    ) async -> AgentKernelModelAdapterResponseV2 {
+        for request: AgentKernelModelAdapterRequest
+    ) async -> AgentKernelModelAdapterResponse {
         receivedRequests.append(request)
         guard !responses.isEmpty else {
-            return AgentKernelModelAdapterResponseV2(
+            return AgentKernelModelAdapterResponse(
                 requestID: request.id,
                 descriptor: descriptor,
                 events: [.emptyOutput]
@@ -53,31 +53,31 @@ actor FixtureAgentKernelAdapterV2: AgentKernelModelAdapterV2 {
         if case .delayedFinalAnswer(_, let nanoseconds) = scripted {
             try? await Task.sleep(nanoseconds: nanoseconds)
         }
-        return AgentKernelModelAdapterResponseV2(
+        return AgentKernelModelAdapterResponse(
             requestID: request.id,
             descriptor: descriptor,
             events: events(for: scripted)
         )
     }
 
-    func lastRequest() -> AgentKernelModelAdapterRequestV2? {
+    func lastRequest() -> AgentKernelModelAdapterRequest? {
         receivedRequests.last
     }
 
-    func requests() -> [AgentKernelModelAdapterRequestV2] {
+    func requests() -> [AgentKernelModelAdapterRequest] {
         receivedRequests
     }
 
     private nonisolated func events(
         for scripted: ScriptedResponse
-    ) -> [AgentKernelModelAdapterEventV2] {
+    ) -> [AgentKernelModelAdapterEvent] {
         switch scripted {
         case .finalAnswer(let text):
             [.finalAnswer(text)]
         case .toolCall(let name, let arguments, let reason):
             [
                 .toolCall(
-                    AgentKernelToolCallV2(
+                    AgentKernelToolCall(
                         name: name,
                         arguments: arguments,
                         reason: reason

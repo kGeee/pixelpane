@@ -2,7 +2,7 @@ import Foundation
 
 nonisolated struct AgentLocalEvidencePlan: Equatable, Sendable {
     let requirements: [AgentLocalEvidenceRequirement]
-    let toolCalls: [AgentKernelToolCallV2]
+    let toolCalls: [AgentKernelToolCall]
     // True only when the plan targets a confidently resolved local entity
     // (explicit absolute path, quoted grant reference, or existing referenced child).
     // The orchestrator uses this to decide whether deterministic preflight discovery should run,
@@ -11,7 +11,7 @@ nonisolated struct AgentLocalEvidencePlan: Equatable, Sendable {
 
     init(
         requirements: [AgentLocalEvidenceRequirement],
-        toolCalls: [AgentKernelToolCallV2],
+        toolCalls: [AgentKernelToolCall],
         isConfident: Bool = false
     ) {
         self.requirements = requirements
@@ -34,8 +34,8 @@ nonisolated struct AgentLocalEvidencePlanner: Sendable {
     init() {}
 
     func plan(
-        messages: [AgentKernelMessageV2],
-        tools: [AgentKernelToolSchemaV2],
+        messages: [AgentKernelMessage],
+        tools: [AgentKernelToolSchema],
         context: AgentToolRunContext,
         taskFrame: AgentTaskFrame? = nil,
         existingEvidence: [AgentRunEvidenceRecord] = []
@@ -55,7 +55,7 @@ nonisolated struct AgentLocalEvidencePlanner: Sendable {
         let entities = entitiesReferenced(in: frame, grants: context.localGrants)
         let searchQueries = frame.exactSearchQueries
         var requirements: [AgentLocalEvidenceRequirement] = []
-        var calls: [AgentKernelToolCallV2] = []
+        var calls: [AgentKernelToolCall] = []
 
         if toolByName["search_files"] != nil, !searchQueries.isEmpty {
             let scopedDirectories = entities.filter(\.isDirectory)
@@ -68,7 +68,7 @@ nonisolated struct AgentLocalEvidencePlanner: Sendable {
                         )
                     )
                     calls.append(
-                        AgentKernelToolCallV2(
+                        AgentKernelToolCall(
                             name: "search_files",
                             arguments: ["query": query],
                             reason: "Search granted local roots for the exact query recorded in the task frame."
@@ -87,7 +87,7 @@ nonisolated struct AgentLocalEvidencePlanner: Sendable {
                             )
                         )
                         calls.append(
-                            AgentKernelToolCallV2(
+                            AgentKernelToolCall(
                                 name: "search_files",
                                 arguments: [
                                     "query": query,
@@ -113,7 +113,7 @@ nonisolated struct AgentLocalEvidencePlanner: Sendable {
                         )
                     )
                     calls.append(
-                        AgentKernelToolCallV2(
+                        AgentKernelToolCall(
                             name: "list_folder",
                             arguments: ["path": entity.path],
                             reason: "Resolve local directory evidence for the current answer."
@@ -130,7 +130,7 @@ nonisolated struct AgentLocalEvidencePlanner: Sendable {
                     )
                 )
                 calls.append(
-                    AgentKernelToolCallV2(
+                    AgentKernelToolCall(
                         name: "search_files",
                         arguments: [
                             "query": query,
@@ -148,7 +148,7 @@ nonisolated struct AgentLocalEvidencePlanner: Sendable {
                     )
                 )
                 calls.append(
-                    AgentKernelToolCallV2(
+                    AgentKernelToolCall(
                         name: "read_file",
                         arguments: ["path": entity.path],
                         reason: "Read resolved local file evidence for the current answer."
@@ -186,7 +186,7 @@ nonisolated struct AgentLocalEvidencePlanner: Sendable {
         return requirements.filter { seen.insert($0.id).inserted }
     }
 
-    private func uniqueToolCalls(_ calls: [AgentKernelToolCallV2]) -> [AgentKernelToolCallV2] {
+    private func uniqueToolCalls(_ calls: [AgentKernelToolCall]) -> [AgentKernelToolCall] {
         var seen = Set<String>()
         return calls.filter { call in
             let key = "\(call.name):\(call.arguments.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: "&"))"
@@ -199,7 +199,7 @@ nonisolated struct AgentLocalEvidencePlanner: Sendable {
         return entities.filter { seen.insert($0.path).inserted }
     }
 
-    static func latestUserMessage(from messages: [AgentKernelMessageV2]) -> String {
+    static func latestUserMessage(from messages: [AgentKernelMessage]) -> String {
         messages.reversed().first { $0.role == .user }?.content ?? ""
     }
 

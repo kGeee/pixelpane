@@ -17,13 +17,13 @@ swiftc \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentToolContracts.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentPermissionPolicy.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentRunTypes.swift" \
-  "${PROJECT_ROOT}/PixelPane/PixelPane/AgentKernel/AgentKernelV2Types.swift" \
-  "${PROJECT_ROOT}/PixelPane/PixelPane/AgentKernel/AgentKernelModelAdapterV2.swift" \
-  "${PROJECT_ROOT}/PixelPane/PixelPane/AgentKernel/AgentKernelModelOutputNormalizerV2.swift" \
-  "${PROJECT_ROOT}/PixelPane/PixelPane/AgentKernel/AgentKernelProtocolAdaptersV2.swift" \
-  "${PROJECT_ROOT}/PixelPane/PixelPane/AgentKernel/AgentKernelAIBackendAdapterV2.swift" \
-  "${PROJECT_ROOT}/PixelPane/PixelPane/AgentKernel/AgentKernelCloudChatAdapterV2.swift" \
-  "${PROJECT_ROOT}/PixelPane/PixelPane/AgentKernel/FixtureAgentKernelAdapterV2.swift" \
+  "${PROJECT_ROOT}/PixelPane/PixelPane/AgentKernel/AgentKernelTypes.swift" \
+  "${PROJECT_ROOT}/PixelPane/PixelPane/AgentKernel/AgentKernelModelAdapter.swift" \
+  "${PROJECT_ROOT}/PixelPane/PixelPane/AgentKernel/AgentKernelModelOutputNormalizer.swift" \
+  "${PROJECT_ROOT}/PixelPane/PixelPane/AgentKernel/AgentKernelProtocolAdapters.swift" \
+  "${PROJECT_ROOT}/PixelPane/PixelPane/AgentKernel/AgentKernelAIBackendAdapter.swift" \
+  "${PROJECT_ROOT}/PixelPane/PixelPane/AgentKernel/AgentKernelCloudChatAdapter.swift" \
+  "${PROJECT_ROOT}/PixelPane/PixelPane/AgentKernel/FixtureAgentKernelAdapter.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentModelGateway.swift" \
   "${PROJECT_ROOT}/PixelPane/Scripts/agent-model-gateway-fixture-tests.swift" \
   -o "${TMP_BINARY}"

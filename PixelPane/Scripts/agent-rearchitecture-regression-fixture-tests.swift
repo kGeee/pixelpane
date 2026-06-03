@@ -105,7 +105,7 @@ enum AgentRearchitectureRegressionFixtureHarness {
 
         let adapter = fixtureAdapter(
             id: "fc003.small-context",
-            limits: AgentKernelModelLimitsV2(maxPromptCharacters: 4),
+            limits: AgentKernelModelLimits(maxPromptCharacters: 4),
             responses: [.finalAnswer("unused")]
         )
         let gateway = AgentModelGateway(adapters: [adapter])
@@ -113,7 +113,7 @@ enum AgentRearchitectureRegressionFixtureHarness {
             adapterID: adapter.descriptor.id,
             request: AgentModelGatewayRequest(
                 mode: .plainChat,
-                messages: [AgentKernelMessageV2(role: .user, content: "too long")]
+                messages: [AgentKernelMessage(role: .user, content: "too long")]
             )
         )
         try expect(result.failure?.kind == .contextTooLarge, "FC-003 oversized local prompts should fail before provider call")
@@ -131,7 +131,7 @@ enum AgentRearchitectureRegressionFixtureHarness {
             adapterID: adapter.descriptor.id,
             request: AgentModelGatewayRequest(
                 mode: .plainChat,
-                messages: [AgentKernelMessageV2(role: .user, content: "answer")]
+                messages: [AgentKernelMessage(role: .user, content: "answer")]
             )
         )
 
@@ -149,7 +149,7 @@ enum AgentRearchitectureRegressionFixtureHarness {
             adapterID: toolLeak.descriptor.id,
             request: AgentModelGatewayRequest(
                 mode: .plainChat,
-                messages: [AgentKernelMessageV2(role: .user, content: "read")]
+                messages: [AgentKernelMessage(role: .user, content: "read")]
             )
         )
         try expect(toolResult.failure?.kind == .transportError, "FC-004 protocol tool-call JSON in plain chat should fail instead of becoming prose")
@@ -188,7 +188,7 @@ enum AgentRearchitectureRegressionFixtureHarness {
             adapterID: repairable.descriptor.id,
             request: AgentModelGatewayRequest(
                 mode: .constrainedStructuredText,
-                messages: [AgentKernelMessageV2(role: .user, content: "write")],
+                messages: [AgentKernelMessage(role: .user, content: "write")],
                 tools: [stageTool]
             )
         )
@@ -209,7 +209,7 @@ enum AgentRearchitectureRegressionFixtureHarness {
             adapterID: malformed.descriptor.id,
             request: AgentModelGatewayRequest(
                 mode: .constrainedStructuredText,
-                messages: [AgentKernelMessageV2(role: .user, content: "write")],
+                messages: [AgentKernelMessage(role: .user, content: "write")],
                 tools: [stageTool]
             )
         )
@@ -384,7 +384,7 @@ enum AgentRearchitectureRegressionFixtureHarness {
             adapterID: tierB.descriptor.id,
             request: AgentModelGatewayRequest(
                 mode: .fullAgent,
-                messages: [AgentKernelMessageV2(role: .user, content: "read")],
+                messages: [AgentKernelMessage(role: .user, content: "read")],
                 tools: [readFileTool()]
             )
         )
@@ -394,7 +394,7 @@ enum AgentRearchitectureRegressionFixtureHarness {
             adapterID: tierC.descriptor.id,
             request: AgentModelGatewayRequest(
                 mode: .plainChat,
-                messages: [AgentKernelMessageV2(role: .user, content: "hello")],
+                messages: [AgentKernelMessage(role: .user, content: "hello")],
                 tools: [readFileTool()]
             )
         )
@@ -464,47 +464,47 @@ enum AgentRearchitectureRegressionFixtureHarness {
 
     private static func fixtureAdapter(
         id: String,
-        toolCallingMode: AgentKernelToolCallingModeV2 = .native,
-        structured: AgentKernelStructuredOutputReliabilityV2 = .strict,
-        limits: AgentKernelModelLimitsV2 = AgentKernelModelLimitsV2(contextWindowTokens: 8_192),
-        responses: [FixtureAgentKernelAdapterV2.ScriptedResponse]
-    ) -> FixtureAgentKernelAdapterV2 {
-        let descriptor = AgentKernelModelDescriptorV2(
+        toolCallingMode: AgentKernelToolCallingMode = .native,
+        structured: AgentKernelStructuredOutputReliability = .strict,
+        limits: AgentKernelModelLimits = AgentKernelModelLimits(contextWindowTokens: 8_192),
+        responses: [FixtureAgentKernelAdapter.ScriptedResponse]
+    ) -> FixtureAgentKernelAdapter {
+        let descriptor = AgentKernelModelDescriptor(
             id: id,
             providerKind: .fixture,
             route: .local,
             displayName: id
         )
-        let capabilities = AgentKernelModelAdapterCapabilitiesV2(
+        let capabilities = AgentKernelModelAdapterCapabilities(
             descriptor: descriptor,
             toolCallingMode: toolCallingMode,
             structuredOutputReliability: structured,
             streamingMode: .events,
             limits: limits
         )
-        return FixtureAgentKernelAdapterV2(
+        return FixtureAgentKernelAdapter(
             descriptor: descriptor,
             capabilities: capabilities,
             responses: responses
         )
     }
 
-    private static func readFileTool() -> AgentKernelToolSchemaV2 {
-        AgentKernelToolSchemaV2(
+    private static func readFileTool() -> AgentKernelToolSchema {
+        AgentKernelToolSchema(
             name: "read_file",
             summary: "Read a granted local file.",
             requiredArguments: ["path"]
         )
     }
 
-    private static func stageWriteTool() -> AgentKernelToolSchemaV2 {
-        AgentKernelToolSchemaV2(
+    private static func stageWriteTool() -> AgentKernelToolSchema {
+        AgentKernelToolSchema(
             name: "stage_write_proposal",
             summary: "Stage a file write proposal.",
             arguments: [
-                AgentKernelToolArgumentSchemaV2(name: "operation", type: .string, summary: "create, replace, or append"),
-                AgentKernelToolArgumentSchemaV2(name: "targetPath", type: .string, summary: "Absolute target path"),
-                AgentKernelToolArgumentSchemaV2(name: "content", type: .string, summary: "Full file content")
+                AgentKernelToolArgumentSchema(name: "operation", type: .string, summary: "create, replace, or append"),
+                AgentKernelToolArgumentSchema(name: "targetPath", type: .string, summary: "Absolute target path"),
+                AgentKernelToolArgumentSchema(name: "content", type: .string, summary: "Full file content")
             ]
         )
     }

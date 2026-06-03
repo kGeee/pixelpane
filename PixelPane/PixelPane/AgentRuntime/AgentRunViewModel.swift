@@ -192,7 +192,7 @@ nonisolated enum AgentRunViewModelError: Error, CustomStringConvertible {
     case activeRunInProgress(UUID)
     case missingActiveRun
     case missingRunConfiguration(UUID)
-    case adapterChanged(expected: AgentKernelModelDescriptorV2, actual: AgentKernelModelDescriptorV2)
+    case adapterChanged(expected: AgentKernelModelDescriptor, actual: AgentKernelModelDescriptor)
 
     var description: String {
         switch self {
@@ -285,12 +285,12 @@ final class AgentRunViewModel: ObservableObject {
     func startRun(
         userMessage: String,
         context: AgentRunViewContext,
-        adapter: any AgentKernelModelAdapterV2,
+        adapter: any AgentKernelModelAdapter,
         mode: AgentModelGatewayMode = .plainChat,
-        tools: [AgentKernelToolSchemaV2] = [],
+        tools: [AgentKernelToolSchema] = [],
         toolContext: AgentToolRunContext = .plainChat,
         modelConformanceProfile: AgentModelConformanceProfile? = nil,
-        attachments: [AgentKernelModelAttachmentV2] = [],
+        attachments: [AgentKernelModelAttachment] = [],
         systemPrompt: String? = nil,
         maxOutputTokens: Int = 1_024,
         timeout: TimeInterval? = 90
@@ -337,7 +337,7 @@ final class AgentRunViewModel: ObservableObject {
 
     func approveWait(
         _ waitID: UUID,
-        adapter: any AgentKernelModelAdapterV2,
+        adapter: any AgentKernelModelAdapter,
         modelConformanceProfile: AgentModelConformanceProfile? = nil
     ) async throws {
         try await approveWait(
@@ -353,13 +353,13 @@ final class AgentRunViewModel: ObservableObject {
 
     func approveWait(
         _ waitID: UUID,
-        adapter: any AgentKernelModelAdapterV2,
+        adapter: any AgentKernelModelAdapter,
         context: AgentRunViewContext,
         mode: AgentModelGatewayMode,
-        tools: [AgentKernelToolSchemaV2],
+        tools: [AgentKernelToolSchema],
         toolContext: AgentToolRunContext,
         modelConformanceProfile: AgentModelConformanceProfile? = nil,
-        attachments: [AgentKernelModelAttachmentV2] = [],
+        attachments: [AgentKernelModelAttachment] = [],
         systemPrompt: String? = nil,
         maxOutputTokens: Int = 1_024,
         timeout: TimeInterval? = 90
@@ -401,7 +401,7 @@ final class AgentRunViewModel: ObservableObject {
 
     func denyWait(
         _ waitID: UUID,
-        adapter: any AgentKernelModelAdapterV2,
+        adapter: any AgentKernelModelAdapter,
         modelConformanceProfile: AgentModelConformanceProfile? = nil
     ) async throws {
         try await denyWait(
@@ -417,13 +417,13 @@ final class AgentRunViewModel: ObservableObject {
 
     func denyWait(
         _ waitID: UUID,
-        adapter: any AgentKernelModelAdapterV2,
+        adapter: any AgentKernelModelAdapter,
         context: AgentRunViewContext,
         mode: AgentModelGatewayMode,
-        tools: [AgentKernelToolSchemaV2],
+        tools: [AgentKernelToolSchema],
         toolContext: AgentToolRunContext,
         modelConformanceProfile: AgentModelConformanceProfile? = nil,
-        attachments: [AgentKernelModelAttachmentV2] = [],
+        attachments: [AgentKernelModelAttachment] = [],
         systemPrompt: String? = nil,
         maxOutputTokens: Int = 1_024,
         timeout: TimeInterval? = 90

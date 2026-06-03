@@ -23,7 +23,7 @@ nonisolated enum AgentRuntimeError: Error, CustomStringConvertible {
     case activeRunInProgress(UUID)
     case missingActiveRun
     case missingRunConfiguration(UUID)
-    case adapterChanged(expected: AgentKernelModelDescriptorV2, actual: AgentKernelModelDescriptorV2)
+    case adapterChanged(expected: AgentKernelModelDescriptor, actual: AgentKernelModelDescriptor)
 
     var description: String {
         switch self {
@@ -43,12 +43,12 @@ nonisolated struct AgentRuntimeStartRunRequest: Sendable {
     let currentSessionID: UUID?
     let userMessage: String
     let context: AgentRunViewContext
-    let adapter: any AgentKernelModelAdapterV2
+    let adapter: any AgentKernelModelAdapter
     let mode: AgentModelGatewayMode
-    let tools: [AgentKernelToolSchemaV2]
+    let tools: [AgentKernelToolSchema]
     let toolContext: AgentToolRunContext
     let modelConformanceProfile: AgentModelConformanceProfile?
-    let attachments: [AgentKernelModelAttachmentV2]
+    let attachments: [AgentKernelModelAttachment]
     let systemPrompt: String?
     let maxOutputTokens: Int
     let timeout: TimeInterval?
@@ -57,12 +57,12 @@ nonisolated struct AgentRuntimeStartRunRequest: Sendable {
         currentSessionID: UUID?,
         userMessage: String,
         context: AgentRunViewContext,
-        adapter: any AgentKernelModelAdapterV2,
+        adapter: any AgentKernelModelAdapter,
         mode: AgentModelGatewayMode = .plainChat,
-        tools: [AgentKernelToolSchemaV2] = [],
+        tools: [AgentKernelToolSchema] = [],
         toolContext: AgentToolRunContext = .plainChat,
         modelConformanceProfile: AgentModelConformanceProfile? = nil,
-        attachments: [AgentKernelModelAttachmentV2] = [],
+        attachments: [AgentKernelModelAttachment] = [],
         systemPrompt: String? = nil,
         maxOutputTokens: Int = 1_024,
         timeout: TimeInterval? = 90
@@ -84,26 +84,26 @@ nonisolated struct AgentRuntimeStartRunRequest: Sendable {
 
 nonisolated struct AgentRuntimeApprovalRequest: Sendable {
     let waitID: UUID
-    let adapter: any AgentKernelModelAdapterV2
+    let adapter: any AgentKernelModelAdapter
     let context: AgentRunViewContext
     let mode: AgentModelGatewayMode
-    let tools: [AgentKernelToolSchemaV2]
+    let tools: [AgentKernelToolSchema]
     let toolContext: AgentToolRunContext
     let modelConformanceProfile: AgentModelConformanceProfile?
-    let attachments: [AgentKernelModelAttachmentV2]
+    let attachments: [AgentKernelModelAttachment]
     let systemPrompt: String?
     let maxOutputTokens: Int
     let timeout: TimeInterval?
 
     init(
         waitID: UUID,
-        adapter: any AgentKernelModelAdapterV2,
+        adapter: any AgentKernelModelAdapter,
         context: AgentRunViewContext,
         mode: AgentModelGatewayMode = .plainChat,
-        tools: [AgentKernelToolSchemaV2] = [],
+        tools: [AgentKernelToolSchema] = [],
         toolContext: AgentToolRunContext = .plainChat,
         modelConformanceProfile: AgentModelConformanceProfile? = nil,
-        attachments: [AgentKernelModelAttachmentV2] = [],
+        attachments: [AgentKernelModelAttachment] = [],
         systemPrompt: String? = nil,
         maxOutputTokens: Int = 1_024,
         timeout: TimeInterval? = 90
@@ -366,7 +366,7 @@ actor AgentRuntime {
 
     private nonisolated static func runApprovalContinuation(
         store: AgentRunStore,
-        adapter: any AgentKernelModelAdapterV2,
+        adapter: any AgentKernelModelAdapter,
         modelConformanceProfile: AgentModelConformanceProfile?,
         waitID: UUID,
         runID: UUID,
@@ -395,7 +395,7 @@ actor AgentRuntime {
     private nonisolated static func runOrchestratorTask(
         store: AgentRunStore,
         runID: UUID,
-        adapter: any AgentKernelModelAdapterV2,
+        adapter: any AgentKernelModelAdapter,
         request: AgentModelGatewayRequest,
         toolContext: AgentToolRunContext,
         modelConformanceProfile: AgentModelConformanceProfile?
@@ -502,7 +502,7 @@ actor AgentRuntime {
 
     private func continuationConfiguration(
         for wait: AgentRunWaitRecord,
-        adapter: any AgentKernelModelAdapterV2,
+        adapter: any AgentKernelModelAdapter,
         fallback: AgentRunModelConfigurationRecord
     ) async throws -> AgentRunModelConfigurationRecord {
         let configuration = (try? await store.traceProjection(runID: wait.runID).events.reversed().compactMap { event -> AgentRunModelConfigurationRecord? in
@@ -594,14 +594,14 @@ actor AgentRuntime {
     private nonisolated static func modelMessages(
         from visibleMessages: [AgentRunVisibleMessage],
         systemPrompt: String?
-    ) -> [AgentKernelMessageV2] {
-        var messages: [AgentKernelMessageV2] = []
+    ) -> [AgentKernelMessage] {
+        var messages: [AgentKernelMessage] = []
         if let systemPrompt, !systemPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            messages.append(AgentKernelMessageV2(role: .system, content: systemPrompt))
+            messages.append(AgentKernelMessage(role: .system, content: systemPrompt))
         }
         messages.append(
             contentsOf: visibleMessages.map { message in
-                AgentKernelMessageV2(
+                AgentKernelMessage(
                     id: message.id,
                     role: message.role == .user ? .user : .assistant,
                     content: message.text.text

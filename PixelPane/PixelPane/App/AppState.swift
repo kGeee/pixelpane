@@ -490,18 +490,18 @@ final class AppState: ObservableObject {
         target: AgentModelConformanceTarget
     ) async -> AgentModelConformanceProfile {
         let backend = MLXTextBackend(store: MLXVisionModelStore(defaults: userDefaults), timeoutSeconds: 45)
-        let descriptor = AgentKernelModelDescriptorV2(
+        let descriptor = AgentKernelModelDescriptor(
             id: target.adapterID,
             providerKind: .mlxLocal,
             route: .local,
             displayName: "MLX Text",
             modelName: target.modelID
         )
-        let capabilities = AgentKernelModelAdapterCapabilitiesV2.aiBackendBridge(
+        let capabilities = AgentKernelModelAdapterCapabilities.aiBackendBridge(
             descriptor: descriptor,
             backendCapabilities: await backend.capabilities()
         )
-        let adapter = AgentKernelMLXNativeToolAdapterV2(
+        let adapter = AgentKernelMLXNativeToolAdapter(
             descriptor: descriptor,
             backend: backend,
             capabilities: capabilities,

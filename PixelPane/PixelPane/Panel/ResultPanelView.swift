@@ -291,11 +291,11 @@ struct ResultPanelView: View {
         return sections.joined(separator: "\n\n")
     }
 
-    private func agentModelAttachmentsForAsk() -> [AgentKernelModelAttachmentV2] {
+    private func agentModelAttachmentsForAsk() -> [AgentKernelModelAttachment] {
         guard let visualContext = assistantToolState.activeVisualContext else {
             return []
         }
-        var metadata: [String: AgentKernelMetadataValueV2] = [
+        var metadata: [String: AgentKernelMetadataValue] = [
             "source": .string(visualContext.source.rawValue),
             "hasImageInput": .bool(visualContext.hasImageInput),
             "hasOCRText": .bool(visualContext.hasOCRText)
@@ -304,7 +304,7 @@ struct ResultPanelView: View {
             metadata["ocrText"] = .string(ocrExcerpt)
         }
         return [
-            AgentKernelModelAttachmentV2(
+            AgentKernelModelAttachment(
                 modality: visualContext.hasImageInput ? .image : .text,
                 label: visualContext.label,
                 transientOnly: true,
@@ -1395,7 +1395,7 @@ struct ResultPanelView: View {
         return "### Session And UI Projection\n\(lines.joined(separator: "\n"))"
     }
 
-    private func debugModelAndProviderSnapshot(model: any AgentKernelModelAdapterV2) -> String {
+    private func debugModelAndProviderSnapshot(model: any AgentKernelModelAdapter) -> String {
         let descriptor = model.descriptor
         let capabilities = model.capabilities
         let selectedModel = mlxModelStore.selectedModel
@@ -1454,7 +1454,7 @@ struct ResultPanelView: View {
     private func debugToolConfigurationSnapshot(
         _ configuration: (
             mode: AgentModelGatewayMode,
-            tools: [AgentKernelToolSchemaV2],
+            tools: [AgentKernelToolSchema],
             context: AgentToolRunContext
         )
     ) -> String {
@@ -1547,7 +1547,7 @@ struct ResultPanelView: View {
         """
     }
 
-    private func debugEffectiveModelLabel(model: any AgentKernelModelAdapterV2) -> String {
+    private func debugEffectiveModelLabel(model: any AgentKernelModelAdapter) -> String {
         let descriptor = model.descriptor
         if descriptor.route == .cloud {
             let cloudModels = debugStatisticValues(named: "Cloud model")
@@ -2309,7 +2309,7 @@ struct ResultPanelView: View {
         }
     }
 
-    private func makeAgentKernelModelAdapter(userMessage: String? = nil) async -> any AgentKernelModelAdapterV2 {
+    private func makeAgentKernelModelAdapter(userMessage: String? = nil) async -> any AgentKernelModelAdapter {
         let backend = selectedAIBackend
         let capabilities = await backend.capabilities()
         let modeID: String = routingSettings.effectiveMode == .cloud ? "cloud" : "local"
@@ -2317,7 +2317,7 @@ struct ResultPanelView: View {
         let providerKind = agentProviderKind(for: provider)
         let modelName = agentModelName(for: provider)
         let displayName = agentDisplayName(for: provider, fallback: askBackendLabelForNextTurn())
-        let descriptor = AgentKernelModelDescriptorV2(
+        let descriptor = AgentKernelModelDescriptor(
             id: "\(modeID).\(backend.id).chat",
             providerKind: providerKind,
             route: routingSettings.effectiveMode == .cloud ? .cloud : .local,
@@ -2325,7 +2325,7 @@ struct ResultPanelView: View {
             modelName: modelName
         )
         if routingSettings.effectiveMode == .cloud {
-            return AgentKernelCloudChatAdapterV2(
+            return AgentKernelCloudChatAdapter(
                 descriptor: descriptor,
                 backend: backend,
                 backendCapabilities: capabilities,
@@ -2333,7 +2333,7 @@ struct ResultPanelView: View {
                 supportsLocalToolProtocol: true
             )
         }
-        let baseCapabilities = AgentKernelModelAdapterCapabilitiesV2.aiBackendBridge(
+        let baseCapabilities = AgentKernelModelAdapterCapabilities.aiBackendBridge(
             descriptor: descriptor,
             backendCapabilities: capabilities
         )
@@ -2341,14 +2341,14 @@ struct ResultPanelView: View {
             currentMLXAgentConformanceProfile()
         )
         if provider == .mlxText {
-            return AgentKernelMLXNativeToolAdapterV2(
+            return AgentKernelMLXNativeToolAdapter(
                 descriptor: descriptor,
                 backend: MLXTextBackend(store: mlxModelStore),
                 capabilities: adjustedCapabilities,
                 preferredProvider: .mlxText
             )
         }
-        return AgentKernelAIBackendAdapterV2(
+        return AgentKernelAIBackendAdapter(
             descriptor: descriptor,
             backend: backend,
             capabilities: adjustedCapabilities,
@@ -2366,7 +2366,7 @@ struct ResultPanelView: View {
         return nil
     }
 
-    private func agentProviderKind(for provider: AIBackendProvider?) -> AgentKernelModelProviderKindV2 {
+    private func agentProviderKind(for provider: AIBackendProvider?) -> AgentKernelModelProviderKind {
         switch provider {
         case .appleFoundationModels:
             return .appleLocal
@@ -2408,8 +2408,8 @@ struct ResultPanelView: View {
     }
 
     private func agentToolRunConfiguration(
-        for model: any AgentKernelModelAdapterV2
-    ) -> (mode: AgentModelGatewayMode, tools: [AgentKernelToolSchemaV2], context: AgentToolRunContext) {
+        for model: any AgentKernelModelAdapter
+    ) -> (mode: AgentModelGatewayMode, tools: [AgentKernelToolSchema], context: AgentToolRunContext) {
         let conformanceProfile = currentMLXAgentConformanceProfile()
         let providerTier = AgentModelGateway.tier(
             for: model.capabilities,

@@ -47,7 +47,7 @@ nonisolated enum AgentRunTaskClass: String, Codable, Equatable, Sendable {
 nonisolated struct AgentRunTaskClassifier: Sendable {
     static func classify(
         userMessage: String,
-        tools: [AgentKernelToolSchemaV2],
+        tools: [AgentKernelToolSchema],
         context: AgentToolRunContext,
         taskFrame: AgentTaskFrame? = nil
     ) -> AgentRunTaskClass {
@@ -90,7 +90,7 @@ nonisolated struct AgentRunTaskClassifier: Sendable {
     static func writeTargetPath(from userMessage: String) -> String? {
         AgentTaskFrame.build(
             userMessage: userMessage,
-            tools: [AgentKernelToolSchemaV2(name: "stage_write_proposal", summary: "", arguments: [])],
+            tools: [AgentKernelToolSchema(name: "stage_write_proposal", summary: "", arguments: [])],
             context: .plainChat
         ).writeTargetPath
     }
@@ -182,10 +182,10 @@ nonisolated struct AgentRunTaskProfile: Codable, Equatable, Sendable {
 
     static func classify(
         userMessage: String,
-        tools: [AgentKernelToolSchemaV2],
+        tools: [AgentKernelToolSchema],
         context: AgentToolRunContext,
         providerTier: AgentModelCapabilityTier? = nil,
-        attachments: [AgentKernelModelAttachmentV2] = [],
+        attachments: [AgentKernelModelAttachment] = [],
         selectedAction: String? = nil,
         contextID: String? = nil,
         contextKind: String? = nil,
@@ -215,7 +215,7 @@ nonisolated struct AgentRunTaskProfile: Codable, Equatable, Sendable {
             taskFrame: taskFrame
         )
         let localEvidencePlan = AgentLocalEvidencePlanner().plan(
-            messages: [AgentKernelMessageV2(role: .user, content: userMessage)],
+            messages: [AgentKernelMessage(role: .user, content: userMessage)],
             tools: tools,
             context: context,
             taskFrame: taskFrame
@@ -243,7 +243,7 @@ nonisolated struct AgentRunTaskProfile: Codable, Equatable, Sendable {
         )
     }
 
-    static func latestUserMessage(from messages: [AgentKernelMessageV2]) -> String {
+    static func latestUserMessage(from messages: [AgentKernelMessage]) -> String {
         messages.reversed().first { $0.role == .user }?.content ?? ""
     }
 }
@@ -254,7 +254,7 @@ nonisolated struct AgentRunOperationIntent: Equatable, Sendable {
 
     static func classify(
         userMessage: String,
-        tools: [AgentKernelToolSchemaV2],
+        tools: [AgentKernelToolSchema],
         taskFrame: AgentTaskFrame? = nil
     ) -> AgentRunOperationIntent {
         let frame = taskFrame ?? AgentTaskFrame.build(

@@ -171,7 +171,7 @@ actor AgentToolOrchestrator {
                         )
                         return
                     }
-                    let repairObservation = AgentKernelMessageV2(
+                    let repairObservation = AgentKernelMessage(
                         role: .observation,
                         content: """
                         Runtime rejected the previous final answer.
@@ -231,7 +231,7 @@ actor AgentToolOrchestrator {
                 observedToolResults += 1
                 observedSideEffectToolResults += 1
                 observedRequiredSideEffectToolNames.insert("stage_write_proposal")
-                let stagedWriteObservation = AgentKernelMessageV2(role: .observation, content: stagedWrite.modelObservationText)
+                let stagedWriteObservation = AgentKernelMessage(role: .observation, content: stagedWrite.modelObservationText)
                 try await recordControlMessage(
                     stagedWriteObservation,
                     runID: runID,
@@ -279,7 +279,7 @@ actor AgentToolOrchestrator {
                 Do not repeat that exact call. Call list_grants to see valid writable targets, choose different arguments or a different tool, or produce your best final answer now.
                 """
                 : result.modelObservationText
-            let observation = AgentKernelMessageV2(
+            let observation = AgentKernelMessage(
                 role: .observation,
                 content: observationText
             )
@@ -331,7 +331,7 @@ actor AgentToolOrchestrator {
         )
     }
 
-    private nonisolated static func toolCallSignature(_ call: AgentKernelToolCallV2) -> String {
+    private nonisolated static func toolCallSignature(_ call: AgentKernelToolCall) -> String {
         let argumentKey = call.arguments
             .sorted { $0.key < $1.key }
             .map { "\($0.key)=\($0.value)" }
@@ -340,7 +340,7 @@ actor AgentToolOrchestrator {
     }
 
     private func recordControlMessage(
-        _ message: AgentKernelMessageV2,
+        _ message: AgentKernelMessage,
         runID: UUID,
         stepID: UUID? = nil,
         kind: AgentRunControlRecordKind,
@@ -421,7 +421,7 @@ actor AgentToolOrchestrator {
     }
 
     private func recordToolCall(
-        _ call: AgentKernelToolCallV2,
+        _ call: AgentKernelToolCall,
         runID: UUID,
         stepID: UUID? = nil,
         iteration: Int,
@@ -499,7 +499,7 @@ actor AgentToolOrchestrator {
         if let preferredDirectoryPath = writeRequest.preferredDirectoryPath {
             arguments["preferredDirectoryPath"] = preferredDirectoryPath
         }
-        let call = AgentKernelToolCallV2(
+        let call = AgentKernelToolCall(
             name: "stage_write_proposal",
             arguments: arguments,
             reason: "Stage the requested file from the command output already collected by the runtime."
@@ -537,14 +537,14 @@ actor AgentToolOrchestrator {
     private func attemptBestEffortFinalAnswer(
         runID: UUID,
         baseRequest: AgentModelGatewayRequest,
-        messages: [AgentKernelMessageV2],
+        messages: [AgentKernelMessage],
         profile: AgentRunTaskProfile,
         observedToolResults: Int,
         observedSideEffectToolResults: Int,
         observedRequiredSideEffectToolNames: Set<String>
     ) async throws -> Bool {
         var synthMessages = messages
-        let synthesisObservation = AgentKernelMessageV2(
+        let synthesisObservation = AgentKernelMessage(
             role: .observation,
             content: """
             Produce your best final answer now using the information already gathered above. \
@@ -640,7 +640,7 @@ actor AgentToolOrchestrator {
         context: AgentToolRunContext,
         profile: AgentRunTaskProfile,
         startedAt: Date
-    ) async throws -> AgentKernelMessageV2? {
+    ) async throws -> AgentKernelMessage? {
         let existingEvidence = await store.evidenceArtifactSummary(runID: runID).evidence
         var observations: [String] = []
         if let grantObservation = try await grantInventoryPreflightObservation(
@@ -680,7 +680,7 @@ actor AgentToolOrchestrator {
                 arguments["workingDirectory"] = workingDirectory
             }
             let result = try await executeToolCall(
-                AgentKernelToolCallV2(
+                AgentKernelToolCall(
                     name: "run_finite_command",
                     arguments: arguments,
                     reason: "Run the explicit command draft recorded in the task frame."
@@ -733,7 +733,7 @@ actor AgentToolOrchestrator {
         toolCalls = uniquePreflightToolCalls(toolCalls)
         guard !toolCalls.isEmpty || !observations.isEmpty else { return nil }
         guard requirements.isEmpty || !hasSubstantiveAnswerEvidence(existingEvidence, requirements: requirements) else {
-            return observations.isEmpty ? nil : AgentKernelMessageV2(role: .observation, content: observations.joined(separator: "\n\n"))
+            return observations.isEmpty ? nil : AgentKernelMessage(role: .observation, content: observations.joined(separator: "\n\n"))
         }
         if !requirements.isEmpty {
             _ = try await AgentEvidenceRecorder(store: store).recordEvidenceRequirements(
@@ -785,7 +785,7 @@ actor AgentToolOrchestrator {
             observations.joined(separator: "\n\n"),
             characterLimit: maxPreflightObservationCharacters
         ).text
-        return AgentKernelMessageV2(
+        return AgentKernelMessage(
             role: .observation,
             content: preflightText
         )
@@ -793,7 +793,7 @@ actor AgentToolOrchestrator {
 
     private func grantInventoryPreflightObservation(
         runID: UUID,
-        tools: [AgentKernelToolSchemaV2],
+        tools: [AgentKernelToolSchema],
         context: AgentToolRunContext,
         existingEvidence: [AgentRunEvidenceRecord]
     ) async throws -> String? {
@@ -824,7 +824,7 @@ actor AgentToolOrchestrator {
 
     private func visualContextObservations(
         runID: UUID,
-        attachments: [AgentKernelModelAttachmentV2],
+        attachments: [AgentKernelModelAttachment],
         existingEvidence: [AgentRunEvidenceRecord]
     ) async throws -> [String] {
         guard !attachments.isEmpty else { return [] }
@@ -863,9 +863,9 @@ actor AgentToolOrchestrator {
     private func contentFollowUpReadCalls(
         runID: UUID,
         requirements: [AgentLocalEvidenceRequirement],
-        tools: [AgentKernelToolSchemaV2],
-        alreadyPlannedCalls: [AgentKernelToolCallV2]
-    ) async -> [AgentKernelToolCallV2] {
+        tools: [AgentKernelToolSchema],
+        alreadyPlannedCalls: [AgentKernelToolCall]
+    ) async -> [AgentKernelToolCall] {
         guard tools.contains(where: { $0.name == "read_file" }),
               requirements.contains(where: { $0.kind == .fileContent && $0.targetIsDirectory }) else {
             return []
@@ -884,7 +884,7 @@ actor AgentToolOrchestrator {
         )
         let candidates = contentCandidatePaths(from: evidence, requirements: requirements)
         return candidates.filter { !alreadyRead.contains($0) }.map { path in
-            AgentKernelToolCallV2(
+            AgentKernelToolCall(
                 name: "read_file",
                 arguments: ["path": path],
                 reason: "Read the selected candidate file needed to satisfy directory content evidence."
@@ -968,7 +968,7 @@ actor AgentToolOrchestrator {
             .filter { seen.insert($0).inserted }
     }
 
-    private nonisolated func uniquePreflightToolCalls(_ calls: [AgentKernelToolCallV2]) -> [AgentKernelToolCallV2] {
+    private nonisolated func uniquePreflightToolCalls(_ calls: [AgentKernelToolCall]) -> [AgentKernelToolCall] {
         var seen = Set<String>()
         return calls.filter { call in
             let argumentKey = call.arguments
@@ -980,7 +980,7 @@ actor AgentToolOrchestrator {
     }
 
     private func finalAnswerDecision(
-        _ answer: AgentKernelFinalAnswerV2,
+        _ answer: AgentKernelFinalAnswer,
         runID: UUID,
         profile: AgentRunTaskProfile,
         observedToolResults: Int,
@@ -1095,7 +1095,7 @@ actor AgentToolOrchestrator {
     }
 
     private func finalAnswerGroundingDecision(
-        _ answer: AgentKernelFinalAnswerV2,
+        _ answer: AgentKernelFinalAnswer,
         evidence: [AgentRunEvidenceRecord],
         hasSubstantiveEvidence: Bool,
         requiresGroundingWhenUnevidenced: Bool
@@ -1139,7 +1139,7 @@ actor AgentToolOrchestrator {
     }
 
     private nonisolated static func evidenceClaim(
-        from claim: AgentKernelAnswerClaimV2
+        from claim: AgentKernelAnswerClaim
     ) -> AgentEvidenceClaim? {
         switch claim.kind {
         case .fileGrants:
@@ -1244,7 +1244,7 @@ actor AgentToolOrchestrator {
     }
 
     private func acceptFinalAnswer(
-        _ finalAnswer: AgentKernelFinalAnswerV2,
+        _ finalAnswer: AgentKernelFinalAnswer,
         runID: UUID,
         profile: AgentRunTaskProfile
     ) async throws {
@@ -1312,7 +1312,7 @@ actor AgentToolOrchestrator {
         var messages = replayMessages.isEmpty
             ? await fallbackApprovalContinuationMessages(runID: runID, baseRequest: baseRequest)
             : replayMessages
-        let approvalObservation = AgentKernelMessageV2(role: .observation, content: result.modelObservationText)
+        let approvalObservation = AgentKernelMessage(role: .observation, content: result.modelObservationText)
         try await recordControlMessage(
             approvalObservation,
             runID: runID,
@@ -1361,12 +1361,12 @@ actor AgentToolOrchestrator {
     private func fallbackApprovalContinuationMessages(
         runID: UUID,
         baseRequest: AgentModelGatewayRequest
-    ) async -> [AgentKernelMessageV2] {
+    ) async -> [AgentKernelMessage] {
         let visible = await store.visibleMessages(sessionID: nil).filter { $0.runID == runID }
         var messages = baseRequest.messages.filter { $0.role == .system }
         messages.append(
             contentsOf: visible.map {
-                AgentKernelMessageV2(
+                AgentKernelMessage(
                     role: $0.role == .user ? .user : .assistant,
                     content: $0.text.text
                 )
@@ -1378,7 +1378,7 @@ actor AgentToolOrchestrator {
     private func modelResponse(
         runID: UUID,
         baseRequest: AgentModelGatewayRequest,
-        messages: [AgentKernelMessageV2],
+        messages: [AgentKernelMessage],
         iteration: Int,
         profile: AgentRunTaskProfile
     ) async throws -> AgentModelGatewayResponse {
@@ -1540,16 +1540,16 @@ actor AgentToolOrchestrator {
     }
 
     private nonisolated func compactMessagesForRetry(
-        _ messages: [AgentKernelMessageV2],
+        _ messages: [AgentKernelMessage],
         failure: AgentModelGatewayFailure
-    ) -> [AgentKernelMessageV2]? {
+    ) -> [AgentKernelMessage]? {
         let maxPromptCharacters = failure.metadata["maxPromptCharacters"]?.intValue ?? 12_000
         let targetCharacters = max(2_000, Int(Double(maxPromptCharacters) * 0.72))
-        var compacted: [AgentKernelMessageV2] = []
+        var compacted: [AgentKernelMessage] = []
         let system = messages.first { $0.role == .system }
         if let system {
             compacted.append(
-                AgentKernelMessageV2(
+                AgentKernelMessage(
                     id: system.id,
                     role: .system,
                     content: AgentRunText(system.content, characterLimit: min(3_000, targetCharacters / 4)).text
@@ -1561,7 +1561,7 @@ actor AgentToolOrchestrator {
         let observations = nonSystem.filter { $0.role == .observation }.suffix(6)
         if let latestUser {
             compacted.append(
-                AgentKernelMessageV2(
+                AgentKernelMessage(
                     id: latestUser.id,
                     role: .user,
                     content: AgentRunText(latestUser.content, characterLimit: min(2_000, targetCharacters / 4)).text
@@ -1570,7 +1570,7 @@ actor AgentToolOrchestrator {
         }
         for observation in observations {
             compacted.append(
-                AgentKernelMessageV2(
+                AgentKernelMessage(
                     id: observation.id,
                     role: .observation,
                     content: compactObservation(observation.content, limit: max(700, targetCharacters / 8))
@@ -1629,7 +1629,7 @@ actor AgentToolOrchestrator {
         stepID: UUID,
         iteration: Int,
         baseRequest: AgentModelGatewayRequest,
-        messages: [AgentKernelMessageV2],
+        messages: [AgentKernelMessage],
         profile: AgentRunTaskProfile,
         failure: AgentModelGatewayFailure
     ) async throws -> AgentModelGatewayResponse? {
@@ -1658,7 +1658,7 @@ actor AgentToolOrchestrator {
         )
 
         var retryMessages = messages
-        let recoveryObservation = AgentKernelMessageV2(
+        let recoveryObservation = AgentKernelMessage(
             role: .observation,
             content: shouldDisableTools && hasRecordedEvidence
                 ? """
@@ -1740,7 +1740,7 @@ actor AgentToolOrchestrator {
         stepID: UUID,
         iteration: Int,
         baseRequest: AgentModelGatewayRequest,
-        messages: [AgentKernelMessageV2],
+        messages: [AgentKernelMessage],
         profile: AgentRunTaskProfile,
         failure: AgentModelGatewayFailure
     ) async throws -> AgentModelGatewayResponse? {
@@ -1762,7 +1762,7 @@ actor AgentToolOrchestrator {
         )
 
         var retryMessages = messages
-        let recoveryObservation = AgentKernelMessageV2(
+        let recoveryObservation = AgentKernelMessage(
             role: .observation,
             content: """
             The previous provider response did not satisfy the structured tool protocol.
@@ -1855,7 +1855,7 @@ actor AgentToolOrchestrator {
     }
 
     private func executeToolCall(
-        _ call: AgentKernelToolCallV2,
+        _ call: AgentKernelToolCall,
         runID: UUID,
         providerTier: AgentModelCapabilityTier,
         context: AgentToolRunContext,
@@ -1961,7 +1961,7 @@ actor AgentToolOrchestrator {
         )
     }
 
-    private func recordFinalAnswerSupportIfPossible(runID: UUID, answer: AgentKernelFinalAnswerV2) async throws {
+    private func recordFinalAnswerSupportIfPossible(runID: UUID, answer: AgentKernelFinalAnswer) async throws {
         let evidence = await store.evidenceArtifactSummary(runID: runID).evidence
         let requirements = await evidenceRequirements(from: evidence)
         let declaredClaims = answer.grounding?.claims.compactMap(Self.evidenceClaim) ?? []
@@ -2306,18 +2306,18 @@ actor AgentToolOrchestrator {
         return years.contains { $0 != currentYear }
     }
 
-    private nonisolated static func finalAnswer(from events: [AgentKernelModelAdapterEventV2]) -> AgentKernelFinalAnswerV2? {
+    private nonisolated static func finalAnswer(from events: [AgentKernelModelAdapterEvent]) -> AgentKernelFinalAnswer? {
         for event in events.reversed() {
             switch event {
             case .finalAnswer(let answer):
                 let trimmed = answer.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty {
-                    return AgentKernelFinalAnswerV2(text: trimmed, grounding: answer.grounding)
+                    return AgentKernelFinalAnswer(text: trimmed, grounding: answer.grounding)
                 }
             case .snapshot(let text):
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !trimmed.isEmpty {
-                    return AgentKernelFinalAnswerV2(text: trimmed)
+                    return AgentKernelFinalAnswer(text: trimmed)
                 }
             case .toolCall, .malformedOutput, .emptyOutput, .timedOut:
                 continue
@@ -2326,7 +2326,7 @@ actor AgentToolOrchestrator {
         return nil
     }
 
-    private nonisolated static func firstToolCall(from events: [AgentKernelModelAdapterEventV2]) -> AgentKernelToolCallV2? {
+    private nonisolated static func firstToolCall(from events: [AgentKernelModelAdapterEvent]) -> AgentKernelToolCall? {
         for event in events {
             if case .toolCall(let call) = event {
                 return call
@@ -2335,7 +2335,7 @@ actor AgentToolOrchestrator {
         return nil
     }
 
-    private nonisolated func toolMetadata(_ call: AgentKernelToolCallV2) -> [String: AgentRunMetadataValue] {
+    private nonisolated func toolMetadata(_ call: AgentKernelToolCall) -> [String: AgentRunMetadataValue] {
         var metadata: [String: AgentRunMetadataValue] = ["toolName": .string(call.name)]
         for (key, value) in call.arguments {
             metadata["argument.\(key)"] = .string(value)

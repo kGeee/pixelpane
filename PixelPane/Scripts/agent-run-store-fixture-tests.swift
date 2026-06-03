@@ -135,9 +135,9 @@ enum AgentRunStoreFixtureHarness {
         let run = try await store.createRun(sessionID: session.id, status: .running)
         let step = try await store.beginStep(runID: run.runID, kind: .modelRequest)
         let messages = [
-            AgentKernelMessageV2(role: .system, content: "You are Pixel Pane."),
-            AgentKernelMessageV2(role: .user, content: "Inspect the project."),
-            AgentKernelMessageV2(role: .observation, content: "Hidden preflight evidence.")
+            AgentKernelMessage(role: .system, content: "You are Pixel Pane."),
+            AgentKernelMessage(role: .user, content: "Inspect the project."),
+            AgentKernelMessage(role: .observation, content: "Hidden preflight evidence.")
         ]
         let request = AgentModelGatewayRequest(
             mode: .fullAgent,
@@ -153,7 +153,7 @@ enum AgentRunStoreFixtureHarness {
             payload: .modelRequest(request),
             metadata: ["iteration": .int(1)]
         )
-        let observation = AgentKernelMessageV2(
+        let observation = AgentKernelMessage(
             role: .observation,
             content: "Tool result\nname: list_folder\nstatus: succeeded"
         )

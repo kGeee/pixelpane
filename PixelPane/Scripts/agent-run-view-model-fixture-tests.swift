@@ -198,7 +198,7 @@ enum AgentRunViewModelFixtureHarness {
                     adapterDescriptor: firstAdapter.descriptor,
                     request: AgentModelGatewayRequest(
                         mode: .plainChat,
-                        messages: [AgentKernelMessageV2(role: .user, content: "approve saved config")],
+                        messages: [AgentKernelMessage(role: .user, content: "approve saved config")],
                         metadata: [
                             "sessionID": .string(sessionID.uuidString),
                             "runID": .string(run.runID.uuidString)
@@ -284,7 +284,7 @@ enum AgentRunViewModelFixtureHarness {
             structuredOutputReliability: .strict
         )
         let tools = [
-            AgentKernelToolSchemaV2(
+            AgentKernelToolSchema(
                 name: "get_current_time",
                 summary: "Return the current local time."
             )
@@ -430,26 +430,26 @@ enum AgentRunViewModelFixtureHarness {
 
 }
 
-struct FixtureAgentModelAdapter: AgentKernelModelAdapterV2 {
-    let descriptor: AgentKernelModelDescriptorV2
-    let capabilities: AgentKernelModelAdapterCapabilitiesV2
-    let events: [AgentKernelModelAdapterEventV2]
+struct FixtureAgentModelAdapter: AgentKernelModelAdapter {
+    let descriptor: AgentKernelModelDescriptor
+    let capabilities: AgentKernelModelAdapterCapabilities
+    let events: [AgentKernelModelAdapterEvent]
     let delayNanoseconds: UInt64
 
     init(
         id: String = "fixture.chat",
-        events: [AgentKernelModelAdapterEventV2],
+        events: [AgentKernelModelAdapterEvent],
         delayNanoseconds: UInt64 = 0,
-        toolCallingMode: AgentKernelToolCallingModeV2 = .none,
-        structuredOutputReliability: AgentKernelStructuredOutputReliabilityV2 = .unsupported
+        toolCallingMode: AgentKernelToolCallingMode = .none,
+        structuredOutputReliability: AgentKernelStructuredOutputReliability = .unsupported
     ) {
-        descriptor = AgentKernelModelDescriptorV2(
+        descriptor = AgentKernelModelDescriptor(
             id: id,
             providerKind: .fixture,
             route: .local,
             displayName: "Fixture"
         )
-        capabilities = AgentKernelModelAdapterCapabilitiesV2(
+        capabilities = AgentKernelModelAdapterCapabilities(
             descriptor: descriptor,
             toolCallingMode: toolCallingMode,
             structuredOutputReliability: structuredOutputReliability,
@@ -459,11 +459,11 @@ struct FixtureAgentModelAdapter: AgentKernelModelAdapterV2 {
         self.delayNanoseconds = delayNanoseconds
     }
 
-    func response(for request: AgentKernelModelAdapterRequestV2) async -> AgentKernelModelAdapterResponseV2 {
+    func response(for request: AgentKernelModelAdapterRequest) async -> AgentKernelModelAdapterResponse {
         if delayNanoseconds > 0 {
             try? await Task.sleep(nanoseconds: delayNanoseconds)
         }
-        return AgentKernelModelAdapterResponseV2(
+        return AgentKernelModelAdapterResponse(
             requestID: request.id,
             descriptor: descriptor,
             events: events

@@ -1,23 +1,23 @@
 import Foundation
 
-struct AgentKernelOpenAICompatibleAdapterV2: AgentKernelModelAdapterV2 {
-    let descriptor: AgentKernelModelDescriptorV2
-    let capabilities: AgentKernelModelAdapterCapabilitiesV2
+struct AgentKernelOpenAICompatibleAdapter: AgentKernelModelAdapter {
+    let descriptor: AgentKernelModelDescriptor
+    let capabilities: AgentKernelModelAdapterCapabilities
 
     private let endpoint: URL
     private let apiKey: String?
     private let urlSession: URLSession
-    private let promptBuilder: AgentKernelTextProtocolPromptBuilderV2
-    private let parser: AgentKernelTextProtocolParserV2
+    private let promptBuilder: AgentKernelTextProtocolPromptBuilder
+    private let parser: AgentKernelTextProtocolParser
 
     nonisolated init(
-        descriptor: AgentKernelModelDescriptorV2,
+        descriptor: AgentKernelModelDescriptor,
         endpoint: URL,
         apiKey: String? = nil,
-        capabilities: AgentKernelModelAdapterCapabilitiesV2,
+        capabilities: AgentKernelModelAdapterCapabilities,
         urlSession: URLSession = .shared,
-        promptBuilder: AgentKernelTextProtocolPromptBuilderV2 = AgentKernelTextProtocolPromptBuilderV2(),
-        parser: AgentKernelTextProtocolParserV2 = AgentKernelTextProtocolParserV2()
+        promptBuilder: AgentKernelTextProtocolPromptBuilder = AgentKernelTextProtocolPromptBuilder(),
+        parser: AgentKernelTextProtocolParser = AgentKernelTextProtocolParser()
     ) {
         self.descriptor = descriptor
         self.endpoint = endpoint
@@ -29,8 +29,8 @@ struct AgentKernelOpenAICompatibleAdapterV2: AgentKernelModelAdapterV2 {
     }
 
     nonisolated func response(
-        for request: AgentKernelModelAdapterRequestV2
-    ) async -> AgentKernelModelAdapterResponseV2 {
+        for request: AgentKernelModelAdapterRequest
+    ) async -> AgentKernelModelAdapterResponse {
         let shouldUseProtocol = !request.tools.isEmpty || request.responseFormat == .textProtocol
         let prompt = shouldUseProtocol
             ? promptBuilder.prompt(for: request)
@@ -51,7 +51,7 @@ struct AgentKernelOpenAICompatibleAdapterV2: AgentKernelModelAdapterV2 {
             return response(
                 for: request,
                 events: [.malformedOutput(error.localizedDescription)],
-                diagnostics: AgentKernelBoundedTextV2(error.localizedDescription)
+                diagnostics: AgentKernelBoundedText(error.localizedDescription)
             )
         }
     }
@@ -73,7 +73,7 @@ struct AgentKernelOpenAICompatibleAdapterV2: AgentKernelModelAdapterV2 {
             throw URLError(.badServerResponse)
         }
         guard (200..<300).contains(httpResponse.statusCode) else {
-            throw AgentKernelOpenAICompatibleErrorV2.httpStatus(httpResponse.statusCode)
+            throw AgentKernelOpenAICompatibleError.httpStatus(httpResponse.statusCode)
         }
         let decoded = try JSONDecoder().decode(OpenAICompatibleChatResponse.self, from: data)
         return decoded.choices.first?.message.content ?? ""
@@ -102,11 +102,11 @@ struct AgentKernelOpenAICompatibleAdapterV2: AgentKernelModelAdapterV2 {
     }
 
     private nonisolated func response(
-        for request: AgentKernelModelAdapterRequestV2,
-        events: [AgentKernelModelAdapterEventV2],
-        diagnostics: AgentKernelBoundedTextV2? = nil
-    ) -> AgentKernelModelAdapterResponseV2 {
-        AgentKernelModelAdapterResponseV2(
+        for request: AgentKernelModelAdapterRequest,
+        events: [AgentKernelModelAdapterEvent],
+        diagnostics: AgentKernelBoundedText? = nil
+    ) -> AgentKernelModelAdapterResponse {
+        AgentKernelModelAdapterResponse(
             requestID: request.id,
             descriptor: descriptor,
             events: events,
@@ -115,7 +115,7 @@ struct AgentKernelOpenAICompatibleAdapterV2: AgentKernelModelAdapterV2 {
     }
 }
 
-enum AgentKernelOpenAICompatibleErrorV2: LocalizedError, Sendable {
+enum AgentKernelOpenAICompatibleError: LocalizedError, Sendable {
     case httpStatus(Int)
 
     nonisolated var errorDescription: String? {

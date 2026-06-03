@@ -569,17 +569,17 @@ actor AgentEvidenceRecorder {
     func recordVisualContext(
         runID: UUID,
         stepID: UUID? = nil,
-        attachment: AgentKernelModelAttachmentV2
+        attachment: AgentKernelModelAttachment
     ) async throws -> AgentRunEvidenceRecord {
         let ocrText = attachment.metadata["ocrText"]?.stringValue ?? ""
         let source = attachment.metadata["source"]?.stringValue ?? "attachment"
-        let isTruncated = ocrText.count > AgentKernelBoundedTextV2.defaultLimit
+        let isTruncated = ocrText.count > AgentKernelBoundedText.defaultLimit
         return try await record(
             AgentEvidencePacket(
                 sourceID: "visual-context:\(attachment.id.uuidString)",
                 kind: .visualContext,
                 summary: AgentRunText("Recorded visual context for \(attachment.label)."),
-                body: ocrText.isEmpty ? nil : AgentRunText(ocrText, characterLimit: AgentKernelBoundedTextV2.defaultLimit),
+                body: ocrText.isEmpty ? nil : AgentRunText(ocrText, characterLimit: AgentKernelBoundedText.defaultLimit),
                 privacyClass: .visualContext,
                 trustClass: .appControl,
                 isTruncated: isTruncated,

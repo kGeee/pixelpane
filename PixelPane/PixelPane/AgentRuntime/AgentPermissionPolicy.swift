@@ -528,7 +528,7 @@ nonisolated struct AgentSensitivePathRule: Codable, Equatable, Identifiable, Sen
 nonisolated struct AgentToolSpec: Identifiable, Sendable {
     var id: String { schema.name }
 
-    let schema: AgentKernelToolSchemaV2
+    let schema: AgentKernelToolSchema
     let contract: AgentToolContract
     let operationKind: AgentToolOperationKind
     let risk: AgentToolRisk
@@ -538,7 +538,7 @@ nonisolated struct AgentToolSpec: Identifiable, Sendable {
     let requiresApproval: Bool
 
     init(
-        schema: AgentKernelToolSchemaV2,
+        schema: AgentKernelToolSchema,
         operationKind: AgentToolOperationKind,
         risk: AgentToolRisk,
         requiredScopes: [AgentPermissionScope] = [],
@@ -826,7 +826,7 @@ nonisolated struct AgentToolCatalog: Sendable {
         grantedScopes: [AgentPermissionScope] = [],
         deniedScopes: [AgentPermissionScope] = [],
         supportedOperations: Set<AgentToolOperationKind> = AgentToolExecutionCapabilities.activeLocalRuntimeOperations
-    ) -> [AgentKernelToolSchemaV2] {
+    ) -> [AgentKernelToolSchema] {
         visibleToolSpecs(
             providerTier: providerTier,
             runMode: runMode,

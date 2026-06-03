@@ -166,10 +166,10 @@ nonisolated struct AgentTaskFrame: Codable, Equatable, Sendable {
 
     static func build(
         userMessage: String,
-        tools: [AgentKernelToolSchemaV2],
+        tools: [AgentKernelToolSchema],
         context: AgentToolRunContext,
         providerTier: AgentModelCapabilityTier? = nil,
-        attachments: [AgentKernelModelAttachmentV2] = [],
+        attachments: [AgentKernelModelAttachment] = [],
         selectedAction: String? = nil,
         contextID: String? = nil,
         contextKind: String? = nil,
@@ -439,7 +439,7 @@ nonisolated struct AgentTaskFrame: Codable, Equatable, Sendable {
         }
     }
 
-    private static func visualContext(from attachments: [AgentKernelModelAttachmentV2]) -> VisualContextSnapshot? {
+    private static func visualContext(from attachments: [AgentKernelModelAttachment]) -> VisualContextSnapshot? {
         let visualAttachments = attachments.filter { attachment in
             attachment.modality == .image
                 || attachment.metadata["ocrText"] != nil
