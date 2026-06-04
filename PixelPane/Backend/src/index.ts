@@ -8,6 +8,8 @@ interface Env {
   DEV_APP_TOKEN?: string;
   FREE_DAILY_LIMIT?: string;
   RATE_LIMIT_KV?: KVNamespace;
+  /** Max server-side web searches per request for chat/ask. "0" disables. Default 3. */
+  WEB_SEARCH_MAX_USES?: string;
 }
 
 interface PixelPaneRequest {
@@ -313,6 +315,12 @@ async function streamAnthropic(
     return jsonError("server_error", "Anthropic API key is not configured.", requestID, 500);
   }
 
+  // Conversational actions may use Anthropic's server-side web search for
+  // current public information. The stream transform below only forwards
+  // text deltas, so search tool blocks pass through without protocol changes.
+  const webSearchMaxUses = Math.max(0, Number.parseInt(env.WEB_SEARCH_MAX_USES ?? "3", 10));
+  const allowsWebSearch = (action === "chat" || action === "ask") && webSearchMaxUses > 0;
+
   const upstream = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -325,7 +333,10 @@ async function streamAnthropic(
       max_tokens: clamp(payload.limits?.max_output_tokens ?? 2048, 64, 4096),
       stream: true,
       system: systemPrompt(action),
-      messages: buildMessages(action, payload)
+      messages: buildMessages(action, payload),
+      ...(allowsWebSearch
+        ? { tools: [{ type: "web_search_20250305", name: "web_search", max_uses: webSearchMaxUses }] }
+        : {})
     })
   });
 
@@ -496,7 +507,7 @@ function systemPrompt(action: Action): string {
     explain: `${shared} Explain what the user captured in practical terms.`,
     simplify: `${shared} Rewrite the captured text more simply while preserving meaning.`,
     ask: `${shared} Answer the user's follow-up using the capture and prior turns.`,
-    chat: "You are Pixel Pane, a concise native Mac assistant. Answer general user questions directly. Do not expect OCR text, screenshots, or image context unless they are explicitly provided.",
+    chat: "You are Pixel Pane, a concise native Mac assistant. Answer general user questions directly. Do not expect OCR text, screenshots, or image context unless they are explicitly provided. When the question needs current public information and web search is available, search and answer; do not ask permission to search.",
     study: `${shared} Teach the captured material with compact definitions and examples.`,
     menu: `${shared} Explain menu items with translation and cultural context where useful.`,
     debug: `${shared} Help debug technical text, logs, errors, or code. Prefer concrete fixes.`

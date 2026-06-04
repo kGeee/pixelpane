@@ -262,8 +262,22 @@ struct ResultPanelView: View {
             "Answer the user's latest message directly. Do not claim that files, commands, or processes changed unless Pixel Pane records an approved side effect.",
             "Treat this chat as isolated from previous chats. Use only messages visible in this chat as conversation history.",
             "If asked about previous chats or sessions and this chat does not contain them, say that no previous chat context is available here.",
-            "If the available context is insufficient, say what is missing instead of inventing details."
+            "If the available context is insufficient, say what is missing instead of inventing details.",
+            "Never offer follow-up actions that no available tool can perform."
         ]
+
+        // Keep the capability statement truthful per route: the local route is
+        // sealed from the network; the cloud route may resolve current public
+        // information on the provider side.
+        if routingSettings.effectiveMode == .cloud {
+            sections.append(
+                "If current public information cannot be retrieved, say so plainly and answer with what is known instead of offering to look it up later."
+            )
+        } else {
+            sections.append(
+                "This Mac-local route has no internet, web-search, or device-location access, and no tool provides them. When an answer needs live external data, state that limitation briefly and answer with what is available."
+            )
+        }
 
         if hasCaptureContext {
             let ocrText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
