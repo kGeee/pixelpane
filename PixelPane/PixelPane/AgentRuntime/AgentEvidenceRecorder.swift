@@ -357,6 +357,13 @@ actor AgentEvidenceRecorder {
                 metadata["workingDirectory"] = .string(workingDirectory)
             }
         }
+        if !snapshot.rows.isEmpty {
+            // Expose the full observed set (like folder listings expose
+            // "paths") so claims about any row are verifiable, not just the
+            // top one.
+            metadata["ports"] = .string(snapshot.rows.map { String($0.port) }.joined(separator: "\n"))
+            metadata["executableNames"] = .string(snapshot.rows.map(\.executableName).joined(separator: "\n"))
+        }
 
         let scopedText = snapshot.requestedPort.map { " for port \($0)" } ?? ""
         return try await record(
@@ -420,6 +427,13 @@ actor AgentEvidenceRecorder {
             metadata["topExecutable"] = .string(top.executableName)
             metadata["topCPUPercent"] = .double(top.cpuPercent)
             metadata["topMemoryPercent"] = .double(top.memoryPercent)
+        }
+        if !snapshot.rows.isEmpty {
+            // Expose the full observed set (like folder listings expose
+            // "paths") so claims about any row are verifiable, not just the
+            // top one.
+            metadata["executableNames"] = .string(snapshot.rows.map(\.executableName).joined(separator: "\n"))
+            metadata["pids"] = .string(snapshot.rows.map { String($0.pid) }.joined(separator: "\n"))
         }
 
         return try await record(

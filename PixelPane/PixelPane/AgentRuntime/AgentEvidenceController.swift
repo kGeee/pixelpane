@@ -26,6 +26,10 @@ nonisolated struct AgentEvidenceController: Sendable {
                 missing: "File-grant claims need grant-list evidence."
             )
         case .processSnapshotRecorded:
+            // A claim target may name anything the snapshot observed (any
+            // row, not just the top one). Untargeted claims are grounded by
+            // the snapshot itself, which also covers negative answers
+            // ("X is not running") backed by a recorded snapshot.
             return matching(
                 claim,
                 evidence: evidence,
@@ -33,11 +37,17 @@ nonisolated struct AgentEvidenceController: Sendable {
                 predicate: { record in
                     (record.intMetadata("rowCount") ?? -1) >= 0
                         && (matchesTarget(record.stringMetadata("topExecutable"), claim.target)
-                            || matchesTarget(record.intMetadata("topPID").map(String.init), claim.target))
+                            || matchesTarget(record.intMetadata("topPID").map(String.init), claim.target)
+                            || matchesLine(in: record.stringMetadata("executableNames"), target: claim.target)
+                            || matchesLine(in: record.stringMetadata("pids"), target: claim.target))
                 },
                 missing: "Process snapshot claims need process snapshot evidence."
             )
         case .localListenerSnapshotRecorded:
+            // A claim target may name what was FOUND (a port, URL, or
+            // executable) or what was QUERIED (the requested port or root
+            // path). The queried-scope match is what grounds negative
+            // answers like "nothing is serving this folder".
             return matching(
                 claim,
                 evidence: evidence,
@@ -45,9 +55,13 @@ nonisolated struct AgentEvidenceController: Sendable {
                 predicate: { record in
                     if let target = claim.target, let port = Int(target) {
                         return record.intMetadata("port") == port
+                            || record.intMetadata("requestedPort") == port
+                            || matchesLine(in: record.stringMetadata("ports"), target: target)
                     }
                     return matchesTarget(record.stringMetadata("url"), claim.target)
                         || matchesTarget(record.intMetadata("port").map(String.init), claim.target)
+                        || matchesTarget(record.stringMetadata("requestedRootPath"), claim.target)
+                        || matchesLine(in: record.stringMetadata("executableNames"), target: claim.target)
                 },
                 missing: "Local listener claims need listener snapshot evidence."
             )
@@ -146,8 +160,8 @@ nonisolated struct AgentEvidenceController: Sendable {
         case .folderListed:
             // Discovery claims: "the folder contains X" / "these files exist".
             // Backed by a recorded listing or search; the target may name the
-            // listed folder or one of the listed entries, or be omitted to
-            // lean on any recorded listing.
+            // listed folder, one of the listed entries, or the search query —
+            // the query match grounds negative answers ("no file matches X").
             return matching(
                 claim,
                 evidence: evidence,
@@ -155,6 +169,7 @@ nonisolated struct AgentEvidenceController: Sendable {
                 predicate: { record in
                     matchesTarget(record.stringMetadata("path"), claim.target)
                         || matchesLine(in: record.stringMetadata("paths"), target: claim.target)
+                        || matchesTarget(record.stringMetadata("query"), claim.target)
                 },
                 missing: "Folder listing claims need folder-list or file-search evidence."
             )
