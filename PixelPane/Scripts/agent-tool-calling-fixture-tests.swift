@@ -59,6 +59,7 @@ enum AgentToolCallingFixtureHarness {
         try await testFileListingClaimGroundsFolderAnswer()
         try await testApproximateLocationContextGroundsLocationClaims()
         try await testEmptyLocalEvidenceClaimsRepairToListingClaim()
+        try await testEvidenceBackfillReadsCitedPathAndRecovers()
         try await testSearchAndReadToolsRecordEvidence()
         try await testQuotedSearchUsesPreciseQuery()
         try await testMultipleQuotedSearchesCreateSeparateEvidence()
@@ -632,6 +633,60 @@ enum AgentToolCallingFixtureHarness {
         }
         try expect(repairMessages.contains(where: { $0.contains("file_listing") }), "repair observation should name the claim kind vocabulary")
         try expect(harness.viewModel.state.activeStatus == .completed, "declaring file_listing after the repair observation should complete the run")
+    }
+
+    @MainActor
+    private static func testEvidenceBackfillReadsCitedPathAndRecovers() async throws {
+        // Replays chat2 (Hermes): the model cites a granted file it never
+        // read. Instead of rejecting twice and blocking, the runtime reads
+        // the cited path itself (grant-covered, read-only), records the
+        // evidence, and retries once — turning the block into an answer.
+        let harness = try await makeHarness(prefix: "evidence-backfill")
+        let cited = harness.workspace.appendingPathComponent("style.css")
+        try "body { background: #0b0b0c; }".write(to: cited, atomically: true, encoding: .utf8)
+        let citedPath = cited.path
+
+        let adapter = tierBFixtureAdapter(
+            responses: [
+                groundedFinalAnswer(
+                    "Check \(citedPath) for the colors.",
+                    basis: .localEvidence,
+                    claims: [AgentKernelAnswerClaim(kind: .localFile, target: citedPath)]
+                ),
+                groundedFinalAnswer(
+                    "The background color is #0b0b0c, per \(citedPath).",
+                    grounding: AgentKernelAnswerGrounding(
+                        basis: .localEvidence,
+                        claims: [AgentKernelAnswerClaim(kind: .localFile, target: citedPath)]
+                    )
+                )
+            ]
+        )
+        let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
+
+        let runID = try await harness.viewModel.startRun(
+            userMessage: "What is the background color?",
+            context: AgentRunViewContext(title: "Evidence Backfill", contextID: "evidence-backfill", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use the structured protocol.",
+            timeout: 4
+        )
+        try await harness.viewModel.waitForIdle(timeout: 6)
+        await harness.viewModel.refresh()
+
+        let trace = try await harness.store.traceProjection(runID: runID)
+        let backfillObservations = trace.controlRecords.filter { record in
+            record.kind == .toolObservation && record.metadata["source"]?.stringValue == "evidence_backfill"
+        }
+        try expect(
+            trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.fileRead.rawValue && $0.metadata["path"]?.stringValue == citedPath }),
+            "backfill should record file-read evidence for the cited path"
+        )
+        try expect(!backfillObservations.isEmpty, "backfill observation should be durable with its source marked")
+        try expect(harness.viewModel.state.activeStatus == .completed, "backfilled evidence should let the corrected answer complete")
     }
 
     @MainActor

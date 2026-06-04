@@ -520,7 +520,13 @@ nonisolated struct AgentTaskFrame: Codable, Equatable, Sendable {
 
     static func localPathCandidates(in text: String) -> [String] {
         var seen = Set<String>()
-        return (absolutePathCandidates(in: text) + relativePathCandidates(in: text))
+        // A relative-looking candidate that appears in the text immediately
+        // after "/" is a fragment of an absolute path, not a separate
+        // reference (e.g. "var/folders/x/style.css" inside
+        // "/var/folders/x/style.css"); joining it onto a grant root would
+        // fabricate a phantom path.
+        let relative = relativePathCandidates(in: text).filter { !text.contains("/\($0)") }
+        return (absolutePathCandidates(in: text) + relative)
             .filter { seen.insert($0).inserted }
     }
 

@@ -26,6 +26,9 @@ actor AgentToolOrchestrator {
     private let maxRequiredSideEffectFinalAnswerRepairs = 1
     private let maxPreflightObservationCharacters = 5_500
     private let maxPreflightToolObservationCharacters = 1_000
+    /// Evidence backfill is bounded: at most this many runtime-initiated
+    /// reads, once per run, only for grant-covered paths the gate extracted.
+    private static let maxEvidenceBackfillReads = 3
 
     init(
         store: AgentRunStore,
@@ -88,6 +91,7 @@ actor AgentToolOrchestrator {
         var observedRequiredSideEffectToolNames = Set<String>()
         var loopController = AgentToolLoopController(maxIterations: maxIterations)
         var finalAnswerRejectionCounts: [FinalAnswerRejectionKind: Int] = [:]
+        var didAttemptEvidenceBackfill = false
         let shouldRunPreflight = baseRequest.metadata["skipPreflight"]?.boolValue != true
         if shouldRunPreflight,
            let preflight = try await preflightObservation(
@@ -170,6 +174,70 @@ actor AgentToolOrchestrator {
                             status: .blocked
                         )
                         return
+                    }
+                    // Evidence backfill: the gate extracted grant-covered,
+                    // read-only paths the answer cited without evidence. The
+                    // runtime can satisfy that requirement deterministically —
+                    // read the paths itself and retry once — instead of asking
+                    // a model that already failed to self-correct (chat2).
+                    if !didAttemptEvidenceBackfill,
+                       !rejection.backfillablePaths.isEmpty,
+                       baseRequest.tools.contains(where: { $0.name == "read_file" }) {
+                        didAttemptEvidenceBackfill = true
+                        var backfilledAnyPath = false
+                        for path in rejection.backfillablePaths.prefix(Self.maxEvidenceBackfillReads) {
+                            let result = try await executeToolCall(
+                                AgentKernelToolCall(
+                                    name: "read_file",
+                                    arguments: ["path": path],
+                                    reason: "Runtime evidence backfill: the final answer referenced this path without recorded evidence."
+                                ),
+                                runID: runID,
+                                providerTier: tier,
+                                context: context,
+                                iteration: iteration
+                            )
+                            guard result.status == .succeeded else { continue }
+                            observedToolResults += 1
+                            let backfillObservation = AgentKernelMessage(
+                                role: .observation,
+                                content: result.modelObservationText
+                            )
+                            try await recordControlMessage(
+                                backfillObservation,
+                                runID: runID,
+                                kind: .toolObservation,
+                                metadata: [
+                                    "iteration": .int(iteration),
+                                    "toolName": .string("read_file"),
+                                    "source": .string("evidence_backfill")
+                                ]
+                            )
+                            messages.append(backfillObservation)
+                            backfilledAnyPath = true
+                        }
+                        if backfilledAnyPath {
+                            let backfillRepair = AgentKernelMessage(
+                                role: .observation,
+                                content: """
+                                Runtime rejected the previous final answer.
+                                Reason: \(rejection.reason.text)
+                                The runtime has now read the referenced path(s); their contents are recorded above. Answer again using that evidence, declaring grounding.claims that match it.
+                                """
+                            )
+                            try await recordControlMessage(
+                                backfillRepair,
+                                runID: runID,
+                                kind: .finalAnswerRepairObservation,
+                                metadata: [
+                                    "iteration": .int(iteration),
+                                    "rejectionKind": .string(String(describing: rejection.kind)),
+                                    "source": .string("evidence_backfill")
+                                ]
+                            )
+                            messages.append(backfillRepair)
+                            continue
+                        }
                     }
                     let repairObservation = AgentKernelMessage(
                         role: .observation,
@@ -655,6 +723,21 @@ actor AgentToolOrchestrator {
     private struct FinalAnswerRejection {
         let kind: FinalAnswerRejectionKind
         let reason: AgentRunText
+        /// Grant-covered, read-only paths the gate extracted from the
+        /// rejected answer. When present, the runtime may satisfy the
+        /// missing evidence itself (read + retry) instead of failing the
+        /// run because the model would not self-correct.
+        let backfillablePaths: [String]
+
+        init(
+            kind: FinalAnswerRejectionKind,
+            reason: AgentRunText,
+            backfillablePaths: [String] = []
+        ) {
+            self.kind = kind
+            self.reason = reason
+            self.backfillablePaths = backfillablePaths
+        }
     }
 
     private enum FinalAnswerDecision {
@@ -1078,7 +1161,8 @@ actor AgentToolOrchestrator {
             answer,
             evidence: evidence,
             hasSubstantiveEvidence: hasSubstantiveEvidence,
-            requiresGroundingWhenUnevidenced: requiresGroundingWhenUnevidenced && profile.hasToolPath
+            requiresGroundingWhenUnevidenced: requiresGroundingWhenUnevidenced && profile.hasToolPath,
+            grants: profile.taskFrame.localGrants
         )
         if case .retry = groundingDecision {
             return groundingDecision
@@ -1144,7 +1228,8 @@ actor AgentToolOrchestrator {
         _ answer: AgentKernelFinalAnswer,
         evidence: [AgentRunEvidenceRecord],
         hasSubstantiveEvidence: Bool,
-        requiresGroundingWhenUnevidenced: Bool
+        requiresGroundingWhenUnevidenced: Bool,
+        grants: [AgentLocalFileGrant]
     ) -> FinalAnswerDecision {
         guard let grounding = answer.grounding else {
             if requiresGroundingWhenUnevidenced && !hasSubstantiveEvidence && !hasAnyToolEvidence(evidence) {
@@ -1163,10 +1248,19 @@ actor AgentToolOrchestrator {
             let decisions = AgentEvidenceController().verify(claims, evidence: evidence)
             let unsupported = decisions.filter { $0.status != .supported }
             if let first = unsupported.first {
+                // Unverifiable claims that name grant-covered readable paths
+                // carry them for evidence backfill — same root cause as
+                // answer-text path references without evidence.
+                let backfillablePaths = backfillableClaimPaths(
+                    from: unsupported.map(\.claim),
+                    evidence: evidence,
+                    grants: grants
+                )
                 return .retry(
                     FinalAnswerRejection(
                         kind: .unsupportedGroundingClaims,
-                        reason: first.summary
+                        reason: first.summary,
+                        backfillablePaths: backfillablePaths
                     )
                 )
             }
@@ -2133,6 +2227,37 @@ actor AgentToolOrchestrator {
         }
     }
 
+    /// Paths named by unverifiable claims that resolve under read grants and
+    /// have no recorded evidence yet — candidates for runtime evidence
+    /// backfill. Resolution reuses the deterministic grant resolver; no
+    /// answer text is interpreted.
+    private nonisolated func backfillableClaimPaths(
+        from claims: [AgentEvidenceClaim],
+        evidence: [AgentRunEvidenceRecord],
+        grants: [AgentLocalFileGrant]
+    ) -> [String] {
+        guard !grants.isEmpty else { return [] }
+        let resolver = AgentLocalPathResolver()
+        var seen = Set<String>()
+        var paths: [String] = []
+        for claim in claims {
+            guard let target = claim.target, target.hasPrefix("/") else { continue }
+            guard case .resolved(let resolution) = resolver.resolve(
+                target,
+                grants: grants,
+                access: .read,
+                target: .any
+            ) else {
+                continue
+            }
+            let path = URL(fileURLWithPath: resolution.path).standardizedFileURL.path
+            guard seen.insert(path).inserted else { continue }
+            guard !localReferenceIsBacked(path, by: evidence) else { continue }
+            paths.append(path)
+        }
+        return paths
+    }
+
     private nonisolated func unsupportedAnswerLocalReferences(
         in answer: String,
         evidence: [AgentRunEvidenceRecord],
@@ -2169,7 +2294,8 @@ actor AgentToolOrchestrator {
             kind: .unsupportedLocalReferences,
             reason: AgentRunText(
                 "The final answer references accessible local path(s) without recorded evidence: \(displayed)\(suffix). Call an available local file tool for those path(s), or answer without unsupported local references."
-            )
+            ),
+            backfillablePaths: unsupportedLocalReferences
         )
     }
 
