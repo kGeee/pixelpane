@@ -97,11 +97,13 @@ struct AgentKernelTextProtocolPromptBuilder: Sendable {
 
         return """
         Return exactly one JSON object and no Markdown.
-        Valid final answer format:
+        Valid final answer format (general knowledge):
         {"type":"final_answer","text":"answer text","grounding":{"basis":"general_knowledge","claims":[]}}
+        Valid final answer format (grounded in recorded tool observations):
+        {"type":"final_answer","text":"answer text","grounding":{"basis":"local_evidence","claims":[{"kind":"file_listing","target":"/path/to/folder"}]}}
         Grounding basis values: general_knowledge, local_evidence, capability_limitation.
-        Use local_evidence only with one or more claim kind values backed by recorded tool observations. If current local state is needed and no observation supports it, call an available tool.
-        Local evidence claim kind values: file_grants, process_snapshot, local_listeners, local_file, command_output, side_effect, temporal_context, visual_context.
+        Use local_evidence only with one or more claims, each {"kind":...,"target":...}, backed by recorded tool observations. If current local state is needed and no observation supports it, call an available tool.
+        Local evidence claim kind values: file_grants (granted locations), file_listing (folder contents or search results), local_file (file contents you read), process_snapshot, local_listeners, command_output, side_effect, temporal_context, visual_context.
         Valid tool call format:
         {"type":"tool_call","name":"tool_name","arguments":{"argument":"value"},"reason":"optional reason"}
         Tool schemas:

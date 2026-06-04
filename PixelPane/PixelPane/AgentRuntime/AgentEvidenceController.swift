@@ -124,6 +124,21 @@ nonisolated struct AgentEvidenceController: Sendable {
                 },
                 missing: "File search needs evidence containing the target path."
             )
+        case .folderListed:
+            // Discovery claims: "the folder contains X" / "these files exist".
+            // Backed by a recorded listing or search; the target may name the
+            // listed folder or one of the listed entries, or be omitted to
+            // lean on any recorded listing.
+            return matching(
+                claim,
+                evidence: evidence,
+                kinds: [.folderList, .fileSearch],
+                predicate: { record in
+                    matchesTarget(record.stringMetadata("path"), claim.target)
+                        || matchesLine(in: record.stringMetadata("paths"), target: claim.target)
+                },
+                missing: "Folder listing claims need folder-list or file-search evidence."
+            )
         case .fileChanged:
             return matching(
                 claim,

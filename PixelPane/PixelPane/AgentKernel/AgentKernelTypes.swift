@@ -170,6 +170,10 @@ nonisolated enum AgentKernelAnswerClaimKind: String, Codable, Equatable, Hashabl
     case processSnapshot = "process_snapshot"
     case localListeners = "local_listeners"
     case localFile = "local_file"
+    /// Discovery claims (which files exist / what a folder contains), backed
+    /// by folder-list or file-search evidence. Distinct from `localFile`,
+    /// which claims file *content* and requires file-read evidence.
+    case fileListing = "file_listing"
     case commandOutput = "command_output"
     case sideEffect = "side_effect"
     case temporalContext = "temporal_context"

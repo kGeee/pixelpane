@@ -56,6 +56,8 @@ enum AgentToolCallingFixtureHarness {
         try await testFolderEvidenceCannotSupportListenerGrounding()
         try await testModelRequestedListenerSnapshotRecordsEvidence()
         try await testToolLoopListsGrantedFolderAndContinues()
+        try await testFileListingClaimGroundsFolderAnswer()
+        try await testEmptyLocalEvidenceClaimsRepairToListingClaim()
         try await testSearchAndReadToolsRecordEvidence()
         try await testQuotedSearchUsesPreciseQuery()
         try await testMultipleQuotedSearchesCreateSeparateEvidence()
@@ -498,6 +500,87 @@ enum AgentToolCallingFixtureHarness {
         try expect(trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.folderList.rawValue }), "folder evidence should be recorded")
         try expect(!trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.localServer.rawValue }), "listener evidence should not be fabricated from folder evidence")
         try expect(harness.viewModel.state.activeStatus == .blocked, "listener claims should block without listener evidence")
+    }
+
+    @MainActor
+    private static func testFileListingClaimGroundsFolderAnswer() async throws {
+        // A "what is in my folder?" answer is a discovery claim: it must be
+        // groundable by folder-list evidence via the file_listing claim kind.
+        let harness = try await makeHarness(prefix: "grounding-file-listing")
+        try "fixture".write(to: harness.workspace.appendingPathComponent("fixture.txt"), atomically: true, encoding: .utf8)
+        let listingGrounding = AgentKernelAnswerGrounding(
+            basis: .localEvidence,
+            claims: [AgentKernelAnswerClaim(kind: .fileListing, target: harness.workspace.path)]
+        )
+        let adapter = tierBFixtureAdapter(
+            responses: [
+                .toolCall(name: "list_folder", arguments: ["path": harness.workspace.path], reason: nil),
+                groundedFinalAnswer("The folder contains fixture.txt.", grounding: listingGrounding)
+            ]
+        )
+        let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
+
+        let runID = try await harness.viewModel.startRun(
+            userMessage: "What is in my folder?",
+            context: AgentRunViewContext(title: "Grounding File Listing", contextID: "grounding-file-listing", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use the structured protocol.",
+            timeout: 4
+        )
+        try await harness.viewModel.waitForIdle(timeout: 6)
+        await harness.viewModel.refresh()
+
+        let trace = try await harness.store.traceProjection(runID: runID)
+        try expect(trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.folderList.rawValue }), "folder evidence should be recorded")
+        try expect(harness.viewModel.state.activeStatus == .completed, "file_listing claim backed by folder-list evidence should complete")
+    }
+
+    @MainActor
+    private static func testEmptyLocalEvidenceClaimsRepairToListingClaim() async throws {
+        // Replays the cloud chat1 failure: local_evidence with claims:[] is
+        // rejected, but the repair observation must teach the claim
+        // vocabulary so a compliant model can fix its declaration and finish.
+        let harness = try await makeHarness(prefix: "grounding-empty-claims")
+        try "fixture".write(to: harness.workspace.appendingPathComponent("fixture.txt"), atomically: true, encoding: .utf8)
+        let adapter = tierBFixtureAdapter(
+            responses: [
+                .toolCall(name: "list_folder", arguments: ["path": harness.workspace.path], reason: nil),
+                groundedFinalAnswer("The folder contains fixture.txt.", basis: .localEvidence),
+                groundedFinalAnswer(
+                    "The folder contains fixture.txt.",
+                    grounding: AgentKernelAnswerGrounding(
+                        basis: .localEvidence,
+                        claims: [AgentKernelAnswerClaim(kind: .fileListing, target: harness.workspace.path)]
+                    )
+                )
+            ]
+        )
+        let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
+
+        let runID = try await harness.viewModel.startRun(
+            userMessage: "What is in my folder?",
+            context: AgentRunViewContext(title: "Grounding Empty Claims", contextID: "grounding-empty-claims", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use the structured protocol.",
+            timeout: 4
+        )
+        try await harness.viewModel.waitForIdle(timeout: 6)
+        await harness.viewModel.refresh()
+
+        let trace = try await harness.store.traceProjection(runID: runID)
+        let repairMessages = trace.controlRecords.compactMap { record -> String? in
+            guard record.kind == .finalAnswerRepairObservation,
+                  case .modelMessage(let message) = record.payload else { return nil }
+            return message.content
+        }
+        try expect(repairMessages.contains(where: { $0.contains("file_listing") }), "repair observation should name the claim kind vocabulary")
+        try expect(harness.viewModel.state.activeStatus == .completed, "declaring file_listing after the repair observation should complete the run")
     }
 
     @MainActor

@@ -340,6 +340,7 @@ nonisolated enum AgentEvidenceClaimType: String, Codable, Equatable, Sendable {
     case visualContextRecorded = "visual_context_recorded"
     case fileExists = "file_exists"
     case fileSearchFound = "file_search_found"
+    case folderListed = "folder_listed"
     case fileChanged = "file_changed"
     case commandRan = "command_ran"
     case commandSucceeded = "command_succeeded"
@@ -375,6 +376,10 @@ nonisolated struct AgentEvidenceClaim: Codable, Equatable, Sendable {
 
     static func fileSearchFound(_ path: String) -> Self {
         Self(type: .fileSearchFound, target: path)
+    }
+
+    static func folderListed(_ path: String? = nil) -> Self {
+        Self(type: .folderListed, target: path)
     }
 
     static func fileChanged(_ path: String) -> Self {

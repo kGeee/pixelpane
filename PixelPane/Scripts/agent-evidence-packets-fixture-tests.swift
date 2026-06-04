@@ -13,6 +13,7 @@ enum AgentEvidencePacketsFixtureHarness {
 
     static func run() async throws {
         try await testFileSearchEvidenceSupportsExactPath()
+        try await testFolderListEvidenceSupportsListingClaims()
         try await testFileGrantInventoryEvidenceIsDiscoveryOnly()
         try await testLocalServerEvidenceSupportsFinalAnswerWithoutModelVerifier()
         try await testLocalListenerSnapshotEvidenceSupportsOnlyListenerClaims()
@@ -46,6 +47,37 @@ enum AgentEvidencePacketsFixtureHarness {
         try expect(decision.evidenceIDs == [evidence.evidenceID], "support should point to search evidence")
         try expect(packets.first?.keyFields["topPath"] == .string(targetPath), "context packet should expose answer-critical path")
         try expect(packets.first?.artifactID != nil, "search detail should be artifact-backed")
+    }
+
+    private static func testFolderListEvidenceSupportsListingClaims() async throws {
+        let harness = try await makeHarness()
+        let folderPath = "/Users/nayak/Documents/random-tests"
+        let filePath = "\(folderPath)/short_story.txt"
+        let evidence = try await harness.recorder.recordFolderList(
+            runID: harness.run.runID,
+            folderPath: folderPath,
+            entries: [
+                AgentFolderEntry(path: filePath, displayName: "short_story.txt", isDirectory: false, byteCount: 1_346)
+            ]
+        )
+
+        let records = await harness.store.evidenceArtifactSummary(runID: harness.run.runID).evidence
+        let byFolder = harness.controller.verify(.folderListed(folderPath), evidence: records)
+        let byEntry = harness.controller.verify(.folderListed(filePath), evidence: records)
+        let untargeted = harness.controller.verify(.folderListed(), evidence: records)
+        let wrongFolder = harness.controller.verify(.folderListed("/Users/nayak/Documents/other"), evidence: records)
+        // A listing observation says what exists, not what files contain.
+        let contentClaim = harness.controller.verify(
+            AgentEvidenceClaim(type: .localFileObserved, target: filePath),
+            evidence: records
+        )
+
+        try expect(byFolder.status == .supported, "folder-listing claim should be supported by listing evidence for the folder")
+        try expect(byFolder.evidenceIDs == [evidence.evidenceID], "support should point to the folder-list evidence")
+        try expect(byEntry.status == .supported, "folder-listing claim should be supported when targeting a listed entry")
+        try expect(untargeted.status == .supported, "untargeted listing claim should accept any recorded listing")
+        try expect(wrongFolder.status != .supported, "listing claim for an unlisted folder must not be supported")
+        try expect(contentClaim.status != .supported, "file-content claims must still require file-read evidence (GROUND-1)")
     }
 
     private static func testFileGrantInventoryEvidenceIsDiscoveryOnly() async throws {

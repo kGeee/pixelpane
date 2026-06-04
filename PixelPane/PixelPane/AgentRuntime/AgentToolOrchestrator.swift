@@ -176,7 +176,8 @@ actor AgentToolOrchestrator {
                         content: """
                         Runtime rejected the previous final answer.
                         Reason: \(rejection.reason.text)
-                        If the answer depends on a local_evidence claim kind, call an available tool. Otherwise return a final answer grounded as general_knowledge or capability_limitation.
+                        If the answer relies on recorded tool observations, declare grounding.claims as objects {"kind":...,"target":...} matching that evidence. Claim kind values: file_grants, file_listing (folder contents or search results), local_file (file contents you read), process_snapshot, local_listeners, command_output, side_effect, temporal_context, visual_context.
+                        If needed local state has no recorded observation yet, call an available tool. Only use general_knowledge or capability_limitation when the answer does not state local facts.
                         """
                     )
                     try await recordControlMessage(
@@ -1178,6 +1179,8 @@ actor AgentToolOrchestrator {
             return AgentEvidenceClaim(type: .localListenerSnapshotRecorded, target: claim.target)
         case .localFile:
             return AgentEvidenceClaim(type: .localFileObserved, target: claim.target)
+        case .fileListing:
+            return AgentEvidenceClaim(type: .folderListed, target: claim.target)
         case .commandOutput:
             return AgentEvidenceClaim(type: .commandOutputRecorded, target: claim.target)
         case .sideEffect:
