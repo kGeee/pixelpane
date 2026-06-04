@@ -50,7 +50,8 @@ final class AppState: ObservableObject {
             useCloudModels: storedUseCloudModels,
             allowCloudImageContext: storedUseCloudModels
                 ? AIRoutingSettings.cloudBackendAvailable
-                : storedAllowCloudImageContext
+                : storedAllowCloudImageContext,
+            pinnedLocalModelID: userDefaults.string(forKey: AIRoutingDefaults.pinnedLocalModelIDKey)
         )
         if mlxVisionSetupSnapshot.selectedModel == nil {
             aiRoutingSettings.useCloudModels = AIRoutingSettings.cloudBackendAvailable
@@ -485,6 +486,17 @@ final class AppState: ObservableObject {
     private func persistAIRoutingSettings() {
         userDefaults.set(aiRoutingSettings.useCloudModels, forKey: AIRoutingDefaults.useCloudModelsKey)
         userDefaults.set(aiRoutingSettings.allowCloudImageContext, forKey: AIRoutingDefaults.allowCloudImageContextKey)
+        if let pinned = aiRoutingSettings.pinnedLocalModelID {
+            userDefaults.set(pinned, forKey: AIRoutingDefaults.pinnedLocalModelIDKey)
+        } else {
+            userDefaults.removeObject(forKey: AIRoutingDefaults.pinnedLocalModelIDKey)
+        }
+    }
+
+    /// Pin Local mode to one installed model (nil restores automatic routing).
+    func setPinnedLocalModel(_ repositoryID: String?) {
+        aiRoutingSettings.pinnedLocalModelID = repositoryID
+        persistAIRoutingSettings()
     }
 
     private func runAgentModelConformanceCheck(

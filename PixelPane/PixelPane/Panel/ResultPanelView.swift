@@ -540,9 +540,13 @@ struct ResultPanelView: View {
 
     private var assistantModelStatusText: String {
         // Cloud Mode is an explicit single route; Local Mode auto-routes among
-        // checked local models, so the header advertises the pool, not one model.
+        // checked local models (or honors a user-pinned model), so the header
+        // advertises the actual policy.
         if routingSettings.effectiveMode == .cloud {
             return "Cloud"
+        }
+        if let pinnedID = routingSettings.pinnedLocalModelID {
+            return "Local · \(Self.compactModelName(pinnedID))"
         }
         return localAICapabilities.text.isAvailable ? "Auto · Local" : "Local setup needed"
     }
@@ -2420,6 +2424,21 @@ struct ResultPanelView: View {
     private func resolveModelPlan(need: AgentModelRunNeed) -> ResolvedModelPlan {
         if routingSettings.effectiveMode == .cloud {
             return ResolvedModelPlan(mode: .cloud, localModel: nil, repositoryID: nil)
+        }
+        // A pinned model overrides the router entirely (user chose a specific model).
+        // Falls through to automatic routing if the pinned model is no longer installed.
+        if let pinnedID = routingSettings.pinnedLocalModelID,
+           let pinned = mlxDetector.cachedModels().first(where: { $0.repositoryID == pinnedID && $0.isTextCompatible }),
+           let pinnedURL = pinned.localURL {
+            return ResolvedModelPlan(
+                mode: .local,
+                localModel: MLXVisionModelSelection(
+                    repositoryID: pinned.repositoryID,
+                    localPath: pinnedURL.path,
+                    smokeTestedAt: Date()
+                ),
+                repositoryID: pinned.repositoryID
+            )
         }
         let textRuntimeURL = mlxDetector.mlxTextGenerateExecutableURL()
         let selectedID = mlxModelStore.selectedModel?.repositoryID

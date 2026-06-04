@@ -163,8 +163,19 @@ struct SettingsView: View {
         .formStyle(.grouped)
     }
 
+    private static let autoRoutingSelectionID = "__pixelpane_auto_routing__"
+
     private var installedTextModels: [MLXVisionModel] {
         appState.mlxVisionSetupSnapshot.installedModels.filter { $0.isTextCompatible && $0.isInstalled }
+    }
+
+    /// Binds the model picker: the sentinel means automatic routing; any other value
+    /// pins Local mode to that installed model.
+    private var pinnedModelBinding: Binding<String> {
+        Binding(
+            get: { appState.aiRoutingSettings.pinnedLocalModelID ?? Self.autoRoutingSelectionID },
+            set: { appState.setPinnedLocalModel($0 == Self.autoRoutingSelectionID ? nil : $0) }
+        )
     }
 
     @ViewBuilder
@@ -179,11 +190,19 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Label("Automatic model routing", systemImage: "arrow.triangle.branch")
                         .font(.headline)
-                    Text("In Local mode, Pixel Pane picks the strongest agent-ready on-device model for each request. Check a model to measure its agent-tool readiness and make it eligible for routing. Cloud Mode (above) bypasses routing and uses Pixel Pane Cloud directly.")
+                    Text("In Local mode, Pixel Pane picks the strongest agent-ready on-device model for each request — or always uses one specific model if you choose it below. Check a model to measure its agent-tool readiness. Cloud Mode (above) bypasses routing and uses Pixel Pane Cloud directly.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
                 .padding(.vertical, 2)
+
+                Picker("Model", selection: pinnedModelBinding) {
+                    Text("Automatic (recommended)").tag(Self.autoRoutingSelectionID)
+                    ForEach(installedTextModels) { model in
+                        Text(model.repositoryID).tag(model.repositoryID)
+                    }
+                }
+                .help("Automatic lets the router pick the strongest agent-ready model per request; choosing a model always uses that one.")
 
                 if installedTextModels.isEmpty {
                     Text("No local models detected. Download an MLX text model so the router has something to route to.")

@@ -6,6 +6,19 @@ struct AIRoutingSettings: Equatable, Sendable {
 
     var useCloudModels: Bool
     var allowCloudImageContext: Bool
+    /// When set, Local mode uses exactly this installed model (by repository id)
+    /// instead of the automatic router. Nil = automatic routing.
+    var pinnedLocalModelID: String?
+
+    init(
+        useCloudModels: Bool,
+        allowCloudImageContext: Bool,
+        pinnedLocalModelID: String? = nil
+    ) {
+        self.useCloudModels = useCloudModels
+        self.allowCloudImageContext = allowCloudImageContext
+        self.pinnedLocalModelID = pinnedLocalModelID
+    }
 
     var effectiveMode: AIRoutingMode {
         useCloudModels && Self.cloudBackendAvailable ? .cloud : .local
@@ -48,4 +61,5 @@ enum AIRoutingMode: Equatable, Sendable {
 enum AIRoutingDefaults {
     static let useCloudModelsKey = "UseCloudModels"
     static let allowCloudImageContextKey = "AllowCloudImageContext"
+    static let pinnedLocalModelIDKey = "PinnedLocalModelID"
 }
