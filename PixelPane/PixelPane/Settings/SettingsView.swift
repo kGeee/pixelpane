@@ -203,7 +203,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Label("Automatic model routing", systemImage: "arrow.triangle.branch")
                         .font(.headline)
-                    Text("In Local mode, Pixel Pane picks the strongest agent-ready on-device model for each request — or always uses one specific model if you choose it below. Check a model to measure its agent-tool readiness. Cloud Mode (above) bypasses routing and uses Pixel Pane Cloud directly.")
+                    Text("In Local mode, Pixel Pane picks the strongest agent-ready on-device model for each request — or always uses one specific model if you choose it below. Check a model to validate text, vision (when supported), and agent tools. Cloud Mode (above) bypasses routing and uses Pixel Pane Cloud directly.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -226,15 +226,30 @@ struct SettingsView: View {
                         ModelRouterRow(
                             model: model,
                             tier: appState.agentReadinessTier(for: model),
-                            isChecking: appState.isRunningAgentModelConformanceCheck
+                            isActiveBaseModel: appState.mlxVisionSetupSnapshot.selectedModel?.repositoryID == model.repositoryID,
+                            isChecking: appState.isRunningMLXSetupCheck || appState.isRunningAgentModelConformanceCheck
                         ) {
-                            appState.checkAgentReadiness(for: model)
+                            appState.runMLXSetupCheck(for: model)
                         }
                     }
                 }
 
-                DisclosureGroup("Advanced · base model setup") {
-                    localAISectionContent
+                HStack(spacing: 8) {
+                    Button {
+                        appState.chooseMLXModelFolder()
+                    } label: {
+                        Label("Choose Folder", systemImage: "folder")
+                    }
+                    .disabled(appState.isRunningMLXSetupCheck)
+                    .help("Validate and add an MLX model from a local folder.")
+
+                    if appState.isRunningMLXSetupCheck || appState.isRunningAgentModelConformanceCheck {
+                        Button {
+                            appState.cancelMLXSetupCheck()
+                        } label: {
+                            Label("Cancel", systemImage: "xmark.circle")
+                        }
+                    }
                 }
             }
         }
@@ -637,6 +652,7 @@ struct SettingsView: View {
 private struct ModelRouterRow: View {
     let model: MLXVisionModel
     let tier: AgentModelConformanceDerivedTier?
+    let isActiveBaseModel: Bool
     let isChecking: Bool
     let onCheck: () -> Void
 
@@ -647,14 +663,24 @@ private struct ModelRouterRow: View {
                     .font(.callout)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text(model.approximateDiskSize)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Text(model.approximateDiskSize)
+                    if model.isVisionCompatible {
+                        Label("Vision", systemImage: "eye")
+                    }
+                    if isActiveBaseModel {
+                        Label("Active base", systemImage: "checkmark.circle")
+                            .foregroundStyle(.green)
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
             readinessBadge
             Button("Check", action: onCheck)
                 .disabled(isChecking)
+                .help("Validates this model: text generation, vision (when supported), and agent-tool readiness. Also makes it the active base model.")
         }
         .padding(.vertical, 2)
     }
