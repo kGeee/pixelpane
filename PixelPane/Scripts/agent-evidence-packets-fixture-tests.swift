@@ -14,6 +14,7 @@ enum AgentEvidencePacketsFixtureHarness {
     static func run() async throws {
         try await testFileSearchEvidenceSupportsExactPath()
         try await testFolderListEvidenceSupportsListingClaims()
+        try await testTemporalContextClaimsAcceptEchoedTargets()
         try await testFileGrantInventoryEvidenceIsDiscoveryOnly()
         try await testLocalServerEvidenceSupportsFinalAnswerWithoutModelVerifier()
         try await testLocalListenerSnapshotEvidenceSupportsOnlyListenerClaims()
@@ -47,6 +48,46 @@ enum AgentEvidencePacketsFixtureHarness {
         try expect(decision.evidenceIDs == [evidence.evidenceID], "support should point to search evidence")
         try expect(packets.first?.keyFields["topPath"] == .string(targetPath), "context packet should expose answer-critical path")
         try expect(packets.first?.artifactID != nil, "search detail should be artifact-backed")
+    }
+
+    private static func testTemporalContextClaimsAcceptEchoedTargets() async throws {
+        // Replays the cloud weather failure: the model echoed the recorded
+        // context block as its claim target ("currentDate: …, timeZone: …")
+        // and the exact-date predicate rejected an honest declaration.
+        // Temporal context is app-owned singleton evidence: existence is the
+        // verification; targets carry no extra signal.
+        let harness = try await makeHarness()
+        let context = AgentTemporalContext()
+        _ = try await harness.recorder.recordTemporalContext(
+            runID: harness.run.runID,
+            context: context
+        )
+
+        let records = await harness.store.evidenceArtifactSummary(runID: harness.run.runID).evidence
+        let echoed = harness.controller.verify(
+            AgentEvidenceClaim(
+                type: .temporalContextRecorded,
+                target: "currentDate: \(context.currentDate), timeZone: \(context.timeZoneIdentifier)"
+            ),
+            evidence: records
+        )
+        let bareDate = harness.controller.verify(
+            AgentEvidenceClaim(type: .temporalContextRecorded, target: context.currentDate),
+            evidence: records
+        )
+        let untargeted = harness.controller.verify(
+            AgentEvidenceClaim(type: .temporalContextRecorded),
+            evidence: records
+        )
+        let withoutEvidence = harness.controller.verify(
+            AgentEvidenceClaim(type: .temporalContextRecorded),
+            evidence: records.filter { $0.kind != AgentEvidenceKind.temporalContext.rawValue }
+        )
+
+        try expect(echoed.status == .supported, "echoed context-block targets should be supported")
+        try expect(bareDate.status == .supported, "bare current-date targets should be supported")
+        try expect(untargeted.status == .supported, "untargeted temporal claims should be supported")
+        try expect(withoutEvidence.status != .supported, "temporal claims still require recorded temporal evidence")
     }
 
     private static func testFolderListEvidenceSupportsListingClaims() async throws {

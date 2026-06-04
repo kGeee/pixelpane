@@ -86,11 +86,16 @@ nonisolated struct AgentEvidenceController: Sendable {
                 missing: "Side-effect claims need side-effect evidence."
             )
         case .temporalContextRecorded:
+            // Temporal context is app-owned singleton evidence: the kinds
+            // filter already proves the app recorded it this run, and the
+            // claim target cannot add verification (models naturally echo
+            // the whole context block, e.g. "currentDate: …, timeZone: …").
+            // Requiring an exact currentDate echo only rejects honest claims.
             return matching(
                 claim,
                 evidence: evidence,
                 kinds: [.temporalContext],
-                predicate: { record in matchesTarget(record.stringMetadata("currentDate"), claim.target) },
+                predicate: { record in record.stringMetadata("currentDate") != nil },
                 missing: "Temporal claims need temporal context evidence."
             )
         case .visualContextRecorded:
