@@ -548,7 +548,12 @@ struct ResultPanelView: View {
         if let pinnedID = routingSettings.pinnedLocalModelID {
             return "Local · \(Self.compactModelName(pinnedID))"
         }
-        return localAICapabilities.text.isAvailable ? "Auto · Local" : "Local setup needed"
+        // The async capability probe reports "unknown" for a moment after launch; the
+        // persisted model selection is known immediately, so consult both to avoid
+        // flashing "setup needed" at startup on a fully configured install.
+        let hasUsableLocalModel = localAICapabilities.text.isAvailable
+            || mlxModelStore.selectedModel != nil
+        return hasUsableLocalModel ? "Auto · Local" : "Local setup needed"
     }
 
     private var selectedModelName: String? {
