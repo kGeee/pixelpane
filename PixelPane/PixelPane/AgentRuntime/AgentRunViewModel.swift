@@ -237,6 +237,15 @@ final class AgentRunViewModel: ObservableObject {
             let store = try AgentRunStore()
             return AgentRunViewModel(store: store)
         } catch {
+            // The durable store exists but could not be read (schema drift or
+            // disk damage). Quarantine the unreadable snapshot and reopen
+            // fresh in the same durable location, so new history persists.
+            // Silently degrading to a throwaway temp store loses every
+            // subsequent chat; that stays a true last resort only.
+            NSLog("AgentRunStore failed to open; attempting quarantine-recover: \(error)")
+            if let recovered = try? AgentRunStore.quarantiningUnreadableStore() {
+                return AgentRunViewModel(store: recovered)
+            }
             let fallbackRoot = FileManager.default.temporaryDirectory
                 .appendingPathComponent("pixel-pane-agent-runs-\(UUID().uuidString)", isDirectory: true)
             let store = try! AgentRunStore(rootDirectory: fallbackRoot)
@@ -566,6 +575,20 @@ final class AgentRunViewModel: ObservableObject {
         try await runtime.clearAll()
         sessionID = nil
         activeRunID = nil
+        await refresh(recovery: nil)
+    }
+
+    /// Saved-chat summaries for history UI (sessions with ≥1 user message).
+    func sessionSummaries(limit: Int? = nil) async -> [AgentRunSessionSummary] {
+        await store.sessionSummaries(limit: limit)
+    }
+
+    func deleteSession(sessionID: UUID) async throws {
+        try await store.deleteSession(sessionID: sessionID)
+        if self.sessionID == sessionID {
+            self.sessionID = nil
+            activeRunID = nil
+        }
         await refresh(recovery: nil)
     }
 

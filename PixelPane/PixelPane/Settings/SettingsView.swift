@@ -378,7 +378,7 @@ struct SettingsView: View {
     }
 
     private var chatHistorySettings: some View {
-        ChatHistorySettingsView(store: appState.chatHistory)
+        ChatHistorySettingsView()
     }
 
     private var routingModeSection: some View {
@@ -784,8 +784,11 @@ private struct LocalFilesSettingsView: View {
     }
 }
 
+/// Backed by the durable agent run store — the single place chats persist.
 private struct ChatHistorySettingsView: View {
-    @ObservedObject var store: ChatHistoryStore
+    @State private var viewModel: AgentRunViewModel?
+    @State private var summaries: [AgentRunSessionSummary] = []
+    @State private var didLoad = false
 
     var body: some View {
         Form {
@@ -795,32 +798,35 @@ private struct ChatHistorySettingsView: View {
                     .foregroundStyle(.secondary)
 
                 HStack {
-                    LabeledContent("Saved chats", value: "\(store.sessions.filter { !$0.turns.isEmpty }.count)")
+                    LabeledContent("Saved chats", value: didLoad ? "\(summaries.count)" : "…")
 
                     Spacer()
 
                     Button(role: .destructive) {
-                        store.clearAll()
+                        Task {
+                            try? await viewModel?.clearHistory()
+                            await reload()
+                        }
                     } label: {
                         Label("Clear Chat History", systemImage: "trash")
                     }
-                    .disabled(store.sessions.isEmpty)
+                    .disabled(summaries.isEmpty)
                 }
             }
 
-            if !store.sessions.isEmpty {
+            if !summaries.isEmpty {
                 Section("Recent") {
-                    ForEach(store.recentSessions(limit: 12)) { session in
+                    ForEach(summaries.prefix(12)) { session in
                         HStack(spacing: 10) {
-                            Image(systemName: session.contextKind == .capture ? "viewfinder" : "bubble.left.and.bubble.right")
+                            Image(systemName: contextDisplay(session).icon)
                                 .foregroundStyle(.secondary)
                                 .frame(width: 20)
 
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(session.displayTitle)
+                                Text(displayTitle(session))
                                     .font(.system(size: 13, weight: .semibold))
                                     .lineLimit(1)
-                                Text("\(session.contextKind.displayName) - \(session.turns.count) messages")
+                                Text("\(contextDisplay(session).name) - \(session.userMessageCount) message\(session.userMessageCount == 1 ? "" : "s")")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -828,7 +834,10 @@ private struct ChatHistorySettingsView: View {
                             Spacer()
 
                             Button {
-                                store.deleteSession(session)
+                                Task {
+                                    try? await viewModel?.deleteSession(sessionID: session.id)
+                                    await reload()
+                                }
                             } label: {
                                 Image(systemName: "minus.circle")
                             }
@@ -840,6 +849,29 @@ private struct ChatHistorySettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .task {
+            if viewModel == nil {
+                viewModel = AgentRunViewModel.makeDefault()
+            }
+            await reload()
+        }
+    }
+
+    private func reload() async {
+        summaries = await viewModel?.sessionSummaries() ?? []
+        didLoad = true
+    }
+
+    private func displayTitle(_ session: AgentRunSessionSummary) -> String {
+        let trimmed = session.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? contextDisplay(session).name : trimmed
+    }
+
+    private func contextDisplay(_ session: AgentRunSessionSummary) -> (name: String, icon: String) {
+        if let kind = session.contextKind.flatMap(ChatSessionContextKind.init(rawValue:)) {
+            return (kind.displayName, kind == .capture ? "viewfinder" : "bubble.left.and.bubble.right")
+        }
+        return (ChatSessionContextKind.assistant.displayName, "bubble.left.and.bubble.right")
     }
 }
 

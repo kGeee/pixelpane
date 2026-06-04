@@ -11,7 +11,6 @@ struct ResultPanelView: View {
     let routingSettings: AIRoutingSettings
     let localAICapabilities: AIBackendCapabilities
     @ObservedObject var localFileAccess: LocalFileAccessStore
-    @ObservedObject var chatHistory: ChatHistoryStore
     @StateObject private var agentRunViewModel: AgentRunViewModel
     let presentationStyle: ResultPanelPresentationStyle
     let startsInAssistantMode: Bool
@@ -61,7 +60,6 @@ struct ResultPanelView: View {
         routingSettings: AIRoutingSettings,
         localAICapabilities: AIBackendCapabilities,
         localFileAccess: LocalFileAccessStore,
-        chatHistory: ChatHistoryStore,
         presentationStyle: ResultPanelPresentationStyle = .floatingNearSelection,
         startsInAssistantMode: Bool = false,
         startsExpanded: Bool = false,
@@ -74,7 +72,6 @@ struct ResultPanelView: View {
         self.routingSettings = routingSettings
         self.localAICapabilities = localAICapabilities
         self.localFileAccess = localFileAccess
-        self.chatHistory = chatHistory
         self.presentationStyle = presentationStyle
         self.startsInAssistantMode = startsInAssistantMode
         self.startsExpanded = startsExpanded
@@ -119,16 +116,14 @@ struct ResultPanelView: View {
         var outputStates: [PanelActionKind: PanelActionOutputState] = [.extractText: extractState]
         outputStates[smartDefaultSelection.action] = initialState
         _selectedAction = State(initialValue: smartDefaultSelection.action)
-        let restoredSession = Self.restoredChatSession(for: result, in: chatHistory)
-        let restoredTurns = restoredSession?.turns.map { AskConversationTurn(storedTurn: $0) } ?? []
-        var initialToolState = restoredSession?.toolState ?? Self.initialAssistantToolState(for: result)
+        var initialToolState = Self.initialAssistantToolState(for: result)
         if result.sourceType == .ocr {
             initialToolState.updateVisualContext(Self.captureVisualState(for: result, imageWillBeSent: false))
         }
-        _askTurns = State(initialValue: restoredTurns)
+        _askTurns = State(initialValue: [])
         _assistantToolState = State(initialValue: initialToolState)
-        _chatContextID = State(initialValue: restoredSession?.contextID ?? Self.defaultChatContextID(for: result))
-        _chatContextKind = State(initialValue: restoredSession?.contextKind ?? Self.defaultChatContextKind(for: result))
+        _chatContextID = State(initialValue: Self.defaultChatContextID(for: result))
+        _chatContextKind = State(initialValue: Self.defaultChatContextKind(for: result))
         _activeText = State(initialValue: initialState.text)
         _actionSourceLabel = State(initialValue: initialState.sourceLabel)
         _actionTargetLabel = State(initialValue: initialState.targetLabel)
@@ -177,21 +172,6 @@ struct ResultPanelView: View {
             .onChange(of: agentRunViewModel.state) { _, _ in
                 applyAgentRunProjectionChange()
             }
-    }
-
-    private static func restoredChatSession(
-        for result: CaptureResult,
-        in store: ChatHistoryStore
-    ) -> StoredChatSession? {
-        switch result.sourceType {
-        case .assistant:
-            nil
-        case .ocr:
-            store.session(
-                contextID: defaultChatContextID(for: result),
-                kind: defaultChatContextKind(for: result)
-            )
-        }
     }
 
     private static func defaultChatContextID(for result: CaptureResult) -> String {
@@ -2823,7 +2803,6 @@ struct ResultPanelView: View {
         guard loadingActions.isEmpty, !isAskRunning else { return }
         Task {
             try? await agentRunViewModel.clearHistory()
-            chatHistory.clearAll()
             askTurns = []
             setOutputState(askOutputState(), for: .ask)
             updateExpandedNotchSizeIfNeeded()

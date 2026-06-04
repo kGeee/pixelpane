@@ -17,6 +17,8 @@ enum AgentRunStoreFixtureHarness {
         try await testWaitEvidenceArtifactAndSideEffectRecords()
         try await testControlRecordsReplayAndReload()
         try await testSQLiteSchemaAndLegacyImport()
+        try await testToolRunContextDecodesLegacyPayloads()
+        try await testSessionSummariesAndDeleteSession()
         try await testSchemaMigration()
         try await testInterruptedRunDetection()
         try await testTerminalStatusGuard()
@@ -227,6 +229,52 @@ enum AgentRunStoreFixtureHarness {
         let reloaded = try AgentRunStore(rootDirectory: root)
         let reloadedMessages = await reloaded.visibleMessages(sessionID: session.id)
         try expect(reloadedMessages == messages, "imported SQLite projection should survive reload")
+    }
+
+    private static func testToolRunContextDecodesLegacyPayloads() async throws {
+        // Regression: durable stores written before grantedScopes/deniedScopes/
+        // supportedOperations existed must keep loading. A strict decoder here
+        // made AgentRunStore() throw on the legacy snapshot, silently dropping
+        // the app to a throwaway temp store (no durable chat history).
+        let legacyJSON = Data(#"{"runMode":"proposalOnly"}"#.utf8)
+        let context = try JSONDecoder().decode(AgentToolRunContext.self, from: legacyJSON)
+        try expect(context.runMode == .proposalOnly, "legacy context should keep its run mode")
+        try expect(context.localGrants.isEmpty, "missing local grants should default to empty")
+        try expect(context.grantedScopes.isEmpty, "missing granted scopes should default to empty")
+        try expect(context.deniedScopes.isEmpty, "missing denied scopes should default to empty")
+        try expect(
+            context.supportedOperations == AgentToolExecutionCapabilities.activeLocalRuntimeOperations,
+            "missing supported operations should default to the active runtime set"
+        )
+    }
+
+    private static func testSessionSummariesAndDeleteSession() async throws {
+        let root = try makeTemporaryRoot()
+        let store = try AgentRunStore(rootDirectory: root)
+
+        let chatted = try await store.createSession(title: "what is in my folder?", contextID: "chat-1", contextKind: "assistant")
+        let chattedRun = try await store.createRun(sessionID: chatted.id, status: .completed)
+        _ = try await store.appendEvent(
+            runID: chattedRun.runID,
+            kind: .userMessage,
+            payload: .text(AgentRunText("what is in my folder?"))
+        )
+        _ = try await store.createSession(title: "Chat", contextID: "chat-empty", contextKind: "assistant")
+
+        let summaries = await store.sessionSummaries()
+        try expect(summaries.count == 1, "only sessions with a user message count as saved chats")
+        try expect(summaries.first?.id == chatted.id, "summary should describe the chatted session")
+        try expect(summaries.first?.userMessageCount == 1, "summary should count user messages")
+
+        try await store.deleteSession(sessionID: chatted.id)
+        let afterDelete = await store.sessionSummaries()
+        try expect(afterDelete.isEmpty, "deleting the session should remove it from summaries")
+        let remainingSessions = await store.allSessions()
+        try expect(remainingSessions.count == 1, "unrelated sessions should survive a delete")
+
+        let reloaded = try AgentRunStore(rootDirectory: root)
+        let reloadedSummaries = await reloaded.sessionSummaries()
+        try expect(reloadedSummaries.isEmpty, "session delete should persist across reload")
     }
 
     private static func testSchemaMigration() async throws {

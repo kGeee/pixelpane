@@ -130,6 +130,19 @@ nonisolated struct AgentToolRunContext: Codable, Equatable, Sendable {
         self.supportedOperations = supportedOperations
     }
 
+    /// Fields added after the first persisted schema fall back to the same
+    /// defaults the memberwise initializer uses, so durable stores written by
+    /// older builds keep loading instead of failing the whole snapshot.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        runMode = try container.decode(AgentRunPermissionMode.self, forKey: .runMode)
+        localGrants = try container.decodeIfPresent([AgentLocalFileGrant].self, forKey: .localGrants) ?? []
+        grantedScopes = try container.decodeIfPresent([AgentPermissionScope].self, forKey: .grantedScopes) ?? []
+        deniedScopes = try container.decodeIfPresent([AgentPermissionScope].self, forKey: .deniedScopes) ?? []
+        supportedOperations = try container.decodeIfPresent(Set<AgentToolOperationKind>.self, forKey: .supportedOperations)
+            ?? AgentToolExecutionCapabilities.activeLocalRuntimeOperations
+    }
+
     static let plainChat = AgentToolRunContext(runMode: .plainChat)
 }
 
@@ -659,6 +672,16 @@ nonisolated struct AgentRunTraceProjection: Codable, Equatable, Sendable {
     let sideEffects: [AgentRunSideEffectRecord]
     let controlRecords: [AgentRunControlRecord]
     let events: [AgentRunEventRecord]
+}
+
+/// History-UI projection of a stored session: only sessions with at least one
+/// user message qualify, so empty panel opens are not listed as saved chats.
+nonisolated struct AgentRunSessionSummary: Equatable, Identifiable, Sendable {
+    let id: UUID
+    let title: String
+    let contextKind: String?
+    let updatedAt: Date
+    let userMessageCount: Int
 }
 
 nonisolated struct AgentRunStoreSnapshot: Codable, Equatable, Sendable {

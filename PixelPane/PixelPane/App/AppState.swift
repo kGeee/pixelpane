@@ -17,7 +17,6 @@ final class AppState: ObservableObject {
     @Published private(set) var hasCompletedFirstCaptureTutorial: Bool
     @Published private(set) var aiRoutingSettings: AIRoutingSettings
     let localFileAccess: LocalFileAccessStore
-    let chatHistory: ChatHistoryStore
 
     private lazy var overlayCoordinator = OverlayCoordinator()
     private lazy var panelController = ResultPanelController()
@@ -41,7 +40,6 @@ final class AppState: ObservableObject {
         self.userDefaults = userDefaults
         agentModelConformanceStore = AgentModelConformanceStore(defaults: userDefaults)
         localFileAccess = LocalFileAccessStore(userDefaults: userDefaults)
-        chatHistory = ChatHistoryStore(userDefaults: userDefaults)
         hasCompletedOnboarding = userDefaults.bool(forKey: onboardingCompletedKey)
         hasCompletedFirstCaptureTutorial = userDefaults.bool(forKey: firstCaptureTutorialCompletedKey)
         let storedUseCloudModels = userDefaults.bool(forKey: AIRoutingDefaults.useCloudModelsKey)
@@ -140,7 +138,6 @@ final class AppState: ObservableObject {
             routingSettings: aiRoutingSettings,
             localAICapabilities: localAICapabilities,
             localFileAccess: localFileAccess,
-            chatHistory: chatHistory,
             startsInAssistantMode: true,
             onTryAgain: { [weak self] in
                 self?.startCapture()
@@ -153,7 +150,6 @@ final class AppState: ObservableObject {
             routingSettings: aiRoutingSettings,
             localAICapabilities: localAICapabilities,
             localFileAccess: localFileAccess,
-            chatHistory: chatHistory,
             onTryAgain: { [weak self] in
                 self?.startCapture()
             }
@@ -168,8 +164,7 @@ final class AppState: ObservableObject {
         panelController.refreshRoutingSettings(
             aiRoutingSettings,
             localAICapabilities: localAICapabilities,
-            localFileAccess: localFileAccess,
-            chatHistory: chatHistory
+            localFileAccess: localFileAccess
         )
     }
 
@@ -431,8 +426,7 @@ final class AppState: ObservableObject {
                 routingSettings: aiRoutingSettings,
                 localAICapabilities: localAICapabilities,
                 localFileAccess: localFileAccess,
-                chatHistory: chatHistory,
-                startsInAssistantMode: true,
+                    startsInAssistantMode: true,
                 onTryAgain: { [weak self] in
                     self?.startCapture()
                 }
@@ -455,8 +449,7 @@ final class AppState: ObservableObject {
                 routingSettings: aiRoutingSettings,
                 localAICapabilities: localAICapabilities,
                 localFileAccess: localFileAccess,
-                chatHistory: chatHistory,
-                startsInAssistantMode: true,
+                    startsInAssistantMode: true,
                 onTryAgain: { [weak self] in
                     self?.startCapture()
                 }
@@ -500,8 +493,7 @@ final class AppState: ObservableObject {
         panelController.refreshRoutingSettings(
             aiRoutingSettings,
             localAICapabilities: localAICapabilities,
-            localFileAccess: localFileAccess,
-            chatHistory: chatHistory
+            localFileAccess: localFileAccess
         )
     }
 
@@ -594,8 +586,7 @@ final class AppState: ObservableObject {
         panelController.refreshRoutingSettings(
             aiRoutingSettings,
             localAICapabilities: localAICapabilities,
-            localFileAccess: localFileAccess,
-            chatHistory: chatHistory
+            localFileAccess: localFileAccess
         )
     }
 }
