@@ -1783,7 +1783,17 @@ actor AgentToolOrchestrator {
             && hasSubstantiveAnswerEvidence(evidence, requirements: requirements)
         let hasRecordedEvidence = hasSubstantiveAnswerEvidence(evidence, requirements: requirements)
             || (!requirements.isEmpty && hasAnyToolEvidence(evidence))
-        let shouldDisableTools = baseRequest.tools.isEmpty || requirementsSatisfied
+        // An invalid call to an AVAILABLE evidence-gathering tool is the
+        // model declaring unmet evidence need; recovery must keep the
+        // toolset even when preflight requirements are already satisfied —
+        // satisfied requirements do not mean the answer's evidence is
+        // complete. Unknown or side-effect tool names get no such benefit.
+        let invalidToolName = failure.metadata["toolName"]?.stringValue
+        let invalidCallSignalsEvidenceNeed = invalidToolName.map { name in
+            baseRequest.tools.contains { $0.name == name } && !Self.isSideEffectTool(name)
+        } ?? false
+        let shouldDisableTools = baseRequest.tools.isEmpty
+            || (requirementsSatisfied && !invalidCallSignalsEvidenceNeed)
         let sideEffectReady = !profile.requiresSideEffectEvidenceBeforeCompletion ||
             Set(profile.requiredSideEffectToolNames).isSubset(of: terminalRequiredSideEffectToolNames(evidence))
         guard sideEffectReady else { return nil }

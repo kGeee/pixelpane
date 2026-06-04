@@ -60,6 +60,7 @@ enum AgentToolCallingFixtureHarness {
         try await testApproximateLocationContextGroundsLocationClaims()
         try await testEmptyLocalEvidenceClaimsRepairToListingClaim()
         try await testEvidenceBackfillReadsCitedPathAndRecovers()
+        try await testGrantNameReferencesClassifyAsLocalState()
         try await testSearchAndReadToolsRecordEvidence()
         try await testQuotedSearchUsesPreciseQuery()
         try await testMultipleQuotedSearchesCreateSeparateEvidence()
@@ -633,6 +634,48 @@ enum AgentToolCallingFixtureHarness {
         }
         try expect(repairMessages.contains(where: { $0.contains("file_listing") }), "repair observation should name the claim kind vocabulary")
         try expect(harness.viewModel.state.activeStatus == .completed, "declaring file_listing after the repair observation should complete the run")
+    }
+
+    @MainActor
+    private static func testGrantNameReferencesClassifyAsLocalState() async throws {
+        // Replays chat1 (7B): "whats the color scheme of the pixelpane site?"
+        // referenced the user's "pixel-pane-site" grant, but exact-string
+        // matching missed it, so the question was never classified as
+        // local-state and a fabricated answer completed. Grant names match
+        // normalized (case/separator-folded) token runs — identifiers the
+        // user declared, never shipped vocabulary.
+        let harness = try await makeHarness(prefix: "grant-name-classify")
+        let site = harness.workspace.appendingPathComponent("pixel-pane-site", isDirectory: true)
+        try FileManager.default.createDirectory(at: site, withIntermediateDirectories: true)
+        let siteGrant = AgentLocalFileGrant(path: site.path, isDirectory: true)
+        let adapter = FixtureAgentKernelAdapter(responses: [])
+        let config = toolConfig(grants: [siteGrant], runMode: .readOnly, adapter: adapter)
+
+        let fuzzyReference = AgentRunTaskProfile.classify(
+            userMessage: "whats the color scheme of the pixelpane site?",
+            tools: config.tools,
+            context: config.context
+        )
+        try expect(fuzzyReference.isLocalStateRequest, "separator-folded grant name references should classify as local-state")
+        try expect(
+            fuzzyReference.taskFrame.localReferences.contains(where: { $0.path == site.path }),
+            "the fuzzy reference should resolve to the named grant"
+        )
+
+        let spacedReference = AgentRunTaskProfile.classify(
+            userMessage: "describe my pixel pane site for me",
+            tools: config.tools,
+            context: config.context
+        )
+        try expect(spacedReference.isLocalStateRequest, "spaced grant name references should classify as local-state")
+
+        let unrelated = AgentRunTaskProfile.classify(
+            userMessage: "what is the latest news about swift concurrency?",
+            tools: config.tools,
+            context: config.context
+        )
+        try expect(!unrelated.isLocalStateRequest, "questions that never reference a grant must stay unclassified (no blind evidence)")
+        try expect(unrelated.taskFrame.localReferences.isEmpty, "no grant reference should be fabricated from unrelated wording")
     }
 
     @MainActor

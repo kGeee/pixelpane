@@ -500,7 +500,8 @@ nonisolated struct AgentTaskFrame: Codable, Equatable, Sendable {
         for grant in grants {
             let displayName = grant.url.lastPathComponent.lowercased()
             if quoted.contains(grant.path.lowercased())
-                || (!displayName.isEmpty && quoted.contains(displayName)) {
+                || (!displayName.isEmpty && quoted.contains(displayName))
+                || containsNormalizedGrantName(text, grantDisplayName: displayName) {
                 references.append(
                     LocalReference(
                         path: grant.path,
@@ -723,6 +724,41 @@ nonisolated struct AgentTaskFrame: Codable, Equatable, Sendable {
             guard let valueRange = Range(match.range, in: text) else { return nil }
             return String(text[valueRange]).trimmingCharacters(in: Self.pathTrailingPunctuation)
         }
+    }
+
+    /// Identifier matching against the user's declared grant names, folded
+    /// for case and separators so "pixelpane site" matches the grant
+    /// "pixel-pane-site". Two rules keep this precise:
+    /// - a window must exactly equal the normalized grant name (never
+    ///   substring containment), so generic names cannot match inside
+    ///   unrelated words; and
+    /// - hyphens/underscores/dots are identifier joiners: a longer joined
+    ///   identifier ("pixel-pane-tool-evidence-planner") is one word, so a
+    ///   grant named "pixel-pane" does not match a fragment of it.
+    private static func containsNormalizedGrantName(_ text: String, grantDisplayName: String) -> Bool {
+        let normalizedName = normalizedIdentifier(grantDisplayName)
+        guard normalizedName.count >= 4 else { return false }
+        let words = text.lowercased()
+            .split { character in
+                !(character.isLetter || character.isNumber
+                    || character == "-" || character == "_" || character == ".")
+            }
+            .map { normalizedIdentifier(String($0)) }
+            .filter { !$0.isEmpty }
+        guard !words.isEmpty else { return false }
+        for start in words.indices {
+            var joined = ""
+            for index in start..<words.count {
+                joined += words[index]
+                if joined.count > normalizedName.count { break }
+                if joined == normalizedName { return true }
+            }
+        }
+        return false
+    }
+
+    private static func normalizedIdentifier(_ value: String) -> String {
+        value.lowercased().filter { $0.isLetter || $0.isNumber }
     }
 
     private static func expandedHomePath(_ rawPath: String) -> String {
