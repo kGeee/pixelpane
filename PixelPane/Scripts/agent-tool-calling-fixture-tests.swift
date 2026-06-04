@@ -61,6 +61,7 @@ enum AgentToolCallingFixtureHarness {
         try await testEmptyLocalEvidenceClaimsRepairToListingClaim()
         try await testEvidenceBackfillReadsCitedPathAndRecovers()
         try await testEvidenceBackfillRunsListenerSnapshotForFabricatedClaim()
+        try await testEmbeddedToolCallInAnswerTextIsExecuted()
         try await testGrantNameReferencesClassifyAsLocalState()
         try await testSearchAndReadToolsRecordEvidence()
         try await testQuotedSearchUsesPreciseQuery()
@@ -689,6 +690,71 @@ enum AgentToolCallingFixtureHarness {
         )
         try expect(!backfillObservations.isEmpty, "backfill snapshot observation should be durable with its source marked")
         try expect(harness.viewModel.state.activeStatus == .completed, "the re-declared claim should verify against the backfilled snapshot")
+    }
+
+    @MainActor
+    private static func testEmbeddedToolCallInAnswerTextIsExecuted() async throws {
+        // Replays the Hermes deflection: the model wrote the read_file
+        // tool-call JSON inside its answer text and told the user to run it.
+        // A schema-valid call to an available read-only tool is a protocol
+        // message in the wrong channel; the runtime executes it as the
+        // intended action instead of accepting a non-answer.
+        let harness = try await makeHarness(prefix: "embedded-tool-call")
+        let cited = harness.workspace.appendingPathComponent("styles.css")
+        try ":root { --ink: #0b0b0c; }".write(to: cited, atomically: true, encoding: .utf8)
+        let citedPath = cited.path
+
+        let deflection = """
+        To view the colors, you can use the read_file tool. Here's how:
+
+        ```json
+        {
+          "name": "read_file",
+          "arguments": {
+            "path": "\(citedPath)"
+          }
+        }
+        ```
+
+        This will return the content of the file.
+        """
+        let adapter = tierBFixtureAdapter(
+            responses: [
+                .finalAnswer(deflection),
+                groundedFinalAnswer(
+                    "The background color is #0b0b0c.",
+                    grounding: AgentKernelAnswerGrounding(
+                        basis: .localEvidence,
+                        claims: [AgentKernelAnswerClaim(kind: .localFile, target: citedPath)]
+                    )
+                )
+            ]
+        )
+        let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
+
+        let runID = try await harness.viewModel.startRun(
+            userMessage: "What is the background color?",
+            context: AgentRunViewContext(title: "Embedded Tool Call", contextID: "embedded-tool-call", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use the structured protocol.",
+            timeout: 4
+        )
+        try await harness.viewModel.waitForIdle(timeout: 6)
+        await harness.viewModel.refresh()
+
+        let trace = try await harness.store.traceProjection(runID: runID)
+        try expect(
+            trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.fileRead.rawValue && $0.metadata["path"]?.stringValue == citedPath }),
+            "the embedded read_file call should be executed and recorded as evidence"
+        )
+        try expect(
+            harness.viewModel.state.messages.last?.text.text.contains("#0b0b0c") == true,
+            "the follow-up answer should use the read content, not the deflection"
+        )
+        try expect(harness.viewModel.state.activeStatus == .completed, "the run should complete after executing the embedded call")
     }
 
     @MainActor

@@ -126,7 +126,18 @@ actor AgentToolOrchestrator {
             )
             try Task.checkCancellation()
 
-            if let finalAnswer = Self.finalAnswer(from: response.events) {
+            // Protocol-channel recovery: a final answer whose text embeds a
+            // schema-valid call to an available, non-side-effecting tool is a
+            // tool call delivered in the wrong channel (models sometimes
+            // write the JSON into the answer and tell the user to run it).
+            // The intent is machine-readable, so execute it as the tool call
+            // it is instead of accepting a deflection. Side-effect tools are
+            // never recovered this way.
+            let embeddedAnswerToolCall = Self.finalAnswer(from: response.events)
+                .flatMap { Self.embeddedToolCall(in: $0.text, tools: baseRequest.tools) }
+                .flatMap { Self.isSideEffectTool($0.name) ? nil : $0 }
+
+            if let finalAnswer = Self.finalAnswer(from: response.events), embeddedAnswerToolCall == nil {
                 let answerDecision = await finalAnswerDecision(
                     finalAnswer,
                     runID: runID,
@@ -261,7 +272,14 @@ actor AgentToolOrchestrator {
                 }
             }
 
-            guard let toolCall = Self.firstToolCall(from: response.events) else {
+            if embeddedAnswerToolCall != nil {
+                try await store.appendEvent(
+                    runID: runID,
+                    kind: .providerDiagnostic,
+                    payload: .diagnostic(AgentRunText("Final answer embedded a tool call in its text; executing it as the intended action."))
+                )
+            }
+            guard let toolCall = embeddedAnswerToolCall ?? Self.firstToolCall(from: response.events) else {
                 try await failRun(runID: runID, reason: AgentRunText(AgentToolOrchestratorError.noFinalAnswer.description))
                 return
             }
@@ -2562,6 +2580,96 @@ actor AgentToolOrchestrator {
             }
         }
         return nil
+    }
+
+    /// A schema-valid tool call embedded in answer text: every top-level JSON
+    /// object in the text is parsed structurally and accepted only when its
+    /// name matches an available tool and its arguments are scalar. No text
+    /// patterns are interpreted — this recovers protocol messages delivered
+    /// in the wrong channel.
+    nonisolated static func embeddedToolCall(
+        in text: String,
+        tools: [AgentKernelToolSchema]
+    ) -> AgentKernelToolCall? {
+        guard !tools.isEmpty, text.contains("{") else { return nil }
+        for candidate in jsonObjectCandidates(in: text, limit: 8) {
+            guard let data = candidate.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                continue
+            }
+            if let type = object["type"] as? String, type != "tool_call" {
+                continue
+            }
+            guard let name = object["name"] as? String,
+                  tools.contains(where: { $0.name == name }) else {
+                continue
+            }
+            let rawArguments = object["arguments"] as? [String: Any] ?? [:]
+            var arguments: [String: String] = [:]
+            var argumentsAreScalar = true
+            for (key, value) in rawArguments {
+                if let string = value as? String {
+                    arguments[key] = string
+                } else if let number = value as? NSNumber {
+                    arguments[key] = number.stringValue
+                } else {
+                    argumentsAreScalar = false
+                    break
+                }
+            }
+            guard argumentsAreScalar else { continue }
+            return AgentKernelToolCall(
+                name: name,
+                arguments: arguments,
+                reason: object["reason"] as? String
+            )
+        }
+        return nil
+    }
+
+    /// Top-level `{...}` runs in the text, found by a string-aware balanced
+    /// brace scan (works inside or outside code fences).
+    private nonisolated static func jsonObjectCandidates(in text: String, limit: Int) -> [String] {
+        var candidates: [String] = []
+        var depth = 0
+        var start: String.Index?
+        var inString = false
+        var escaped = false
+        for index in text.indices {
+            let character = text[index]
+            if inString {
+                if escaped {
+                    escaped = false
+                } else if character == "\\" {
+                    escaped = true
+                } else if character == "\"" {
+                    inString = false
+                }
+                continue
+            }
+            switch character {
+            case "\"":
+                inString = true
+            case "{":
+                if depth == 0 {
+                    start = index
+                }
+                depth += 1
+            case "}":
+                guard depth > 0 else { continue }
+                depth -= 1
+                if depth == 0, let startIndex = start {
+                    candidates.append(String(text[startIndex...index]))
+                    start = nil
+                    if candidates.count >= limit {
+                        return candidates
+                    }
+                }
+            default:
+                break
+            }
+        }
+        return candidates
     }
 
     private nonisolated func toolMetadata(_ call: AgentKernelToolCall) -> [String: AgentRunMetadataValue] {
