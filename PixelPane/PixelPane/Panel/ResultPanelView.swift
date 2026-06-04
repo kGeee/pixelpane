@@ -11,6 +11,9 @@ struct ResultPanelView: View {
     let routingSettings: AIRoutingSettings
     let localAICapabilities: AIBackendCapabilities
     @ObservedObject var localFileAccess: LocalFileAccessStore
+    /// City-level location resolved by the app with explicit user consent;
+    /// attached to cloud-route runs only.
+    let approximateLocation: AgentLocationContext?
     @StateObject private var agentRunViewModel: AgentRunViewModel
     let presentationStyle: ResultPanelPresentationStyle
     let startsInAssistantMode: Bool
@@ -60,6 +63,7 @@ struct ResultPanelView: View {
         routingSettings: AIRoutingSettings,
         localAICapabilities: AIBackendCapabilities,
         localFileAccess: LocalFileAccessStore,
+        approximateLocation: AgentLocationContext? = nil,
         presentationStyle: ResultPanelPresentationStyle = .floatingNearSelection,
         startsInAssistantMode: Bool = false,
         startsExpanded: Bool = false,
@@ -72,6 +76,7 @@ struct ResultPanelView: View {
         self.routingSettings = routingSettings
         self.localAICapabilities = localAICapabilities
         self.localFileAccess = localFileAccess
+        self.approximateLocation = approximateLocation
         self.presentationStyle = presentationStyle
         self.startsInAssistantMode = startsInAssistantMode
         self.startsExpanded = startsExpanded
@@ -2593,7 +2598,8 @@ struct ResultPanelView: View {
             localGrants: grants,
             grantedScopes: [],
             deniedScopes: [.network, .processControl, .privileged],
-            supportedOperations: AgentToolExecutionCapabilities.activeLocalRuntimeOperations
+            supportedOperations: AgentToolExecutionCapabilities.activeLocalRuntimeOperations,
+            approximateLocation: routingSettings.effectiveMode == .cloud ? approximateLocation : nil
         )
         guard providerTier != .tierCPlainChat, runMode != .plainChat else {
             return (.plainChat, [], context)

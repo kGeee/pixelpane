@@ -17,6 +17,7 @@ final class AppState: ObservableObject {
     @Published private(set) var hasCompletedFirstCaptureTutorial: Bool
     @Published private(set) var aiRoutingSettings: AIRoutingSettings
     let localFileAccess: LocalFileAccessStore
+    let locationProvider = LocationContextProvider()
 
     private lazy var overlayCoordinator = OverlayCoordinator()
     private lazy var panelController = ResultPanelController()
@@ -33,6 +34,7 @@ final class AppState: ObservableObject {
     private let localAIBackend: any AIBackend = HybridLocalAIBackend()
     private let userDefaults: UserDefaults
     private var mlxSetupCheckTask: Task<Void, Never>?
+    private var cancellables: Set<AnyCancellable> = []
     private let onboardingCompletedKey = "PrivacyOnboarding.Completed"
     private let firstCaptureTutorialCompletedKey = "FirstCaptureTutorial.Completed"
 
@@ -49,6 +51,7 @@ final class AppState: ObservableObject {
             allowCloudImageContext: storedUseCloudModels
                 ? AIRoutingSettings.cloudBackendAvailable
                 : storedAllowCloudImageContext,
+            allowCloudLocationContext: userDefaults.bool(forKey: AIRoutingDefaults.allowCloudLocationContextKey),
             pinnedLocalModelID: userDefaults.string(forKey: AIRoutingDefaults.pinnedLocalModelIDKey)
         )
         if mlxVisionSetupSnapshot.selectedModel == nil {
@@ -60,6 +63,17 @@ final class AppState: ObservableObject {
         refreshSystemStatus()
         refreshLocalAIStatus()
         registerGlobalHotkey()
+        // The geocoder resolves the city asynchronously; refresh the open
+        // panel when it lands so cloud runs pick up the location context.
+        locationProvider.$approximateLocation
+            .dropFirst()
+            .sink { [weak self] _ in
+                self?.refreshPresentedPanel()
+            }
+            .store(in: &cancellables)
+        if aiRoutingSettings.allowCloudLocationContext {
+            locationProvider.refresh()
+        }
         Task { @MainActor [weak self] in
             self?.showInitialSurface()
         }
@@ -138,6 +152,7 @@ final class AppState: ObservableObject {
             routingSettings: aiRoutingSettings,
             localAICapabilities: localAICapabilities,
             localFileAccess: localFileAccess,
+            approximateLocation: cloudRunLocationContext,
             startsInAssistantMode: true,
             onTryAgain: { [weak self] in
                 self?.startCapture()
@@ -150,6 +165,7 @@ final class AppState: ObservableObject {
             routingSettings: aiRoutingSettings,
             localAICapabilities: localAICapabilities,
             localFileAccess: localFileAccess,
+            approximateLocation: cloudRunLocationContext,
             onTryAgain: { [weak self] in
                 self?.startCapture()
             }
@@ -161,11 +177,7 @@ final class AppState: ObservableObject {
         aiRoutingSettings.useCloudModels = allowedValue
         aiRoutingSettings.allowCloudImageContext = allowedValue
         persistAIRoutingSettings()
-        panelController.refreshRoutingSettings(
-            aiRoutingSettings,
-            localAICapabilities: localAICapabilities,
-            localFileAccess: localFileAccess
-        )
+        refreshPresentedPanel()
     }
 
     func setAIRoutingMode(_ mode: AIRoutingMode) {
@@ -426,7 +438,8 @@ final class AppState: ObservableObject {
                 routingSettings: aiRoutingSettings,
                 localAICapabilities: localAICapabilities,
                 localFileAccess: localFileAccess,
-                    startsInAssistantMode: true,
+                approximateLocation: cloudRunLocationContext,
+                startsInAssistantMode: true,
                 onTryAgain: { [weak self] in
                     self?.startCapture()
                 }
@@ -449,7 +462,8 @@ final class AppState: ObservableObject {
                 routingSettings: aiRoutingSettings,
                 localAICapabilities: localAICapabilities,
                 localFileAccess: localFileAccess,
-                    startsInAssistantMode: true,
+                approximateLocation: cloudRunLocationContext,
+                startsInAssistantMode: true,
                 onTryAgain: { [weak self] in
                     self?.startCapture()
                 }
@@ -479,6 +493,7 @@ final class AppState: ObservableObject {
     private func persistAIRoutingSettings() {
         userDefaults.set(aiRoutingSettings.useCloudModels, forKey: AIRoutingDefaults.useCloudModelsKey)
         userDefaults.set(aiRoutingSettings.allowCloudImageContext, forKey: AIRoutingDefaults.allowCloudImageContextKey)
+        userDefaults.set(aiRoutingSettings.allowCloudLocationContext, forKey: AIRoutingDefaults.allowCloudLocationContextKey)
         if let pinned = aiRoutingSettings.pinnedLocalModelID {
             userDefaults.set(pinned, forKey: AIRoutingDefaults.pinnedLocalModelIDKey)
         } else {
@@ -486,15 +501,35 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Explicit consent for attaching approximate (city-level) location to
+    /// Cloud Mode requests. Resolves the location eagerly on enable so the
+    /// first location-aware question does not race the geocoder.
+    func setAllowCloudLocationContext(_ isEnabled: Bool) {
+        aiRoutingSettings.allowCloudLocationContext = isEnabled
+        persistAIRoutingSettings()
+        if isEnabled {
+            locationProvider.requestAccess()
+            locationProvider.refresh()
+        }
+        refreshPresentedPanel()
+    }
+
+    /// Location context attached to runs: cloud route only, explicit toggle,
+    /// macOS permission granted, and a resolved city available.
+    var cloudRunLocationContext: AgentLocationContext? {
+        guard aiRoutingSettings.effectiveMode == .cloud,
+              aiRoutingSettings.allowCloudLocationContext,
+              locationProvider.permissionStatus.isGranted else {
+            return nil
+        }
+        return locationProvider.approximateLocation
+    }
+
     /// Pin Local mode to one installed model (nil restores automatic routing).
     func setPinnedLocalModel(_ repositoryID: String?) {
         aiRoutingSettings.pinnedLocalModelID = repositoryID
         persistAIRoutingSettings()
-        panelController.refreshRoutingSettings(
-            aiRoutingSettings,
-            localAICapabilities: localAICapabilities,
-            localFileAccess: localFileAccess
-        )
+        refreshPresentedPanel()
     }
 
     private func runAgentModelConformanceCheck(
@@ -586,7 +621,8 @@ final class AppState: ObservableObject {
         panelController.refreshRoutingSettings(
             aiRoutingSettings,
             localAICapabilities: localAICapabilities,
-            localFileAccess: localFileAccess
+            localFileAccess: localFileAccess,
+            approximateLocation: cloudRunLocationContext
         )
     }
 }

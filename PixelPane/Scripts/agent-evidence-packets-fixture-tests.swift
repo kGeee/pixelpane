@@ -15,6 +15,7 @@ enum AgentEvidencePacketsFixtureHarness {
         try await testFileSearchEvidenceSupportsExactPath()
         try await testFolderListEvidenceSupportsListingClaims()
         try await testTemporalContextClaimsAcceptEchoedTargets()
+        try await testLocationContextClaimsVerifyByRecordedEvidence()
         try await testFileGrantInventoryEvidenceIsDiscoveryOnly()
         try await testLocalServerEvidenceSupportsFinalAnswerWithoutModelVerifier()
         try await testLocalListenerSnapshotEvidenceSupportsOnlyListenerClaims()
@@ -88,6 +89,34 @@ enum AgentEvidencePacketsFixtureHarness {
         try expect(bareDate.status == .supported, "bare current-date targets should be supported")
         try expect(untargeted.status == .supported, "untargeted temporal claims should be supported")
         try expect(withoutEvidence.status != .supported, "temporal claims still require recorded temporal evidence")
+    }
+
+    private static func testLocationContextClaimsVerifyByRecordedEvidence() async throws {
+        // App-owned singleton evidence like temporal context: claims verify by
+        // existence of the recorded approximate location, not target echoes.
+        let harness = try await makeHarness()
+        _ = try await harness.recorder.recordLocationContext(
+            runID: harness.run.runID,
+            context: AgentLocationContext(city: "Los Angeles", region: "CA", countryCode: "US")
+        )
+
+        let records = await harness.store.evidenceArtifactSummary(runID: harness.run.runID).evidence
+        let untargeted = harness.controller.verify(
+            AgentEvidenceClaim(type: .locationContextRecorded),
+            evidence: records
+        )
+        let echoed = harness.controller.verify(
+            AgentEvidenceClaim(type: .locationContextRecorded, target: "Los Angeles, CA, US"),
+            evidence: records
+        )
+        let withoutEvidence = harness.controller.verify(
+            AgentEvidenceClaim(type: .locationContextRecorded),
+            evidence: records.filter { $0.kind != AgentEvidenceKind.locationContext.rawValue }
+        )
+
+        try expect(untargeted.status == .supported, "location claims should be supported by recorded location evidence")
+        try expect(echoed.status == .supported, "echoed location targets should be supported")
+        try expect(withoutEvidence.status != .supported, "location claims still require recorded location evidence")
     }
 
     private static func testFolderListEvidenceSupportsListingClaims() async throws {

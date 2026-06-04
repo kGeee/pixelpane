@@ -139,6 +139,8 @@ struct SettingsView: View {
                 }
             }
 
+            LocationPermissionSection(provider: appState.locationProvider)
+
             Section("Privacy Introduction") {
                 Text("Show the first-run privacy introduction again without changing captures, chats, or model settings.")
                     .font(.callout)
@@ -414,6 +416,19 @@ struct SettingsView: View {
             Text(appState.aiRoutingSettings.detail)
                 .font(.callout)
                 .foregroundStyle(.secondary)
+
+            if appState.aiRoutingSettings.effectiveMode == .cloud {
+                Toggle(
+                    "Share approximate location with Cloud",
+                    isOn: Binding(
+                        get: { appState.aiRoutingSettings.allowCloudLocationContext },
+                        set: { appState.setAllowCloudLocationContext($0) }
+                    )
+                )
+                Text("City-level only, never precise coordinates. Lets Cloud answer location-aware questions like weather or sunrise. Requires Location permission (see Permissions).")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
 
             if !hasActiveMLXModel {
                 Text("Choose and validate an MLX model before using Local.")
@@ -781,6 +796,55 @@ private struct LocalFilesSettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+/// Observes the location provider directly so permission and resolved-city
+/// changes update the row without routing through AppState.
+private struct LocationPermissionSection: View {
+    @ObservedObject var provider: LocationContextProvider
+
+    var body: some View {
+        Section("Location") {
+            LabeledContent("Location") {
+                StatusPill(
+                    title: provider.permissionStatus.label,
+                    systemImage: provider.permissionStatus.isGranted ? "checkmark.circle.fill" : "location.slash",
+                    tint: provider.permissionStatus.isGranted ? .green : .orange
+                )
+            }
+
+            Text(provider.permissionStatus.detail)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            if let location = provider.approximateLocation {
+                LabeledContent("Approximate location", value: location.displayLabel)
+            }
+
+            HStack {
+                Button {
+                    provider.requestAccess()
+                } label: {
+                    Label("Request Access", systemImage: "lock.open")
+                }
+                .disabled(provider.permissionStatus != .notDetermined)
+
+                Button {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices") {
+                        NSWorkspace.shared.open(url)
+                    }
+                } label: {
+                    Label("Open Settings", systemImage: "gearshape")
+                }
+
+                Button {
+                    provider.refresh()
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+            }
+        }
     }
 }
 

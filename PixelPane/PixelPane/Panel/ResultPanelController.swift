@@ -14,6 +14,7 @@ final class ResultPanelController {
         routingSettings: AIRoutingSettings,
         localAICapabilities: AIBackendCapabilities,
         localFileAccess: LocalFileAccessStore,
+        approximateLocation: AgentLocationContext? = nil,
         startsInAssistantMode: Bool = false,
         startsExpanded: Bool = false,
         showsInitialNotchNotification: Bool = true,
@@ -30,6 +31,7 @@ final class ResultPanelController {
                 routingSettings: routingSettings,
                 localAICapabilities: localAICapabilities,
                 localFileAccess: localFileAccess,
+                approximateLocation: approximateLocation,
                 presentationStyle: resultPresentationStyle,
                 startsInAssistantMode: startsInAssistantMode,
                 startsExpanded: startsExpanded,
@@ -63,7 +65,8 @@ final class ResultPanelController {
     func refreshRoutingSettings(
         _ routingSettings: AIRoutingSettings,
         localAICapabilities: AIBackendCapabilities,
-        localFileAccess: LocalFileAccessStore
+        localFileAccess: LocalFileAccessStore,
+        approximateLocation: AgentLocationContext? = nil
     ) {
         guard panel != nil, let currentResult, let currentOnTryAgain else { return }
         let startsExpanded = panel.map { isExpandedNotchSize($0.frame.size) } ?? false
@@ -72,6 +75,7 @@ final class ResultPanelController {
             routingSettings: routingSettings,
             localAICapabilities: localAICapabilities,
             localFileAccess: localFileAccess,
+            approximateLocation: approximateLocation,
             startsInAssistantMode: currentStartsInAssistantMode,
             startsExpanded: startsExpanded,
             showsInitialNotchNotification: false,
@@ -86,6 +90,7 @@ final class ResultPanelController {
         routingSettings: AIRoutingSettings,
         localAICapabilities: AIBackendCapabilities,
         localFileAccess: LocalFileAccessStore,
+        approximateLocation: AgentLocationContext? = nil,
         onTryAgain: @escaping @MainActor () -> Void
     ) {
         let screenFrame = NSScreen.main?.frame ?? CGRect(x: 0, y: 0, width: 700, height: 500)
@@ -103,6 +108,7 @@ final class ResultPanelController {
             routingSettings: routingSettings,
             localAICapabilities: localAICapabilities,
             localFileAccess: localFileAccess,
+            approximateLocation: approximateLocation,
             startsInAssistantMode: true,
             showsInitialNotchNotification: false,
             onTryAgain: onTryAgain

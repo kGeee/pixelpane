@@ -177,6 +177,7 @@ nonisolated enum AgentKernelAnswerClaimKind: String, Codable, Equatable, Hashabl
     case commandOutput = "command_output"
     case sideEffect = "side_effect"
     case temporalContext = "temporal_context"
+    case locationContext = "location_context"
     case visualContext = "visual_context"
 }
 

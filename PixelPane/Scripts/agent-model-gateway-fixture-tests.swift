@@ -608,6 +608,10 @@ enum AgentModelGatewayFixtureHarness {
         try expect(call.arguments["path"] == "notes.txt", "cloud tool adapter should preserve tool arguments")
         try expect(captured?.actionKind == .chat, "cloud tool adapter should still use the cloud chat endpoint")
         try expect(captured?.cloudQuestion?.contains("Valid tool call format") == true, "cloud tool adapter should send the AGENTR protocol prompt as the cloud question")
+        try expect(
+            captured?.cloudQuestion?.contains("Provider-hosted web search") == true,
+            "cloud protocol prompt should tell hosted models to keep the JSON envelope after web search"
+        )
         try expect(captured?.prompt == captured?.cloudQuestion, "cloud prompt and question should carry the same protocol text")
         try expect(captured?.cloudConversation.isEmpty == true, "cloud tool protocol should keep observations inside the protocol prompt")
     }

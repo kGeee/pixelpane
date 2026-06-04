@@ -109,25 +109,65 @@ nonisolated enum AgentRunEventKind: String, Codable, Equatable, Sendable {
     case custom
 }
 
+/// App-owned approximate location (city granularity, no coordinates). The app
+/// layer resolves it from CoreLocation only when the user has granted macOS
+/// location access AND enabled sharing with Cloud; runs receive it as a
+/// preflight observation the same way temporal context is provided.
+nonisolated struct AgentLocationContext: Codable, Equatable, Sendable {
+    let city: String
+    let region: String?
+    let countryCode: String?
+    let source: String
+
+    init(city: String, region: String? = nil, countryCode: String? = nil) {
+        self.city = city
+        self.region = region
+        self.countryCode = countryCode
+        source = "app-runtime"
+    }
+
+    var displayLabel: String {
+        [city, region, countryCode]
+            .compactMap { $0 }
+            .filter { !$0.isEmpty }
+            .joined(separator: ", ")
+    }
+
+    var modelObservation: String {
+        """
+        App-owned approximate location
+        source: \(source)
+        location: \(displayLabel)
+        Use this approximate (city-level) location for location-aware questions such as weather, sunrise, or nearby places. Do not present it as a precise position.
+        """
+    }
+}
+
 nonisolated struct AgentToolRunContext: Codable, Equatable, Sendable {
     let runMode: AgentRunPermissionMode
     let localGrants: [AgentLocalFileGrant]
     let grantedScopes: [AgentPermissionScope]
     let deniedScopes: [AgentPermissionScope]
     let supportedOperations: Set<AgentToolOperationKind>
+    /// City-level location the app resolved with the user's consent (cloud
+    /// route + sharing toggle + macOS permission). Nil means no location is
+    /// available or sharing is off; the runtime then records nothing.
+    let approximateLocation: AgentLocationContext?
 
     init(
         runMode: AgentRunPermissionMode,
         localGrants: [AgentLocalFileGrant] = [],
         grantedScopes: [AgentPermissionScope] = [],
         deniedScopes: [AgentPermissionScope] = [],
-        supportedOperations: Set<AgentToolOperationKind> = AgentToolExecutionCapabilities.activeLocalRuntimeOperations
+        supportedOperations: Set<AgentToolOperationKind> = AgentToolExecutionCapabilities.activeLocalRuntimeOperations,
+        approximateLocation: AgentLocationContext? = nil
     ) {
         self.runMode = runMode
         self.localGrants = localGrants
         self.grantedScopes = grantedScopes
         self.deniedScopes = deniedScopes
         self.supportedOperations = supportedOperations
+        self.approximateLocation = approximateLocation
     }
 
     /// Fields added after the first persisted schema fall back to the same
@@ -141,6 +181,7 @@ nonisolated struct AgentToolRunContext: Codable, Equatable, Sendable {
         deniedScopes = try container.decodeIfPresent([AgentPermissionScope].self, forKey: .deniedScopes) ?? []
         supportedOperations = try container.decodeIfPresent(Set<AgentToolOperationKind>.self, forKey: .supportedOperations)
             ?? AgentToolExecutionCapabilities.activeLocalRuntimeOperations
+        approximateLocation = try container.decodeIfPresent(AgentLocationContext.self, forKey: .approximateLocation)
     }
 
     static let plainChat = AgentToolRunContext(runMode: .plainChat)

@@ -64,7 +64,14 @@ protocol AgentKernelTextProtocolTransport: Sendable {
 }
 
 struct AgentKernelTextProtocolPromptBuilder: Sendable {
-    nonisolated init() {}
+    /// Provider-specific context prepended to the protocol prompt, e.g. the
+    /// cloud adapter noting that hosted web search may be used. Optional so
+    /// local adapters keep the unmodified protocol.
+    let providerPreamble: String?
+
+    nonisolated init(providerPreamble: String? = nil) {
+        self.providerPreamble = providerPreamble
+    }
 
     nonisolated func prompt(for request: AgentKernelModelAdapterRequest) -> String {
         let tools = request.tools.map { tool in
@@ -95,15 +102,16 @@ struct AgentKernelTextProtocolPromptBuilder: Sendable {
             return lines.joined(separator: "\n")
         }.joined(separator: "\n")
 
+        let preamble = providerPreamble.map { "\($0)\n" } ?? ""
         return """
-        Return exactly one JSON object and no Markdown.
+        \(preamble)Return exactly one JSON object and no Markdown.
         Valid final answer format (general knowledge):
         {"type":"final_answer","text":"answer text","grounding":{"basis":"general_knowledge","claims":[]}}
         Valid final answer format (grounded in recorded tool observations):
         {"type":"final_answer","text":"answer text","grounding":{"basis":"local_evidence","claims":[{"kind":"file_listing","target":"/path/to/folder"}]}}
         Grounding basis values: general_knowledge, local_evidence, capability_limitation.
         Use local_evidence only with one or more claims, each {"kind":...,"target":...}, backed by recorded tool observations. If current local state is needed and no observation supports it, call an available tool.
-        Local evidence claim kind values: file_grants (granted locations), file_listing (folder contents or search results), local_file (file contents you read), process_snapshot, local_listeners, command_output, side_effect, temporal_context, visual_context.
+        Local evidence claim kind values: file_grants (granted locations), file_listing (folder contents or search results), local_file (file contents you read), process_snapshot, local_listeners, command_output, side_effect, temporal_context, location_context (app-provided approximate location), visual_context.
         Valid tool call format:
         {"type":"tool_call","name":"tool_name","arguments":{"argument":"value"},"reason":"optional reason"}
         Tool schemas:

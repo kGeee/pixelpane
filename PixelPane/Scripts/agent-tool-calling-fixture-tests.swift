@@ -57,6 +57,7 @@ enum AgentToolCallingFixtureHarness {
         try await testModelRequestedListenerSnapshotRecordsEvidence()
         try await testToolLoopListsGrantedFolderAndContinues()
         try await testFileListingClaimGroundsFolderAnswer()
+        try await testApproximateLocationContextGroundsLocationClaims()
         try await testEmptyLocalEvidenceClaimsRepairToListingClaim()
         try await testSearchAndReadToolsRecordEvidence()
         try await testQuotedSearchUsesPreciseQuery()
@@ -536,6 +537,56 @@ enum AgentToolCallingFixtureHarness {
         let trace = try await harness.store.traceProjection(runID: runID)
         try expect(trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.folderList.rawValue }), "folder evidence should be recorded")
         try expect(harness.viewModel.state.activeStatus == .completed, "file_listing claim backed by folder-list evidence should complete")
+    }
+
+    @MainActor
+    private static func testApproximateLocationContextGroundsLocationClaims() async throws {
+        // When the app provides consented approximate location, the runtime
+        // must record it as evidence, surface it to the model as a preflight
+        // observation, and accept location_context grounding claims.
+        let harness = try await makeHarness(prefix: "grounding-location")
+        let adapter = tierBFixtureAdapter(
+            responses: [
+                groundedFinalAnswer(
+                    "Tomorrow in Los Angeles should be sunny.",
+                    grounding: AgentKernelAnswerGrounding(
+                        basis: .localEvidence,
+                        claims: [AgentKernelAnswerClaim(kind: .locationContext)]
+                    )
+                )
+            ]
+        )
+        let config = toolConfig(
+            grants: [harness.grant],
+            runMode: .readOnly,
+            adapter: adapter,
+            approximateLocation: AgentLocationContext(city: "Los Angeles", region: "CA", countryCode: "US")
+        )
+
+        let runID = try await harness.viewModel.startRun(
+            userMessage: "What is the weather tomorrow?",
+            context: AgentRunViewContext(title: "Grounding Location", contextID: "grounding-location", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use the structured protocol.",
+            timeout: 4
+        )
+        try await harness.viewModel.waitForIdle(timeout: 6)
+        await harness.viewModel.refresh()
+
+        let requests = await adapter.requests()
+        let trace = try await harness.store.traceProjection(runID: runID)
+        try expect(
+            trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.locationContext.rawValue && $0.metadata["city"] == .string("Los Angeles") }),
+            "consented approximate location should be recorded as evidence"
+        )
+        try expect(
+            requests.first?.messages.contains(where: { $0.role == .observation && $0.content.contains("App-owned approximate location") }) == true,
+            "model should receive the approximate-location observation"
+        )
+        try expect(harness.viewModel.state.activeStatus == .completed, "location_context claim backed by recorded location evidence should complete")
     }
 
     @MainActor
@@ -2483,7 +2534,8 @@ enum AgentToolCallingFixtureHarness {
         grants: [AgentLocalFileGrant],
         runMode: AgentRunPermissionMode,
         adapter: any AgentKernelModelAdapter,
-        modelConformanceProfile: AgentModelConformanceProfile? = nil
+        modelConformanceProfile: AgentModelConformanceProfile? = nil,
+        approximateLocation: AgentLocationContext? = nil
     ) -> (mode: AgentModelGatewayMode, tools: [AgentKernelToolSchema], context: AgentToolRunContext) {
         let tier = AgentModelGateway.tier(
             for: adapter.capabilities,
@@ -2492,7 +2544,8 @@ enum AgentToolCallingFixtureHarness {
         let context = AgentToolRunContext(
             runMode: runMode,
             localGrants: grants,
-            deniedScopes: [.network, .processControl, .privileged]
+            deniedScopes: [.network, .processControl, .privileged],
+            approximateLocation: approximateLocation
         )
         let tools = AgentToolCatalog().visibleModelSchemas(
             providerTier: tier,

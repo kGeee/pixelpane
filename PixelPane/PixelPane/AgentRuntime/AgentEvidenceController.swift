@@ -98,6 +98,16 @@ nonisolated struct AgentEvidenceController: Sendable {
                 predicate: { record in record.stringMetadata("currentDate") != nil },
                 missing: "Temporal claims need temporal context evidence."
             )
+        case .locationContextRecorded:
+            // App-owned singleton evidence, like temporal context: existence
+            // is the verification; targets carry no extra signal.
+            return matching(
+                claim,
+                evidence: evidence,
+                kinds: [.locationContext],
+                predicate: { record in record.stringMetadata("city") != nil },
+                missing: "Location claims need app-recorded approximate location evidence."
+            )
         case .visualContextRecorded:
             return matching(
                 claim,
@@ -371,7 +381,7 @@ nonisolated struct AgentEvidenceController: Sendable {
         switch kind {
         case .fileRead, .fileSearch, .localServer, .sideEffect:
             100
-        case .commandOutput, .processSnapshot, .processState, .temporalContext, .folderList:
+        case .commandOutput, .processSnapshot, .processState, .temporalContext, .locationContext, .folderList:
             80
         case .terminalState, .approval, .evidenceRequirement:
             60
@@ -389,7 +399,7 @@ nonisolated struct AgentEvidenceController: Sendable {
             "rowCount", "topPID", "topExecutable", "topCPUPercent", "topMemoryPercent",
             "status", "sideEffectID", "targetPath", "operation", "currentDate", "localTime",
             "weekday", "timeZone", "utcOffset", "source", "grantCount", "entryCount",
-            "displayNames", "grantIDs", "kinds"
+            "displayNames", "grantIDs", "kinds", "city", "region", "countryCode"
         ] {
             if let value = record.metadata[key] {
                 fields[key] = value
