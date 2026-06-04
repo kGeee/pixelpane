@@ -38,9 +38,12 @@ struct AskTurnView: View {
                 metadataLine
 
                 if turn.answer.isEmpty {
-                    AssistantThinkingIndicator(summary: turn.runtimeProgressSummary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .accessibilityLabel("Thinking")
+                    AssistantThinkingIndicator(
+                        summary: turn.runtimeProgressSummary,
+                        history: Array(turn.runtimeActivityLog.dropLast())
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel("Thinking")
                 } else if let fileWriteDetail = FileWriteContinuationBanner.parse(from: turn.answer) {
                     FileWriteContinuationBanner(
                         detail: fileWriteDetail,

@@ -316,6 +316,9 @@ struct AskTranscriptView: View {
 
 struct AssistantThinkingIndicator: View {
     let summary: String?
+    /// Earlier compact activity labels (oldest first) shown as a faint breadcrumb so
+    /// fast steps remain visible instead of flashing by.
+    var history: [String] = []
     @State private var phase = false
     private let accent = Color(red: 0.72, green: 0.82, blue: 1.0)
 
@@ -357,11 +360,21 @@ struct AssistantThinkingIndicator: View {
             }
             .frame(width: 23, height: 18)
 
-            Text(summary?.isEmpty == false ? summary! : "Thinking")
-                .font(.system(size: 13, weight: .semibold, design: .rounded))
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(summary?.isEmpty == false ? summary! : "Thinking")
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if !history.isEmpty {
+                    Text(history.joined(separator: "  ·  "))
+                        .font(.system(size: 11, weight: .regular, design: .rounded))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                }
+            }
         }
         .padding(.vertical, 2)
         .onAppear {

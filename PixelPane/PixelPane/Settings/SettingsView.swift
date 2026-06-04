@@ -169,35 +169,42 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var modelRouterSection: some View {
-        Section("Model Router") {
-            VStack(alignment: .leading, spacing: 6) {
-                Label("Automatic model routing", systemImage: "arrow.triangle.branch")
-                    .font(.headline)
-                Text("Pixel Pane picks the best available model for each request — on-device first, and Pixel Pane Cloud only as a fallback when Cloud is enabled above. Check a model to measure its agent-tool readiness and make it eligible for routing.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+        if appState.aiRoutingSettings.effectiveMode == .cloud {
+            // Cloud Mode is an explicit single route: no routing, no local model list.
+            Section("Cloud Model") {
+                localAISectionContent
             }
-            .padding(.vertical, 2)
+        } else {
+            Section("Model Router") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("Automatic model routing", systemImage: "arrow.triangle.branch")
+                        .font(.headline)
+                    Text("In Local mode, Pixel Pane picks the strongest agent-ready on-device model for each request. Check a model to measure its agent-tool readiness and make it eligible for routing. Cloud Mode (above) bypasses routing and uses Pixel Pane Cloud directly.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 2)
 
-            if installedTextModels.isEmpty {
-                Text("No local models detected. Download an MLX text model so the router has something to route to.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(installedTextModels) { model in
-                    ModelRouterRow(
-                        model: model,
-                        tier: appState.agentReadinessTier(for: model),
-                        isChecking: appState.isRunningAgentModelConformanceCheck
-                    ) {
-                        appState.checkAgentReadiness(for: model)
+                if installedTextModels.isEmpty {
+                    Text("No local models detected. Download an MLX text model so the router has something to route to.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(installedTextModels) { model in
+                        ModelRouterRow(
+                            model: model,
+                            tier: appState.agentReadinessTier(for: model),
+                            isChecking: appState.isRunningAgentModelConformanceCheck
+                        ) {
+                            appState.checkAgentReadiness(for: model)
+                        }
                     }
                 }
+
+                DisclosureGroup("Advanced · base model setup") {
+                    localAISectionContent
+                }
             }
-
-            Divider()
-
-            localAISectionContent
         }
     }
 

@@ -539,11 +539,10 @@ struct ResultPanelView: View {
     }
 
     private var assistantModelStatusText: String {
-        // The router picks the model per request, so the idle header advertises the
-        // routing pool rather than a specific model that may not be used.
-        let cloudEnabled = routingSettings.useCloudModels && AIRoutingSettings.cloudBackendAvailable
-        if cloudEnabled {
-            return "Auto · Local + Cloud"
+        // Cloud Mode is an explicit single route; Local Mode auto-routes among
+        // checked local models, so the header advertises the pool, not one model.
+        if routingSettings.effectiveMode == .cloud {
+            return "Cloud"
         }
         return localAICapabilities.text.isAvailable ? "Auto · Local" : "Local setup needed"
     }
@@ -1794,7 +1793,15 @@ struct ResultPanelView: View {
            agentRunViewModel.state.activeStatus != .completed {
             switch agentRunViewModel.state.activeStatus {
             case .queued, .running, .waitingForApproval, .waitingForUserInput, .interrupted:
-                turns[index].runtimeProgressSummary = compactActivitySummary(agentRunViewModel.state.statusSummary)
+                let activity = compactActivitySummary(agentRunViewModel.state.statusSummary)
+                turns[index].runtimeProgressSummary = activity
+                if turns[index].runtimeActivityLog.last != activity {
+                    turns[index].runtimeActivityLog.append(activity)
+                    let overflow = turns[index].runtimeActivityLog.count - 4
+                    if overflow > 0 {
+                        turns[index].runtimeActivityLog.removeFirst(overflow)
+                    }
+                }
             case .blocked, .failed, .canceled:
                 turns[index].answer = agentRunViewModel.state.statusSummary
             case .draft, .completed, .none:
@@ -2406,13 +2413,14 @@ struct ResultPanelView: View {
         let repositoryID: String?
     }
 
-    /// Local-first routing over ALL installed, text-capable, conformance-checked local models
-    /// plus Cloud (only when enabled). The router prefers any need-meeting local model over
-    /// Cloud and prefers the already-loaded one. Unchecked models are not auto-eligible yet
-    /// (they need a readiness check first). Falls back to today's behavior when nothing is
-    /// checked and Cloud is off, so a selected-but-unchecked model still runs.
+    /// Cloud Mode is an explicit route: it uses Pixel Pane Cloud directly with no routing.
+    /// Local Mode routes among installed, text-capable, conformance-checked local models only
+    /// (never silently cloud). The router prefers the strongest agent-ready local model.
+    /// Falls back to the stored selection when nothing has been checked yet.
     private func resolveModelPlan(need: AgentModelRunNeed) -> ResolvedModelPlan {
-        let cloudEnabled = routingSettings.useCloudModels && AIRoutingSettings.cloudBackendAvailable
+        if routingSettings.effectiveMode == .cloud {
+            return ResolvedModelPlan(mode: .cloud, localModel: nil, repositoryID: nil)
+        }
         let textRuntimeURL = mlxDetector.mlxTextGenerateExecutableURL()
         let selectedID = mlxModelStore.selectedModel?.repositoryID
         var localByID: [String: MLXVisionModelSelection] = [:]
@@ -2438,35 +2446,22 @@ struct ResultPanelView: View {
                 )
             )
         }
-        if cloudEnabled {
-            candidates.append(
-                AgentModelRouterCandidate(
-                    id: "cloud",
-                    displayName: Self.cloudBackendLabel,
-                    kind: .cloud,
-                    tier: .tierB
-                )
-            )
-        }
         switch AgentModelRouter().choose(
             AgentModelRouterInput(
                 need: need,
                 candidates: candidates,
-                cloudEnabled: cloudEnabled,
+                cloudEnabled: false,
                 preference: .preferLocalFast
             )
         ) {
         case .selected(let candidate, _), .degraded(let candidate, _):
-            if candidate.kind == .cloud {
-                return ResolvedModelPlan(mode: .cloud, localModel: nil, repositoryID: nil)
-            }
             return ResolvedModelPlan(
                 mode: .local,
                 localModel: localByID[candidate.id],
                 repositoryID: candidate.id
             )
         case .unavailable:
-            return ResolvedModelPlan(mode: routingSettings.effectiveMode, localModel: nil, repositoryID: selectedID)
+            return ResolvedModelPlan(mode: .local, localModel: nil, repositoryID: selectedID)
         }
     }
 
