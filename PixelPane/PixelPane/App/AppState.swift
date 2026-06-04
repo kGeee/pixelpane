@@ -29,6 +29,7 @@ final class AppState: ObservableObject {
     private let technicalContentClassifier = TechnicalContentClassifier()
     private let hotkeyManager = HotkeyManager()
     private let mlxVisionSetupRunner = MLXVisionSetupRunner()
+    private let mlxRuntimeDetector = MLXVisionRuntimeDetector()
     private let agentModelConformanceStore: AgentModelConformanceStore
     private let localAIBackend: any AIBackend = HybridLocalAIBackend()
     private let userDefaults: UserDefaults
@@ -49,7 +50,8 @@ final class AppState: ObservableObject {
             useCloudModels: storedUseCloudModels,
             allowCloudImageContext: storedUseCloudModels
                 ? AIRoutingSettings.cloudBackendAvailable
-                : storedAllowCloudImageContext
+                : storedAllowCloudImageContext,
+            pinnedLocalModelID: userDefaults.string(forKey: AIRoutingDefaults.pinnedLocalModelIDKey)
         )
         if mlxVisionSetupSnapshot.selectedModel == nil {
             aiRoutingSettings.useCloudModels = AIRoutingSettings.cloudBackendAvailable
@@ -484,12 +486,38 @@ final class AppState: ObservableObject {
     private func persistAIRoutingSettings() {
         userDefaults.set(aiRoutingSettings.useCloudModels, forKey: AIRoutingDefaults.useCloudModelsKey)
         userDefaults.set(aiRoutingSettings.allowCloudImageContext, forKey: AIRoutingDefaults.allowCloudImageContextKey)
+        if let pinned = aiRoutingSettings.pinnedLocalModelID {
+            userDefaults.set(pinned, forKey: AIRoutingDefaults.pinnedLocalModelIDKey)
+        } else {
+            userDefaults.removeObject(forKey: AIRoutingDefaults.pinnedLocalModelIDKey)
+        }
+    }
+
+    /// Pin Local mode to one installed model (nil restores automatic routing).
+    func setPinnedLocalModel(_ repositoryID: String?) {
+        aiRoutingSettings.pinnedLocalModelID = repositoryID
+        persistAIRoutingSettings()
+        panelController.refreshRoutingSettings(
+            aiRoutingSettings,
+            localAICapabilities: localAICapabilities,
+            localFileAccess: localFileAccess,
+            chatHistory: chatHistory
+        )
     }
 
     private func runAgentModelConformanceCheck(
         target: AgentModelConformanceTarget
     ) async -> AgentModelConformanceProfile {
-        let backend = MLXTextBackend(store: MLXVisionModelStore(defaults: userDefaults), timeoutSeconds: 45)
+        // Probe the model named by the target (not just the stored selection), so any
+        // installed model can be checked for agent readiness.
+        let override: MLXVisionModelSelection? = target.modelPath.map {
+            MLXVisionModelSelection(repositoryID: target.modelID, localPath: $0, smokeTestedAt: Date())
+        }
+        let backend = MLXTextBackend(
+            store: MLXVisionModelStore(defaults: userDefaults),
+            modelSelectionOverride: override,
+            timeoutSeconds: 45
+        )
         let descriptor = AgentKernelModelDescriptor(
             id: target.adapterID,
             providerKind: .mlxLocal,
@@ -518,6 +546,48 @@ final class AppState: ObservableObject {
         snapshot: MLXVisionSetupSnapshot
     ) -> AgentModelConformanceProfile? {
         agentModelConformanceStore.profile(for: AgentModelConformanceTarget.mlxText(snapshot: snapshot))
+    }
+
+    // MARK: - Model router readiness (per installed model)
+
+    /// The conformance target for an installed model, built the same way the run path looks it
+    /// up so the stored profile key matches.
+    private func agentReadinessTarget(for model: MLXVisionModel) -> AgentModelConformanceTarget? {
+        guard let url = model.localURL else { return nil }
+        let selection = MLXVisionModelSelection(
+            repositoryID: model.repositoryID,
+            localPath: url.path,
+            smokeTestedAt: Date()
+        )
+        return AgentModelConformanceTarget.mlxText(
+            selection: selection,
+            textRuntimeURL: mlxRuntimeDetector.mlxTextGenerateExecutableURL()
+        )
+    }
+
+    /// The router's measured agent-readiness tier for an installed model, or nil if it has not
+    /// been checked yet.
+    func agentReadinessTier(for model: MLXVisionModel) -> AgentModelConformanceDerivedTier? {
+        guard let target = agentReadinessTarget(for: model) else { return nil }
+        return agentModelConformanceStore.profile(for: target)?.derivedTier
+    }
+
+    /// Run the agent-readiness (conformance) probe for a specific installed model and cache its
+    /// tier, without changing which model is otherwise selected. Drives the router's candidate set.
+    func checkAgentReadiness(for model: MLXVisionModel) {
+        guard !isRunningAgentModelConformanceCheck,
+              let target = agentReadinessTarget(for: model) else { return }
+        isRunningAgentModelConformanceCheck = true
+        Task { [weak self] in
+            guard let self else { return }
+            let profile = await self.runAgentModelConformanceCheck(target: target)
+            self.agentModelConformanceStore.save(profile)
+            await MainActor.run {
+                self.isRunningAgentModelConformanceCheck = false
+                Task { await MLXTextServerManager.shared.stop() }
+                self.refreshLocalAIStatus()
+            }
+        }
     }
 
     private func refreshPresentedPanel() {

@@ -51,7 +51,7 @@ struct AgentKernelMLXNativeToolAdapter: AgentKernelModelAdapter {
             return AgentKernelModelAdapterResponse(
                 requestID: request.id,
                 descriptor: descriptor,
-                events: [.malformedOutput(error.localizedDescription)],
+                events: [.transportFailure(error.localizedDescription)],
                 diagnostics: AgentKernelBoundedText(error.localizedDescription)
             )
         }

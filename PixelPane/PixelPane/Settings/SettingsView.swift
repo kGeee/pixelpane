@@ -158,11 +158,84 @@ struct SettingsView: View {
         Form {
             routingModeSection
 
-            Section("Local AI") {
-                localAISectionContent
-            }
+            modelRouterSection
         }
         .formStyle(.grouped)
+    }
+
+    private static let autoRoutingSelectionID = "__pixelpane_auto_routing__"
+
+    private var installedTextModels: [MLXVisionModel] {
+        appState.mlxVisionSetupSnapshot.installedModels.filter { $0.isTextCompatible && $0.isInstalled }
+    }
+
+    /// Models shown in the router list: all installed models under automatic
+    /// routing, or just the pinned one when the user pinned a model. Falls back
+    /// to the full list if the pinned model is no longer installed.
+    private var routerListModels: [MLXVisionModel] {
+        guard let pinnedID = appState.aiRoutingSettings.pinnedLocalModelID else {
+            return installedTextModels
+        }
+        let pinned = installedTextModels.filter { $0.repositoryID == pinnedID }
+        return pinned.isEmpty ? installedTextModels : pinned
+    }
+
+    /// Binds the model picker: the sentinel means automatic routing; any other value
+    /// pins Local mode to that installed model.
+    private var pinnedModelBinding: Binding<String> {
+        Binding(
+            get: { appState.aiRoutingSettings.pinnedLocalModelID ?? Self.autoRoutingSelectionID },
+            set: { appState.setPinnedLocalModel($0 == Self.autoRoutingSelectionID ? nil : $0) }
+        )
+    }
+
+    @ViewBuilder
+    private var modelRouterSection: some View {
+        if appState.aiRoutingSettings.effectiveMode == .cloud {
+            // Cloud Mode is an explicit single route: no routing, no local model list.
+            Section("Cloud Model") {
+                localAISectionContent
+            }
+        } else {
+            Section("Model Router") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("Automatic model routing", systemImage: "arrow.triangle.branch")
+                        .font(.headline)
+                    Text("In Local mode, Pixel Pane picks the strongest agent-ready on-device model for each request — or always uses one specific model if you choose it below. Check a model to measure its agent-tool readiness. Cloud Mode (above) bypasses routing and uses Pixel Pane Cloud directly.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 2)
+
+                Picker("Model", selection: pinnedModelBinding) {
+                    Text("Automatic (recommended)").tag(Self.autoRoutingSelectionID)
+                    ForEach(installedTextModels) { model in
+                        Text(model.repositoryID).tag(model.repositoryID)
+                    }
+                }
+                .help("Automatic lets the router pick the strongest agent-ready model per request; choosing a model always uses that one.")
+
+                if installedTextModels.isEmpty {
+                    Text("No local models detected. Download an MLX text model so the router has something to route to.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(routerListModels) { model in
+                        ModelRouterRow(
+                            model: model,
+                            tier: appState.agentReadinessTier(for: model),
+                            isChecking: appState.isRunningAgentModelConformanceCheck
+                        ) {
+                            appState.checkAgentReadiness(for: model)
+                        }
+                    }
+                }
+
+                DisclosureGroup("Advanced · base model setup") {
+                    localAISectionContent
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -542,6 +615,54 @@ struct SettingsView: View {
             .yellow
         case .failed:
             .orange
+        }
+    }
+}
+
+private struct ModelRouterRow: View {
+    let model: MLXVisionModel
+    let tier: AgentModelConformanceDerivedTier?
+    let isChecking: Bool
+    let onCheck: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.repositoryID)
+                    .font(.callout)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(model.approximateDiskSize)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            readinessBadge
+            Button("Check", action: onCheck)
+                .disabled(isChecking)
+        }
+        .padding(.vertical, 2)
+    }
+
+    @ViewBuilder
+    private var readinessBadge: some View {
+        switch tier {
+        case .tierA, .tierB:
+            Label("Agent-ready", systemImage: "checkmark.seal.fill")
+                .font(.caption)
+                .foregroundStyle(.green)
+        case .tierC:
+            Label("Chat only", systemImage: "bubble.left")
+                .font(.caption)
+                .foregroundStyle(.orange)
+        case .unavailable:
+            Label("Check failed", systemImage: "xmark.seal")
+                .font(.caption)
+                .foregroundStyle(.red)
+        case .none:
+            Label("Not checked", systemImage: "questionmark.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }

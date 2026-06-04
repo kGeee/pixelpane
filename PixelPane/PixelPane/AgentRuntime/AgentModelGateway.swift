@@ -540,6 +540,8 @@ nonisolated struct AgentModelConformanceRunner: Sendable {
                 return "tool_call: \(call.name) \(call.arguments)"
             case .malformedOutput(let text):
                 return "malformed: \(text)"
+            case .transportFailure(let text):
+                return "transport_failure: \(text)"
             case .emptyOutput:
                 return "empty"
             case .timedOut:
@@ -881,6 +883,18 @@ actor AgentModelGateway {
             )
         }
 
+        if let transportMessage = firstTransportFailure(in: response.events) {
+            // The request never produced model output (network, auth, rate
+            // limit, local runtime). Surface the underlying reason instead of
+            // blaming the model's structured output.
+            return AgentModelGatewayFailure(
+                kind: .transportError,
+                adapterID: adapterID,
+                message: AgentRunText(transportMessage),
+                metadata: ["transportMessage": .string(transportMessage)]
+            )
+        }
+
         if let malformed = firstMalformedOutput(in: response.events) {
             let kind: AgentModelGatewayFailureKind = gatewayRequest.mode == .plainChat
                 ? .transportError
@@ -1010,6 +1024,15 @@ actor AgentModelGateway {
     private nonisolated func firstMalformedOutput(in events: [AgentKernelModelAdapterEvent]) -> String? {
         for event in events {
             if case .malformedOutput(let text) = event {
+                return text
+            }
+        }
+        return nil
+    }
+
+    private nonisolated func firstTransportFailure(in events: [AgentKernelModelAdapterEvent]) -> String? {
+        for event in events {
+            if case .transportFailure(let text) = event {
                 return text
             }
         }

@@ -15,6 +15,9 @@ struct AskConversationTurn: Equatable {
     var answer: String
     var backendLabel: String
     var runtimeProgressSummary: String?
+    /// Recent compact activity labels for this run (oldest first), so fast steps
+    /// stay visible as a breadcrumb instead of flashing by.
+    var runtimeActivityLog: [String] = []
     var statistics: [AIModelOutputStatistic] = []
 
     init(

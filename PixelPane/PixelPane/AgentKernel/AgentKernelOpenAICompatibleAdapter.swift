@@ -50,7 +50,7 @@ struct AgentKernelOpenAICompatibleAdapter: AgentKernelModelAdapter {
         } catch {
             return response(
                 for: request,
-                events: [.malformedOutput(error.localizedDescription)],
+                events: [.transportFailure(error.localizedDescription)],
                 diagnostics: AgentKernelBoundedText(error.localizedDescription)
             )
         }

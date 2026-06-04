@@ -12,6 +12,7 @@ enum AgentModelGatewayFixtureHarness {
     }
 
     static func run() async throws {
+        try testModelRouterChoosesByCapabilityAndPolicy()
         try await testTierClassification()
         try testConformanceProfileTierDerivation()
         try await testLocalMLXDefaultsToPlainChatUntilChecked()
@@ -32,7 +33,82 @@ enum AgentModelGatewayFixtureHarness {
         try await testAIBackendBridgeUsesRawProtocolText()
         try await testCloudChatAdapterIsPlainChatOnly()
         try await testCloudChatAdapterSupportsToolProtocolWhenEnabled()
+        try await testCloudChatAdapterReportsTransportFailures()
         try await testTierCCloudRouteRejectsToolsBeforeAdapterCall()
+    }
+
+    private static func testModelRouterChoosesByCapabilityAndPolicy() throws {
+        let router = AgentModelRouter()
+        let cloud = AgentModelRouterCandidate(id: "cloud", displayName: "Pixel Pane Cloud", kind: .cloud, tier: .tierB)
+        let big = AgentModelRouterCandidate(id: "big", displayName: "Q-Large", kind: .local, tier: .tierB, isLoaded: false, latencyHint: 9)
+        let smallLoaded = AgentModelRouterCandidate(id: "small", displayName: "Q-Small", kind: .local, tier: .tierB, isLoaded: true, latencyHint: 2)
+        let chatOnly = AgentModelRouterCandidate(id: "chat", displayName: "Chat-only", kind: .local, tier: .tierC)
+
+        // Tool run, cloud enabled, prefer quality -> cloud wins.
+        guard case .selected(let q, _) = router.choose(AgentModelRouterInput(
+            need: .toolCapable, candidates: [chatOnly, big, smallLoaded, cloud],
+            cloudEnabled: true, preference: .preferQuality)) else {
+            throw HarnessError(description: "router should select for a tool run")
+        }
+        try expect(q.id == "cloud", "prefer-quality tool run should route to cloud")
+
+        // Cloud disabled -> a tool-capable local model is chosen (never the tierC chat-only).
+        guard case .selected(let local, _) = router.choose(AgentModelRouterInput(
+            need: .toolCapable, candidates: [chatOnly, big, smallLoaded, cloud],
+            cloudEnabled: false, preference: .preferQuality)) else {
+            throw HarnessError(description: "router should select a local model without cloud")
+        }
+        try expect(local.kind == .local && local.tier == .tierB, "tool run without cloud needs a tool-capable local model")
+
+        // Prefer-local-fast keeps the already-loaded local model even when cloud is on.
+        guard case .selected(let fast, _) = router.choose(AgentModelRouterInput(
+            need: .toolCapable, candidates: [big, smallLoaded, cloud],
+            cloudEnabled: true, preference: .preferLocalFast)) else {
+            throw HarnessError(description: "router should select for prefer-local-fast")
+        }
+        try expect(fast.id == "small", "prefer-local-fast should keep the loaded local model")
+
+        // Privacy lock excludes cloud even when enabled.
+        guard case .selected(let priv, _) = router.choose(AgentModelRouterInput(
+            need: .toolCapable, candidates: [smallLoaded, cloud],
+            cloudEnabled: true, privacyLockedToLocal: true, preference: .preferQuality)) else {
+            throw HarnessError(description: "router should select under privacy lock")
+        }
+        try expect(priv.kind == .local, "privacy lock must exclude cloud")
+
+        // Tool run with only a chat-only (tierC) model -> degraded, not selected.
+        guard case .degraded(let deg, _) = router.choose(AgentModelRouterInput(
+            need: .toolCapable, candidates: [chatOnly], cloudEnabled: false)) else {
+            throw HarnessError(description: "tool run with only tierC should degrade")
+        }
+        try expect(deg.id == "chat", "degraded fallback should be the chat-only model")
+
+        // No candidates -> unavailable.
+        guard case .unavailable = router.choose(AgentModelRouterInput(
+            need: .plainChat, candidates: [], cloudEnabled: false)) else {
+            throw HarnessError(description: "empty pool should be unavailable")
+        }
+
+        // Readiness tiers are pass/fail, so strength breaks ties: the strongest
+        // agent-ready local model wins even when a weaker one is already loaded.
+        let strongIdle = AgentModelRouterCandidate(
+            id: "q35", displayName: "Q-35B", kind: .local, tier: .tierB,
+            isLoaded: false, strengthHint: 35)
+        let weakLoaded = AgentModelRouterCandidate(
+            id: "h14", displayName: "H-14B", kind: .local, tier: .tierB,
+            isLoaded: true, latencyHint: 1, strengthHint: 14)
+        guard case .selected(let strongest, _) = router.choose(AgentModelRouterInput(
+            need: .toolCapable, candidates: [weakLoaded, strongIdle],
+            cloudEnabled: false, preference: .preferLocalFast)) else {
+            throw HarnessError(description: "router should select among strength-hinted locals")
+        }
+        try expect(strongest.id == "q35", "strongest agent-ready local model should beat the loaded weaker one")
+
+        // Parameter-count hint parses the conventional "<N>B" token (largest wins).
+        try expect(AgentModelRouter.parameterCountHint(fromModelID: "mlx-community/Qwen3.6-35B-A3B-6bit") == 35, "35B id should parse as 35")
+        try expect(AgentModelRouter.parameterCountHint(fromModelID: "mlx-community/Hermes-4-14B-4bit") == 14, "14B id should parse as 14")
+        try expect(AgentModelRouter.parameterCountHint(fromModelID: "mlx-community/Qwen2.5-7B-Instruct-4bit") == 7, "7B id should parse as 7")
+        try expect(AgentModelRouter.parameterCountHint(fromModelID: "some/model-without-size") == nil, "id without a size token should be nil")
     }
 
     private static func testTierClassification() async throws {
@@ -335,15 +411,28 @@ enum AgentModelGatewayFixtureHarness {
         let unavailable = fixtureAdapter(id: "fixture.unavailable", isAvailable: false, responses: [.finalAnswer("unused")])
         let malformed = fixtureAdapter(id: "fixture.malformed", responses: [.malformedOutput("{")])
         let empty = fixtureAdapter(id: "fixture.empty", responses: [.emptyOutput])
-        let gateway = AgentModelGateway(adapters: [unavailable, malformed, empty])
+        let transport = fixtureAdapter(
+            id: "fixture.transport",
+            responses: [.events([.transportFailure("Keychain operation failed with status -25293.")])]
+        )
+        let gateway = AgentModelGateway(adapters: [unavailable, malformed, empty, transport])
 
         let unavailableResult = await gateway.response(adapterID: unavailable.descriptor.id, request: request(mode: .fullAgent))
         let malformedResult = await gateway.response(adapterID: malformed.descriptor.id, request: request(mode: .fullAgent))
         let emptyResult = await gateway.response(adapterID: empty.descriptor.id, request: request(mode: .plainChat))
+        let transportResult = await gateway.response(adapterID: transport.descriptor.id, request: request(mode: .fullAgent))
 
         try expect(unavailableResult.failure?.kind == .unavailable, "unavailable adapter should map to unavailable")
         try expect(malformedResult.failure?.kind == .structuredOutputInvalid, "malformed structured output should map to structuredOutputInvalid")
         try expect(emptyResult.failure?.kind == .emptyOutput, "empty output should map to emptyOutput")
+        // Transport problems (network, auth, rate limit) must never masquerade
+        // as model structured-output failures, even in tool-capable modes,
+        // and the underlying reason must survive into the failure message.
+        try expect(transportResult.failure?.kind == .transportError, "transport failure should map to transportError, not structuredOutputInvalid")
+        try expect(
+            transportResult.failure?.message.text.contains("-25293") == true,
+            "transport failure should surface the underlying error message"
+        )
     }
 
     private static func testContextOverflow() async throws {
@@ -521,6 +610,45 @@ enum AgentModelGatewayFixtureHarness {
         try expect(captured?.cloudQuestion?.contains("Valid tool call format") == true, "cloud tool adapter should send the AGENTR protocol prompt as the cloud question")
         try expect(captured?.prompt == captured?.cloudQuestion, "cloud prompt and question should carry the same protocol text")
         try expect(captured?.cloudConversation.isEmpty == true, "cloud tool protocol should keep observations inside the protocol prompt")
+    }
+
+    private static func testCloudChatAdapterReportsTransportFailures() async throws {
+        // Regression: a thrown backend error (keychain auth, rate limit,
+        // network) used to surface as "invalid structured output" in tool
+        // mode. It must map to transportError and keep the real reason.
+        struct FixtureTransportError: LocalizedError {
+            var errorDescription: String? { "Keychain operation failed with status -25293." }
+        }
+        let backend = FixtureCloudChatBackend(responseText: "unused", thrownError: FixtureTransportError())
+        let descriptor = AgentKernelModelDescriptor(
+            id: "fixture.cloud-transport",
+            providerKind: .pixelPaneCloud,
+            route: .cloud,
+            displayName: "Fixture Cloud Transport"
+        )
+        let adapter = AgentKernelCloudChatAdapter(
+            descriptor: descriptor,
+            backend: backend,
+            backendCapabilities: await backend.capabilities(),
+            supportsLocalToolProtocol: true
+        )
+
+        let gateway = AgentModelGateway(adapters: [adapter])
+        let result = await gateway.response(
+            adapterID: descriptor.id,
+            request: AgentModelGatewayRequest(
+                mode: .constrainedStructuredText,
+                messages: [AgentKernelMessage(role: .user, content: "read notes")],
+                tools: [readFileTool()],
+                requestedMaxOutputTokens: 256
+            )
+        )
+
+        try expect(result.failure?.kind == .transportError, "thrown backend error should map to transportError, not structuredOutputInvalid")
+        try expect(
+            result.failure?.message.text.contains("-25293") == true,
+            "transport failure should surface the underlying error message"
+        )
     }
 
     private static func testTierCCloudRouteRejectsToolsBeforeAdapterCall() async throws {
@@ -725,11 +853,13 @@ final class FixtureCloudChatBackend: AIBackend, @unchecked Sendable {
     let displayName = "Fixture Cloud Chat"
 
     private let responseText: String
+    private let thrownError: Error?
     private let lock = NSLock()
     private var capturedRequests: [AIBackendRequest] = []
 
-    init(responseText: String) {
+    init(responseText: String, thrownError: Error? = nil) {
         self.responseText = responseText
+        self.thrownError = thrownError
     }
 
     func capabilities() async -> AIBackendCapabilities {
@@ -747,7 +877,12 @@ final class FixtureCloudChatBackend: AIBackend, @unchecked Sendable {
         capturedRequests.append(request)
         lock.unlock()
         let responseText = self.responseText
+        let thrownError = self.thrownError
         return AsyncThrowingStream { continuation in
+            if let thrownError {
+                continuation.finish(throwing: thrownError)
+                return
+            }
             continuation.yield(.snapshot(responseText))
             continuation.yield(.completed)
             continuation.finish()

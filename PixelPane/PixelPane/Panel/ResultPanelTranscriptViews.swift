@@ -38,9 +38,12 @@ struct AskTurnView: View {
                 metadataLine
 
                 if turn.answer.isEmpty {
-                    AssistantThinkingIndicator(summary: turn.runtimeProgressSummary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .accessibilityLabel("Thinking")
+                    AssistantThinkingIndicator(
+                        summary: turn.runtimeProgressSummary,
+                        history: Array(turn.runtimeActivityLog.dropLast())
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityLabel("Thinking")
                 } else if let fileWriteDetail = FileWriteContinuationBanner.parse(from: turn.answer) {
                     FileWriteContinuationBanner(
                         detail: fileWriteDetail,
@@ -75,6 +78,12 @@ struct AskTurnView: View {
     }
 
     private var compactBackendLabel: String {
+        // Routed labels carry the model name ("MLX Text: Qwen3.6-35B-A3B-6bit");
+        // show the compact model so the chip names what actually ran.
+        if turn.backendLabel.hasPrefix("MLX Text: ") {
+            let model = String(turn.backendLabel.dropFirst("MLX Text: ".count))
+            return ResultPanelView.compactModelName(model)
+        }
         switch turn.backendLabel {
         case "Pixel Pane Cloud":
             return "Cloud"

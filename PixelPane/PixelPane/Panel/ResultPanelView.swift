@@ -539,15 +539,21 @@ struct ResultPanelView: View {
     }
 
     private var assistantModelStatusText: String {
-        switch routingSettings.effectiveMode {
-        case .cloud:
-            return "Cloud Mode"
-        case .local:
-            if let selectedModelName {
-                return "Local - \(selectedModelName)"
-            }
-            return localAICapabilities.text.isAvailable ? "Local - MLX" : "Local"
+        // Cloud Mode is an explicit single route; Local Mode auto-routes among
+        // checked local models (or honors a user-pinned model), so the header
+        // advertises the actual policy.
+        if routingSettings.effectiveMode == .cloud {
+            return "Cloud"
         }
+        if let pinnedID = routingSettings.pinnedLocalModelID {
+            return "Local · \(Self.compactModelName(pinnedID))"
+        }
+        // The async capability probe reports "unknown" for a moment after launch; the
+        // persisted model selection is known immediately, so consult both to avoid
+        // flashing "setup needed" at startup on a fully configured install.
+        let hasUsableLocalModel = localAICapabilities.text.isAvailable
+            || mlxModelStore.selectedModel != nil
+        return hasUsableLocalModel ? "Auto · Local" : "Local setup needed"
     }
 
     private var selectedModelName: String? {
@@ -555,7 +561,7 @@ struct ResultPanelView: View {
         return Self.compactModelName(selection.repositoryID)
     }
 
-    private static func compactModelName(_ repositoryID: String) -> String {
+    static func compactModelName(_ repositoryID: String) -> String {
         let name = repositoryID
             .split(separator: "/")
             .last
@@ -1399,7 +1405,7 @@ struct ResultPanelView: View {
         let descriptor = model.descriptor
         let capabilities = model.capabilities
         let selectedModel = mlxModelStore.selectedModel
-        let conformanceProfile = currentMLXAgentConformanceProfile()
+        let conformanceProfile = currentMLXAgentConformanceProfile(forRepositoryID: model.descriptor.modelName)
         let tier = AgentModelGateway.tier(
             for: capabilities,
             conformanceProfile: conformanceProfile
@@ -1561,10 +1567,18 @@ struct ResultPanelView: View {
         case .appleLocal:
             return descriptor.modelName.map { "Apple Foundation Models - \($0)" } ?? "Apple Foundation Models"
         case .mlxLocal:
+            // Prefer the routed model named by the adapter; the stored selection can differ
+            // from what the router actually ran.
+            if let modelName = descriptor.modelName {
+                let path = mlxDetector.cachedModels()
+                    .first { $0.repositoryID == modelName }?
+                    .localURL?.path
+                return path.map { "\(modelName) [MLX] at \($0)" } ?? "\(modelName) [MLX]"
+            }
             if let selection = mlxModelStore.selectedModel {
                 return "\(selection.repositoryID) [MLX] at \(selection.localPath)"
             }
-            return descriptor.modelName.map { "\($0) [MLX]" } ?? "MLX local model (selection unavailable)"
+            return "MLX local model (selection unavailable)"
         case .pixelPaneCloud:
             return descriptor.modelName.map { "Pixel Pane Cloud - \($0)" } ?? "Pixel Pane Cloud"
         case .fixture, .openAICompatible, .custom:
@@ -1788,7 +1802,15 @@ struct ResultPanelView: View {
            agentRunViewModel.state.activeStatus != .completed {
             switch agentRunViewModel.state.activeStatus {
             case .queued, .running, .waitingForApproval, .waitingForUserInput, .interrupted:
-                turns[index].runtimeProgressSummary = agentRunViewModel.state.statusSummary
+                let activity = compactActivitySummary(agentRunViewModel.state.statusSummary)
+                turns[index].runtimeProgressSummary = activity
+                if turns[index].runtimeActivityLog.last != activity {
+                    turns[index].runtimeActivityLog.append(activity)
+                    let overflow = turns[index].runtimeActivityLog.count - 4
+                    if overflow > 0 {
+                        turns[index].runtimeActivityLog.removeFirst(overflow)
+                    }
+                }
             case .blocked, .failed, .canceled:
                 turns[index].answer = agentRunViewModel.state.statusSummary
             case .draft, .completed, .none:
@@ -2271,7 +2293,12 @@ struct ResultPanelView: View {
         Task {
             do {
                 let model = await makeAgentKernelModelAdapter(userMessage: question)
-                let conformanceProfile = currentMLXAgentConformanceProfile()
+                // ROUTER-5: reflect the model the router actually chose (which may differ from
+                // the pre-run label) so the user sees the live model in the moment.
+                let routedLabel = routedBackendLabel(for: model)
+                actionBackendLabel = routedLabel
+                setOutputState(askOutputState(backendLabel: routedLabel), for: .ask)
+                let conformanceProfile = currentMLXAgentConformanceProfile(forRepositoryID: model.descriptor.modelName)
                 let toolConfiguration = agentToolRunConfiguration(for: model)
                 try await agentRunViewModel.startRun(
                     userMessage: question,
@@ -2285,7 +2312,7 @@ struct ResultPanelView: View {
                     systemPrompt: durableAgentSystemPrompt(),
                     maxOutputTokens: AssistantResponsePolicy.maxOutputTokens(for: .ask)
                 )
-                setOutputState(askOutputState(backendLabel: backendLabel), for: .ask)
+                setOutputState(askOutputState(backendLabel: routedLabel), for: .ask)
                 updateExpandedNotchSizeIfNeeded()
             } catch {
                 updateLastAskAnswer("The agent could not start: \(error)", backendLabel: backendLabel)
@@ -2310,21 +2337,30 @@ struct ResultPanelView: View {
     }
 
     private func makeAgentKernelModelAdapter(userMessage: String? = nil) async -> any AgentKernelModelAdapter {
-        let backend = selectedAIBackend
+        // Model router (local-first, Cloud as fallback): pick the route from measured
+        // capability instead of the manual Cloud toggle. Cloud is used only when it is
+        // enabled AND no local model can meet the run's need.
+        let plan = resolveModelPlan(need: agentRouteNeed())
+        let isCloudRoute = plan.mode == .cloud
+        let backend: any AIBackend = isCloudRoute ? cloudAIBackend : localAIBackend
         let capabilities = await backend.capabilities()
-        let modeID: String = routingSettings.effectiveMode == .cloud ? "cloud" : "local"
-        let provider = effectiveAskProvider(capabilities: capabilities)
+        let modeID: String = isCloudRoute ? "cloud" : "local"
+        let provider = effectiveAskProvider(capabilities: capabilities, cloudRoute: isCloudRoute)
         let providerKind = agentProviderKind(for: provider)
-        let modelName = agentModelName(for: provider)
+        // For local MLX, the descriptor names the router-chosen model (not just the stored
+        // selection); per-model conformance lookups key off this name downstream.
+        let modelName: String? = provider == .mlxText
+            ? (plan.repositoryID ?? mlxModelStore.selectedModel?.repositoryID)
+            : agentModelName(for: provider)
         let displayName = agentDisplayName(for: provider, fallback: askBackendLabelForNextTurn())
         let descriptor = AgentKernelModelDescriptor(
             id: "\(modeID).\(backend.id).chat",
             providerKind: providerKind,
-            route: routingSettings.effectiveMode == .cloud ? .cloud : .local,
+            route: isCloudRoute ? .cloud : .local,
             displayName: displayName,
             modelName: modelName
         )
-        if routingSettings.effectiveMode == .cloud {
+        if isCloudRoute {
             return AgentKernelCloudChatAdapter(
                 descriptor: descriptor,
                 backend: backend,
@@ -2338,12 +2374,12 @@ struct ResultPanelView: View {
             backendCapabilities: capabilities
         )
         let adjustedCapabilities = baseCapabilities.applyingAgentConformanceProfile(
-            currentMLXAgentConformanceProfile()
+            currentMLXAgentConformanceProfile(forRepositoryID: plan.repositoryID)
         )
         if provider == .mlxText {
             return AgentKernelMLXNativeToolAdapter(
                 descriptor: descriptor,
-                backend: MLXTextBackend(store: mlxModelStore),
+                backend: MLXTextBackend(store: mlxModelStore, modelSelectionOverride: plan.localModel),
                 capabilities: adjustedCapabilities,
                 preferredProvider: .mlxText
             )
@@ -2356,14 +2392,101 @@ struct ResultPanelView: View {
         )
     }
 
-    private func effectiveAskProvider(capabilities: AIBackendCapabilities) -> AIBackendProvider? {
-        if routingSettings.effectiveMode == .cloud {
+    private func effectiveAskProvider(
+        capabilities: AIBackendCapabilities,
+        cloudRoute: Bool? = nil
+    ) -> AIBackendProvider? {
+        let isCloud = cloudRoute ?? (routingSettings.effectiveMode == .cloud)
+        if isCloud {
             return .pixelPaneCloud
         }
         if case .available(let provider) = capabilities.text {
             return provider
         }
         return nil
+    }
+
+    /// What the upcoming run needs from a model. When local file grants exist the run is
+    /// agentic (tool loop over files) and needs a tool-capable model; otherwise plain chat.
+    private func agentRouteNeed() -> AgentModelRunNeed {
+        agentRuntimeLocalGrants().isEmpty ? .plainChat : .toolCapable
+    }
+
+    /// The route plus the specific local model the router chose for this run.
+    private struct ResolvedModelPlan {
+        let mode: AIRoutingMode
+        /// The router-chosen local model (nil for cloud or the store-default fallback).
+        let localModel: MLXVisionModelSelection?
+        /// The chosen local model's repository id, used as the descriptor model name and the
+        /// key for per-model conformance lookups.
+        let repositoryID: String?
+    }
+
+    /// Cloud Mode is an explicit route: it uses Pixel Pane Cloud directly with no routing.
+    /// Local Mode routes among installed, text-capable, conformance-checked local models only
+    /// (never silently cloud). The router prefers the strongest agent-ready local model.
+    /// Falls back to the stored selection when nothing has been checked yet.
+    private func resolveModelPlan(need: AgentModelRunNeed) -> ResolvedModelPlan {
+        if routingSettings.effectiveMode == .cloud {
+            return ResolvedModelPlan(mode: .cloud, localModel: nil, repositoryID: nil)
+        }
+        // A pinned model overrides the router entirely (user chose a specific model).
+        // Falls through to automatic routing if the pinned model is no longer installed.
+        if let pinnedID = routingSettings.pinnedLocalModelID,
+           let pinned = mlxDetector.cachedModels().first(where: { $0.repositoryID == pinnedID && $0.isTextCompatible }),
+           let pinnedURL = pinned.localURL {
+            return ResolvedModelPlan(
+                mode: .local,
+                localModel: MLXVisionModelSelection(
+                    repositoryID: pinned.repositoryID,
+                    localPath: pinnedURL.path,
+                    smokeTestedAt: Date()
+                ),
+                repositoryID: pinned.repositoryID
+            )
+        }
+        let textRuntimeURL = mlxDetector.mlxTextGenerateExecutableURL()
+        let selectedID = mlxModelStore.selectedModel?.repositoryID
+        var localByID: [String: MLXVisionModelSelection] = [:]
+        var candidates: [AgentModelRouterCandidate] = []
+        for model in mlxDetector.cachedModels() where model.isTextCompatible {
+            guard let url = model.localURL else { continue }
+            let selection = MLXVisionModelSelection(
+                repositoryID: model.repositoryID,
+                localPath: url.path,
+                smokeTestedAt: Date()
+            )
+            let target = AgentModelConformanceTarget.mlxText(selection: selection, textRuntimeURL: textRuntimeURL)
+            guard let profile = agentModelConformanceStore.profile(for: target) else { continue }
+            localByID[model.repositoryID] = selection
+            candidates.append(
+                AgentModelRouterCandidate(
+                    id: model.repositoryID,
+                    displayName: model.displayName,
+                    kind: .local,
+                    tier: profile.derivedTier,
+                    isLoaded: model.repositoryID == selectedID,
+                    strengthHint: AgentModelRouter.parameterCountHint(fromModelID: model.repositoryID)
+                )
+            )
+        }
+        switch AgentModelRouter().choose(
+            AgentModelRouterInput(
+                need: need,
+                candidates: candidates,
+                cloudEnabled: false,
+                preference: .preferLocalFast
+            )
+        ) {
+        case .selected(let candidate, _), .degraded(let candidate, _):
+            return ResolvedModelPlan(
+                mode: .local,
+                localModel: localByID[candidate.id],
+                repositoryID: candidate.id
+            )
+        case .unavailable:
+            return ResolvedModelPlan(mode: .local, localModel: nil, repositoryID: selectedID)
+        }
     }
 
     private func agentProviderKind(for provider: AIBackendProvider?) -> AgentKernelModelProviderKind {
@@ -2407,10 +2530,53 @@ struct ResultPanelView: View {
         }
     }
 
+    /// Compacts the app's own durable progress strings into short live-activity labels for the
+    /// thinking indicator ("Asking Qwen3.6-35B…", "Read landing.css", "Listed folder"). These are
+    /// app-emitted constants, not model output, so format mapping is safe; unknown strings pass through.
+    private func compactActivitySummary(_ raw: String) -> String {
+        if raw == "Asking the model." {
+            if let label = actionBackendLabel, label.hasPrefix("MLX Text: ") {
+                let model = String(label.dropFirst("MLX Text: ".count))
+                return "Asking \(Self.compactModelName(model))…"
+            }
+            if actionBackendLabel == Self.cloudBackendLabel {
+                return "Asking Cloud…"
+            }
+            return "Thinking…"
+        }
+        if raw.hasPrefix("Read ") {
+            let path = String(raw.dropFirst("Read ".count)).trimmingCharacters(in: CharacterSet(charactersIn: ". "))
+            return "Read \(URL(fileURLWithPath: path).lastPathComponent)"
+        }
+        if raw.hasPrefix("Listed ") {
+            return "Listed folder"
+        }
+        if raw.hasPrefix("Found ") {
+            return "Searched files"
+        }
+        if raw.hasPrefix("Repacking") {
+            return "Compacting context…"
+        }
+        return raw
+    }
+
+    /// A user-facing label naming the model the router actually chose for this run, so the panel
+    /// can show the live model in the moment (e.g. "MLX Text: Qwen3.6-35B-A3B-6bit" or the cloud label).
+    private func routedBackendLabel(for model: any AgentKernelModelAdapter) -> String {
+        if model.descriptor.route == .cloud {
+            return Self.cloudBackendLabel
+        }
+        if let name = model.descriptor.modelName, !name.isEmpty {
+            let compact = name.split(separator: "/").last.map(String.init) ?? name
+            return "\(model.descriptor.displayName): \(compact)"
+        }
+        return model.descriptor.displayName
+    }
+
     private func agentToolRunConfiguration(
         for model: any AgentKernelModelAdapter
     ) -> (mode: AgentModelGatewayMode, tools: [AgentKernelToolSchema], context: AgentToolRunContext) {
-        let conformanceProfile = currentMLXAgentConformanceProfile()
+        let conformanceProfile = currentMLXAgentConformanceProfile(forRepositoryID: model.descriptor.modelName)
         let providerTier = AgentModelGateway.tier(
             for: model.capabilities,
             conformanceProfile: conformanceProfile
@@ -2465,6 +2631,29 @@ struct ResultPanelView: View {
         return agentModelConformanceStore.profile(for: target)
     }
 
+    /// Conformance profile for a specific installed model by repository id (the router-chosen
+    /// model). Falls back to the stored selection's profile when the id is nil/unknown.
+    private func currentMLXAgentConformanceProfile(forRepositoryID repositoryID: String?) -> AgentModelConformanceProfile? {
+        guard let repositoryID,
+              repositoryID != mlxModelStore.selectedModel?.repositoryID else {
+            return currentMLXAgentConformanceProfile()
+        }
+        guard let model = mlxDetector.cachedModels().first(where: { $0.repositoryID == repositoryID }),
+              let url = model.localURL else {
+            return currentMLXAgentConformanceProfile()
+        }
+        let selection = MLXVisionModelSelection(
+            repositoryID: repositoryID,
+            localPath: url.path,
+            smokeTestedAt: Date()
+        )
+        let target = AgentModelConformanceTarget.mlxText(
+            selection: selection,
+            textRuntimeURL: mlxDetector.mlxTextGenerateExecutableURL()
+        )
+        return agentModelConformanceStore.profile(for: target)
+    }
+
     private func agentRuntimeLocalGrants() -> [AgentLocalFileGrant] {
         localFileAccess.grants.map { grant in
             AgentLocalFileGrant(
@@ -2486,7 +2675,7 @@ struct ResultPanelView: View {
         Task {
             do {
                 let model = await makeAgentKernelModelAdapter()
-                let conformanceProfile = currentMLXAgentConformanceProfile()
+                let conformanceProfile = currentMLXAgentConformanceProfile(forRepositoryID: model.descriptor.modelName)
                 try await agentRunViewModel.approveWait(
                     approval.waitID,
                     adapter: model,
@@ -2507,7 +2696,7 @@ struct ResultPanelView: View {
         Task {
             do {
                 let model = await makeAgentKernelModelAdapter()
-                let conformanceProfile = currentMLXAgentConformanceProfile()
+                let conformanceProfile = currentMLXAgentConformanceProfile(forRepositoryID: model.descriptor.modelName)
                 try await agentRunViewModel.denyWait(
                     approval.waitID,
                     adapter: model,

@@ -57,7 +57,7 @@ struct AgentKernelAIBackendAdapter: AgentKernelModelAdapter {
             return AgentKernelModelAdapterResponse(
                 requestID: request.id,
                 descriptor: descriptor,
-                events: [.malformedOutput(error.localizedDescription)],
+                events: [.transportFailure(error.localizedDescription)],
                 diagnostics: AgentKernelBoundedText(error.localizedDescription)
             )
         }
@@ -106,7 +106,7 @@ struct AgentKernelAIBackendAdapter: AgentKernelModelAdapter {
                     }
                     continuation.finish()
                 } catch {
-                    continuation.yield(.malformedOutput(error.localizedDescription))
+                    continuation.yield(.transportFailure(error.localizedDescription))
                     continuation.finish()
                 }
             }
@@ -145,7 +145,7 @@ struct AgentKernelAIBackendAdapter: AgentKernelModelAdapter {
                     return response(for: request, events: [.malformedOutput(repairedText)], diagnostics: repairReason.summary)
                 }
             } catch {
-                return response(for: request, events: [.malformedOutput(error.localizedDescription)], diagnostics: reason.summary)
+                return response(for: request, events: [.transportFailure(error.localizedDescription)], diagnostics: reason.summary)
             }
         }
     }

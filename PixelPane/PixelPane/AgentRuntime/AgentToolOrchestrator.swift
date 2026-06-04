@@ -86,7 +86,7 @@ actor AgentToolOrchestrator {
         var observedToolResults = 0
         var observedSideEffectToolResults = 0
         var observedRequiredSideEffectToolNames = Set<String>()
-        var toolCallHistory: [String: Int] = [:]
+        var loopController = AgentToolLoopController(maxIterations: maxIterations)
         var finalAnswerRejectionCounts: [FinalAnswerRejectionKind: Int] = [:]
         let shouldRunPreflight = baseRequest.metadata["skipPreflight"]?.boolValue != true
         if shouldRunPreflight,
@@ -247,13 +247,13 @@ actor AgentToolOrchestrator {
             }
 
             let signature = Self.toolCallSignature(toolCall)
-            let priorCount = toolCallHistory[signature, default: 0]
-            toolCallHistory[signature] = priorCount + 1
-            let repeatedFailingCall = result.status == .failed && priorCount >= 1
+            let priorCount = loopController.registerToolCall(signature: signature)
 
             // No-progress guard: the same tool call keeps failing. Stop looping and try a
             // best-effort answer instead of silently burning the whole budget (RELY-004 / RC-4).
-            if repeatedFailingCall && priorCount >= 2 {
+            let repeatedFailingCall: Bool
+            switch loopController.noProgressDecision(status: result.status, priorCount: priorCount) {
+            case .halt:
                 if try await attemptBestEffortFinalAnswer(
                     runID: runID,
                     baseRequest: baseRequest,
@@ -267,17 +267,16 @@ actor AgentToolOrchestrator {
                 }
                 try await failRun(
                     runID: runID,
-                    reason: AgentRunText("The agent repeated the same failing action without making progress. \(result.summary.text)"),
+                    reason: AgentRunText(loopController.noProgressBlockReason(summary: result.summary.text)),
                     status: .blocked
                 )
                 return
+            case .continue(let repeated):
+                repeatedFailingCall = repeated
             }
 
             let observationText = repeatedFailingCall
-                ? """
-                You already called \(toolCall.name) with the same arguments and it failed: \(result.summary.text)
-                Do not repeat that exact call. Call list_grants to see valid writable targets, choose different arguments or a different tool, or produce your best final answer now.
-                """
+                ? loopController.repeatedFailingObservation(toolName: toolCall.name, summary: result.summary.text)
                 : result.modelObservationText
             let observation = AgentKernelMessage(
                 role: .observation,
@@ -326,9 +325,38 @@ actor AgentToolOrchestrator {
         }
         try await failRun(
             runID: runID,
-            reason: AgentRunText(AgentToolOrchestratorError.maxIterationsExceeded(maxIterations).description),
+            reason: AgentRunText(loopController.maxIterationsBlockReason()),
             status: .blocked
         )
+    }
+
+    /// Short live-activity label for a starting tool call ("Reading landing.css",
+    /// "Listing folder"). Maps the app's own tool primitives to display copy.
+    private nonisolated static func toolActivityLabel(for call: AgentKernelToolCall) -> String {
+        func basename(_ key: String) -> String? {
+            guard let value = call.arguments[key], !value.isEmpty else { return nil }
+            return URL(fileURLWithPath: value).lastPathComponent
+        }
+        switch call.name {
+        case "read_file":
+            return basename("path").map { "Reading \($0)" } ?? "Reading file"
+        case "list_folder":
+            return basename("path").map { "Listing \($0)" } ?? "Listing folder"
+        case "search_files":
+            return "Searching files"
+        case "list_grants":
+            return "Checking access"
+        case "get_process_snapshot":
+            return "Checking processes"
+        case "get_local_listener_snapshot":
+            return "Checking servers"
+        case "stage_write_proposal":
+            return basename("targetPath").map { "Drafting \($0)" } ?? "Drafting write"
+        case "run_finite_command":
+            return "Running command"
+        default:
+            return "Running \(call.name)"
+        }
     }
 
     private nonisolated static func toolCallSignature(_ call: AgentKernelToolCall) -> String {
@@ -1876,6 +1904,14 @@ actor AgentToolOrchestrator {
             kind: .custom,
             payload: .metadata(toolMetadata(call))
         )
+        // Surface a compact live-activity line when the tool STARTS (results already
+        // emit progress on completion), so the UI can show what is happening now.
+        try await store.appendEvent(
+            runID: runID,
+            stepID: requestStep.stepID,
+            kind: .progress,
+            payload: .progress(AgentRunText(Self.toolActivityLabel(for: call)))
+        )
         try await recordToolCall(
             call,
             runID: runID,
@@ -2319,7 +2355,7 @@ actor AgentToolOrchestrator {
                 if !trimmed.isEmpty {
                     return AgentKernelFinalAnswer(text: trimmed)
                 }
-            case .toolCall, .malformedOutput, .emptyOutput, .timedOut:
+            case .toolCall, .malformedOutput, .transportFailure, .emptyOutput, .timedOut:
                 continue
             }
         }

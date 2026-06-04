@@ -52,17 +52,19 @@ nonisolated struct AgentEvidenceController: Sendable {
                 missing: "Local listener claims need listener snapshot evidence."
             )
         case .localFileObserved:
+            // A claim about a file's CONTENT must be backed by actually reading it.
+            // A directory listing or filename search proves the file *exists*, not what
+            // it contains, so neither can ground a local_evidence content claim
+            // (use .fileGrantListed / .fileSearchFound for existence/discovery claims).
             return matching(
                 claim,
                 evidence: evidence,
-                kinds: [.fileRead, .fileSearch, .folderList],
+                kinds: [.fileRead],
                 predicate: { record in
                     guard let target = claim.target, !target.isEmpty else { return true }
                     return record.stringMetadata("path") == target
-                        || record.stringMetadata("topPath") == target
-                        || record.stringMetadata("paths")?.split(separator: "\n").map(String.init).contains(target) == true
                 },
-                missing: "Local-file claims need file evidence."
+                missing: "Local-file content claims need file-read evidence."
             )
         case .commandOutputRecorded:
             return matching(

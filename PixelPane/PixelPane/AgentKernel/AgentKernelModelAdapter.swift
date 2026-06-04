@@ -169,7 +169,12 @@ nonisolated enum AgentKernelModelAdapterEvent: Codable, Equatable, Sendable {
     case snapshot(String)
     case finalAnswer(AgentKernelFinalAnswer)
     case toolCall(AgentKernelToolCall)
+    /// The model replied but the reply could not be used (parse/protocol failure).
     case malformedOutput(String)
+    /// The request failed before the model produced any output (network, auth,
+    /// rate limit, local runtime). Distinct from malformedOutput so transport
+    /// problems are never misreported as model-quality problems.
+    case transportFailure(String)
     case emptyOutput
     case timedOut
 
@@ -187,6 +192,8 @@ nonisolated enum AgentKernelModelAdapterEvent: Codable, Equatable, Sendable {
             .toolCall(call)
         case .malformedOutput(let text):
             .malformedOutput(text)
+        case .transportFailure(let text):
+            .transportFailure(text)
         case .emptyOutput:
             .emptyOutput
         case .timedOut:

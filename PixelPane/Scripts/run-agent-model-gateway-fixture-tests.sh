@@ -27,6 +27,7 @@ swiftc \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentKernel/AgentKernelAIBackendAdapter.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentKernel/AgentKernelCloudChatAdapter.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentKernel/FixtureAgentKernelAdapter.swift" \
+  "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentModelRouter.swift" \
   "${PROJECT_ROOT}/PixelPane/PixelPane/AgentRuntime/AgentModelGateway.swift" \
   "${PROJECT_ROOT}/PixelPane/Scripts/agent-model-gateway-fixture-tests.swift" \
   -o "${TMP_BINARY}"
