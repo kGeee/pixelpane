@@ -247,6 +247,19 @@ nonisolated struct MLXVisionRuntimeDetector: @unchecked Sendable {
         )
     }
 
+    /// The model vision captures use: the strongest installed vision-capable
+    /// model, ranked by parameter count. There is no user-facing "default
+    /// model" concept — text routing is the router's job and vision follows
+    /// this deterministic policy.
+    nonisolated func bestInstalledVisionModel() -> MLXVisionModel? {
+        cachedModels()
+            .filter { $0.isInstalled && $0.isVisionCompatible }
+            .max { lhs, rhs in
+                (AgentModelRouter.parameterCountHint(fromModelID: lhs.repositoryID) ?? 0)
+                    < (AgentModelRouter.parameterCountHint(fromModelID: rhs.repositoryID) ?? 0)
+            }
+    }
+
     /// Measured on-disk size of an installed model directory (allocated
     /// bytes, symlinks not followed so HF cache blobs count once).
     private nonisolated func formattedDirectorySize(_ url: URL) -> String? {

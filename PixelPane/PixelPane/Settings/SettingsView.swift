@@ -226,7 +226,6 @@ struct SettingsView: View {
                         ModelRouterRow(
                             model: model,
                             tier: appState.agentReadinessTier(for: model),
-                            isActiveBaseModel: appState.mlxVisionSetupSnapshot.selectedModel?.repositoryID == model.repositoryID,
                             isChecking: appState.isRunningMLXSetupCheck || appState.isRunningAgentModelConformanceCheck
                         ) {
                             appState.runMLXSetupCheck(for: model)
@@ -652,7 +651,6 @@ struct SettingsView: View {
 private struct ModelRouterRow: View {
     let model: MLXVisionModel
     let tier: AgentModelConformanceDerivedTier?
-    let isActiveBaseModel: Bool
     let isChecking: Bool
     let onCheck: () -> Void
 
@@ -667,11 +665,7 @@ private struct ModelRouterRow: View {
                     Text(model.approximateDiskSize)
                     if model.isVisionCompatible {
                         Label("Vision", systemImage: "eye")
-                    }
-                    if isActiveBaseModel {
-                        Label("Default", systemImage: "checkmark.circle")
-                            .foregroundStyle(.green)
-                            .help("Used for vision captures and as the fallback when the router has no checked model. The router still picks the best text model per request.")
+                            .help("Vision-capable: screen captures with images route to the strongest installed vision model automatically.")
                     }
                 }
                 .font(.caption)
@@ -681,7 +675,7 @@ private struct ModelRouterRow: View {
             readinessBadge
             Button("Check", action: onCheck)
                 .disabled(isChecking)
-                .help("Validates this model: text generation, vision (when supported), and agent-tool readiness. Also makes it the active base model.")
+                .help("Validates this model: text generation, vision (when supported), and agent-tool readiness.")
         }
         .padding(.vertical, 2)
     }

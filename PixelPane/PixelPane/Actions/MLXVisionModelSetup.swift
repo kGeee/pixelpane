@@ -116,8 +116,14 @@ nonisolated struct MLXVisionSetupSnapshot: Sendable {
         guard runtimeURL != nil else {
             return .unavailable(.mlxRuntimeMissing)
         }
-        guard setupState == .ready, let selectedModel, selectedModel.isVisionCompatible else {
-            return setupState == .runtimeMissing ? .unavailable(.mlxRuntimeMissing) : .unavailable(.mlxSmokeTestMissing)
+        // Vision routes to the strongest installed vision-capable model, so
+        // availability depends on any such model existing — not on which
+        // model happens to be selected. With none installed, image-aware
+        // actions stay hidden and captures degrade to OCR text gracefully.
+        let hasVisionModel = installedModels.contains { $0.isInstalled && $0.isVisionCompatible }
+            || selectedModel?.isVisionCompatible == true
+        guard hasVisionModel else {
+            return .unavailable(.mlxModelMissing)
         }
         return .available(.mlxVision)
     }
