@@ -2427,7 +2427,8 @@ struct ResultPanelView: View {
                     displayName: model.displayName,
                     kind: .local,
                     tier: profile.derivedTier,
-                    isLoaded: model.repositoryID == selectedID
+                    isLoaded: model.repositoryID == selectedID,
+                    strengthHint: AgentModelRouter.parameterCountHint(fromModelID: model.repositoryID)
                 )
             )
         }

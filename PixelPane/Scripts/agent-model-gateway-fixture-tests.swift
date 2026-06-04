@@ -87,6 +87,27 @@ enum AgentModelGatewayFixtureHarness {
             need: .plainChat, candidates: [], cloudEnabled: false)) else {
             throw HarnessError(description: "empty pool should be unavailable")
         }
+
+        // Readiness tiers are pass/fail, so strength breaks ties: the strongest
+        // agent-ready local model wins even when a weaker one is already loaded.
+        let strongIdle = AgentModelRouterCandidate(
+            id: "q35", displayName: "Q-35B", kind: .local, tier: .tierB,
+            isLoaded: false, strengthHint: 35)
+        let weakLoaded = AgentModelRouterCandidate(
+            id: "h14", displayName: "H-14B", kind: .local, tier: .tierB,
+            isLoaded: true, latencyHint: 1, strengthHint: 14)
+        guard case .selected(let strongest, _) = router.choose(AgentModelRouterInput(
+            need: .toolCapable, candidates: [weakLoaded, strongIdle],
+            cloudEnabled: false, preference: .preferLocalFast)) else {
+            throw HarnessError(description: "router should select among strength-hinted locals")
+        }
+        try expect(strongest.id == "q35", "strongest agent-ready local model should beat the loaded weaker one")
+
+        // Parameter-count hint parses the conventional "<N>B" token (largest wins).
+        try expect(AgentModelRouter.parameterCountHint(fromModelID: "mlx-community/Qwen3.6-35B-A3B-6bit") == 35, "35B id should parse as 35")
+        try expect(AgentModelRouter.parameterCountHint(fromModelID: "mlx-community/Hermes-4-14B-4bit") == 14, "14B id should parse as 14")
+        try expect(AgentModelRouter.parameterCountHint(fromModelID: "mlx-community/Qwen2.5-7B-Instruct-4bit") == 7, "7B id should parse as 7")
+        try expect(AgentModelRouter.parameterCountHint(fromModelID: "some/model-without-size") == nil, "id without a size token should be nil")
     }
 
     private static func testTierClassification() async throws {

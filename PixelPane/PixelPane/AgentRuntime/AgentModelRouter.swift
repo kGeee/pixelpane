@@ -44,8 +44,11 @@ nonisolated struct AgentModelRouterCandidate: Equatable, Sendable {
     let tier: AgentModelConformanceDerivedTier
     /// True when this model is already warm/loaded, so choosing it incurs no swap.
     let isLoaded: Bool
-    /// Optional latency hint (seconds); lower is preferred when tiers tie.
+    /// Optional latency hint (seconds); lower is preferred when stronger signals tie.
     let latencyHint: Double?
+    /// Optional capability hint (e.g. parameter count in billions); readiness tiers are
+    /// pass/fail, so among equally-ready models the stronger one is preferred.
+    let strengthHint: Double?
 
     init(
         id: String,
@@ -53,7 +56,8 @@ nonisolated struct AgentModelRouterCandidate: Equatable, Sendable {
         kind: AgentModelRouteKind,
         tier: AgentModelConformanceDerivedTier,
         isLoaded: Bool = false,
-        latencyHint: Double? = nil
+        latencyHint: Double? = nil,
+        strengthHint: Double? = nil
     ) {
         self.id = id
         self.displayName = displayName
@@ -61,6 +65,7 @@ nonisolated struct AgentModelRouterCandidate: Equatable, Sendable {
         self.tier = tier
         self.isLoaded = isLoaded
         self.latencyHint = latencyHint
+        self.strengthHint = strengthHint
     }
 }
 
@@ -164,15 +169,41 @@ nonisolated struct AgentModelRouter: Sendable {
         let cloud: Double = candidate.kind == .cloud ? 1 : 0
         let loaded: Double = candidate.isLoaded ? 1 : 0
         let latency: Double = candidate.latencyHint ?? .greatestFiniteMagnitude
+        let strength: Double = candidate.strengthHint ?? 0    // tiers are pass/fail; this ranks equals
 
         switch preference {
         case .preferQuality:
-            // Most capable first; among equals prefer cloud, then loaded, then faster.
-            return [-tierScore, -cloud, -loaded, latency]
+            // Most capable first; among equals prefer cloud, then stronger, then loaded, then faster.
+            return [-tierScore, -cloud, -strength, -loaded, latency]
         case .preferLocalFast:
-            // Local first, then already-loaded, then faster, then more capable.
-            return [cloud, -loaded, latency, -tierScore]
+            // Local first, then the most capable local (tier, then strength), then
+            // already-loaded, then faster. Strength outranks loaded so the best
+            // agent-ready model wins even if a weaker one is currently warm.
+            return [cloud, -tierScore, -strength, -loaded, latency]
         }
+    }
+
+    /// A convention-based capability hint parsed from a model id: the largest
+    /// "<number>B" parameter-count token (e.g. "...-35B-..." -> 35, "...7B..." -> 7).
+    /// Generic Hugging Face naming convention, not a model list; nil when absent.
+    static func parameterCountHint(fromModelID modelID: String) -> Double? {
+        guard let regex = try? NSRegularExpression(pattern: #"(\d+(?:\.\d+)?)B(?![a-zA-Z])"#) else {
+            return nil
+        }
+        var best: Double?
+        let fullRange = NSRange(modelID.startIndex..., in: modelID)
+        regex.enumerateMatches(in: modelID, options: [], range: fullRange) { match, _, _ in
+            guard let match,
+                  match.numberOfRanges > 1,
+                  let range = Range(match.range(at: 1), in: modelID),
+                  let value = Double(String(modelID[range])) else {
+                return
+            }
+            if value > (best ?? 0) {
+                best = value
+            }
+        }
+        return best
     }
 
     private func tierRank(_ tier: AgentModelConformanceDerivedTier) -> Int {
