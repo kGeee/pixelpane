@@ -26,7 +26,7 @@ enum LocationPermissionStatus: Equatable, Sendable {
     var detail: String {
         switch self {
         case .notDetermined:
-            "Pixel Pane has not asked for location access yet. Approximate (city-level) location is used only for location-aware questions in Cloud Mode, and only when sharing is enabled."
+            "Allow Pixel Pane in System Settings → Privacy & Security → Location Services, then press Refresh. Approximate (city-level) location is used only for location-aware questions in Cloud Mode, and only when sharing is enabled."
         case .denied:
             "macOS is blocking location access for Pixel Pane. Cloud answers that need your location will ask you for a city instead."
         case .granted:

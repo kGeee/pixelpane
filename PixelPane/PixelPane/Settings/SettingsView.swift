@@ -824,13 +824,6 @@ private struct LocationPermissionSection: View {
 
             HStack {
                 Button {
-                    provider.requestAccess()
-                } label: {
-                    Label("Request Access", systemImage: "lock.open")
-                }
-                .disabled(provider.permissionStatus != .notDetermined)
-
-                Button {
                     if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices") {
                         NSWorkspace.shared.open(url)
                     }
