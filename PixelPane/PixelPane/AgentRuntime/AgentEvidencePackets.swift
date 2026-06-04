@@ -11,6 +11,7 @@ nonisolated enum AgentEvidenceKind: String, Codable, Equatable, Sendable {
     case processSnapshot = "process.snapshot"
     case processState = "process.state"
     case temporalContext = "temporal.context"
+    case locationContext = "location.context"
     case visualContext = "visual.context"
     case approval = "approval"
     case sideEffect = "side_effect"
@@ -337,9 +338,11 @@ nonisolated enum AgentEvidenceClaimType: String, Codable, Equatable, Sendable {
     case commandOutputRecorded = "command_output_recorded"
     case sideEffectRecorded = "side_effect_recorded"
     case temporalContextRecorded = "temporal_context_recorded"
+    case locationContextRecorded = "location_context_recorded"
     case visualContextRecorded = "visual_context_recorded"
     case fileExists = "file_exists"
     case fileSearchFound = "file_search_found"
+    case folderListed = "folder_listed"
     case fileChanged = "file_changed"
     case commandRan = "command_ran"
     case commandSucceeded = "command_succeeded"
@@ -375,6 +378,10 @@ nonisolated struct AgentEvidenceClaim: Codable, Equatable, Sendable {
 
     static func fileSearchFound(_ path: String) -> Self {
         Self(type: .fileSearchFound, target: path)
+    }
+
+    static func folderListed(_ path: String? = nil) -> Self {
+        Self(type: .folderListed, target: path)
     }
 
     static func fileChanged(_ path: String) -> Self {

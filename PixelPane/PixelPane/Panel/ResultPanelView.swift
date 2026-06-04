@@ -11,7 +11,9 @@ struct ResultPanelView: View {
     let routingSettings: AIRoutingSettings
     let localAICapabilities: AIBackendCapabilities
     @ObservedObject var localFileAccess: LocalFileAccessStore
-    @ObservedObject var chatHistory: ChatHistoryStore
+    /// City-level location resolved by the app with explicit user consent;
+    /// attached to cloud-route runs only.
+    let approximateLocation: AgentLocationContext?
     @StateObject private var agentRunViewModel: AgentRunViewModel
     let presentationStyle: ResultPanelPresentationStyle
     let startsInAssistantMode: Bool
@@ -61,7 +63,7 @@ struct ResultPanelView: View {
         routingSettings: AIRoutingSettings,
         localAICapabilities: AIBackendCapabilities,
         localFileAccess: LocalFileAccessStore,
-        chatHistory: ChatHistoryStore,
+        approximateLocation: AgentLocationContext? = nil,
         presentationStyle: ResultPanelPresentationStyle = .floatingNearSelection,
         startsInAssistantMode: Bool = false,
         startsExpanded: Bool = false,
@@ -74,7 +76,7 @@ struct ResultPanelView: View {
         self.routingSettings = routingSettings
         self.localAICapabilities = localAICapabilities
         self.localFileAccess = localFileAccess
-        self.chatHistory = chatHistory
+        self.approximateLocation = approximateLocation
         self.presentationStyle = presentationStyle
         self.startsInAssistantMode = startsInAssistantMode
         self.startsExpanded = startsExpanded
@@ -119,16 +121,14 @@ struct ResultPanelView: View {
         var outputStates: [PanelActionKind: PanelActionOutputState] = [.extractText: extractState]
         outputStates[smartDefaultSelection.action] = initialState
         _selectedAction = State(initialValue: smartDefaultSelection.action)
-        let restoredSession = Self.restoredChatSession(for: result, in: chatHistory)
-        let restoredTurns = restoredSession?.turns.map { AskConversationTurn(storedTurn: $0) } ?? []
-        var initialToolState = restoredSession?.toolState ?? Self.initialAssistantToolState(for: result)
+        var initialToolState = Self.initialAssistantToolState(for: result)
         if result.sourceType == .ocr {
             initialToolState.updateVisualContext(Self.captureVisualState(for: result, imageWillBeSent: false))
         }
-        _askTurns = State(initialValue: restoredTurns)
+        _askTurns = State(initialValue: [])
         _assistantToolState = State(initialValue: initialToolState)
-        _chatContextID = State(initialValue: restoredSession?.contextID ?? Self.defaultChatContextID(for: result))
-        _chatContextKind = State(initialValue: restoredSession?.contextKind ?? Self.defaultChatContextKind(for: result))
+        _chatContextID = State(initialValue: Self.defaultChatContextID(for: result))
+        _chatContextKind = State(initialValue: Self.defaultChatContextKind(for: result))
         _activeText = State(initialValue: initialState.text)
         _actionSourceLabel = State(initialValue: initialState.sourceLabel)
         _actionTargetLabel = State(initialValue: initialState.targetLabel)
@@ -177,21 +177,6 @@ struct ResultPanelView: View {
             .onChange(of: agentRunViewModel.state) { _, _ in
                 applyAgentRunProjectionChange()
             }
-    }
-
-    private static func restoredChatSession(
-        for result: CaptureResult,
-        in store: ChatHistoryStore
-    ) -> StoredChatSession? {
-        switch result.sourceType {
-        case .assistant:
-            nil
-        case .ocr:
-            store.session(
-                contextID: defaultChatContextID(for: result),
-                kind: defaultChatContextKind(for: result)
-            )
-        }
     }
 
     private static func defaultChatContextID(for result: CaptureResult) -> String {
@@ -262,8 +247,22 @@ struct ResultPanelView: View {
             "Answer the user's latest message directly. Do not claim that files, commands, or processes changed unless Pixel Pane records an approved side effect.",
             "Treat this chat as isolated from previous chats. Use only messages visible in this chat as conversation history.",
             "If asked about previous chats or sessions and this chat does not contain them, say that no previous chat context is available here.",
-            "If the available context is insufficient, say what is missing instead of inventing details."
+            "If the available context is insufficient, say what is missing instead of inventing details.",
+            "Never offer follow-up actions that no available tool can perform."
         ]
+
+        // Keep the capability statement truthful per route: the local route is
+        // sealed from the network; the cloud route may resolve current public
+        // information on the provider side.
+        if routingSettings.effectiveMode == .cloud {
+            sections.append(
+                "If current public information cannot be retrieved, say so plainly and answer with what is known instead of offering to look it up later."
+            )
+        } else {
+            sections.append(
+                "This Mac-local route has no internet, web-search, or device-location access, and no tool provides them. When an answer needs live external data, state that limitation briefly and answer with what is available."
+            )
+        }
 
         if hasCaptureContext {
             let ocrText = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2599,7 +2598,8 @@ struct ResultPanelView: View {
             localGrants: grants,
             grantedScopes: [],
             deniedScopes: [.network, .processControl, .privileged],
-            supportedOperations: AgentToolExecutionCapabilities.activeLocalRuntimeOperations
+            supportedOperations: AgentToolExecutionCapabilities.activeLocalRuntimeOperations,
+            approximateLocation: routingSettings.effectiveMode == .cloud ? approximateLocation : nil
         )
         guard providerTier != .tierCPlainChat, runMode != .plainChat else {
             return (.plainChat, [], context)
@@ -2809,7 +2809,6 @@ struct ResultPanelView: View {
         guard loadingActions.isEmpty, !isAskRunning else { return }
         Task {
             try? await agentRunViewModel.clearHistory()
-            chatHistory.clearAll()
             askTurns = []
             setOutputState(askOutputState(), for: .ask)
             updateExpandedNotchSizeIfNeeded()

@@ -176,7 +176,8 @@ actor AgentToolOrchestrator {
                         content: """
                         Runtime rejected the previous final answer.
                         Reason: \(rejection.reason.text)
-                        If the answer depends on a local_evidence claim kind, call an available tool. Otherwise return a final answer grounded as general_knowledge or capability_limitation.
+                        If the answer relies on recorded tool observations, declare grounding.claims as objects {"kind":...,"target":...} matching that evidence. Claim kind values: file_grants, file_listing (folder contents or search results), local_file (file contents you read), process_snapshot, local_listeners, command_output, side_effect, temporal_context, location_context (app-provided approximate location), visual_context.
+                        If needed local state has no recorded observation yet, call an available tool. Only use general_knowledge or capability_limitation when the answer does not state local facts.
                         """
                     )
                     try await recordControlMessage(
@@ -700,6 +701,23 @@ actor AgentToolOrchestrator {
             observations.append(temporal.modelObservation)
         }
 
+        // The app provides approximate location only with the user's explicit
+        // consent (cloud route + sharing toggle + macOS permission); when it
+        // does, record it like temporal context so location-aware answers can
+        // declare grounded location claims.
+        if let location = context.approximateLocation {
+            let hasLocationEvidence = existingEvidence.contains { record in
+                record.kind == AgentEvidenceKind.locationContext.rawValue
+            }
+            if !hasLocationEvidence {
+                _ = try await AgentEvidenceRecorder(store: store).recordLocationContext(
+                    runID: runID,
+                    context: location
+                )
+            }
+            observations.append(location.modelObservation)
+        }
+
         if let commandDraft = profile.taskFrame.explicitCommandDraft,
            baseRequest.tools.contains(where: { $0.name == "run_finite_command" }),
            !existingEvidence.contains(where: { $0.kind == AgentEvidenceKind.commandOutput.rawValue }) {
@@ -1178,12 +1196,16 @@ actor AgentToolOrchestrator {
             return AgentEvidenceClaim(type: .localListenerSnapshotRecorded, target: claim.target)
         case .localFile:
             return AgentEvidenceClaim(type: .localFileObserved, target: claim.target)
+        case .fileListing:
+            return AgentEvidenceClaim(type: .folderListed, target: claim.target)
         case .commandOutput:
             return AgentEvidenceClaim(type: .commandOutputRecorded, target: claim.target)
         case .sideEffect:
             return AgentEvidenceClaim(type: .sideEffectRecorded, target: claim.target)
         case .temporalContext:
             return AgentEvidenceClaim(type: .temporalContextRecorded, target: claim.target)
+        case .locationContext:
+            return AgentEvidenceClaim(type: .locationContextRecorded, target: claim.target)
         case .visualContext:
             return AgentEvidenceClaim(type: .visualContextRecorded, target: claim.target)
         }
@@ -2100,7 +2122,7 @@ actor AgentToolOrchestrator {
                 if let processID = record.stringMetadata("processID") {
                     claims.append(AgentEvidenceClaim(type: .processRunning, target: processID))
                 }
-            case .temporalContext, .visualContext, .approval, .terminalState, .evidenceRequirement, .finalAnswerSupport:
+            case .temporalContext, .locationContext, .visualContext, .approval, .terminalState, .evidenceRequirement, .finalAnswerSupport:
                 continue
             }
         }
@@ -2175,7 +2197,7 @@ actor AgentToolOrchestrator {
                 }
                 return pathMatches(record.stringMetadata("targetPath") ?? record.stringMetadata("path"), path)
             case .commandOutput, .localServer, .processSnapshot, .processState, .temporalContext,
-                 .visualContext, .approval, .terminalState, .evidenceRequirement, .finalAnswerSupport:
+                 .locationContext, .visualContext, .approval, .terminalState, .evidenceRequirement, .finalAnswerSupport:
                 return false
             }
         }
@@ -2204,7 +2226,7 @@ actor AgentToolOrchestrator {
         return evidence.contains { record in
             guard let kind = AgentEvidenceKind(rawValue: record.kind) else { return false }
             switch kind {
-            case .fileRead, .commandOutput, .localServer, .processSnapshot, .processState, .temporalContext, .visualContext:
+            case .fileRead, .commandOutput, .localServer, .processSnapshot, .processState, .temporalContext, .locationContext, .visualContext:
                 return true
             case .fileSearch:
                 return (record.intMetadata("matchCount") ?? 0) > 0
@@ -2250,7 +2272,7 @@ actor AgentToolOrchestrator {
         evidence.contains { record in
             guard let kind = AgentEvidenceKind(rawValue: record.kind) else { return false }
             switch kind {
-            case .fileRead, .fileSearch, .folderList, .commandOutput, .localServer, .processSnapshot, .processState, .temporalContext, .visualContext, .sideEffect:
+            case .fileRead, .fileSearch, .folderList, .commandOutput, .localServer, .processSnapshot, .processState, .temporalContext, .locationContext, .visualContext, .sideEffect:
                 return true
             case .fileGrant, .approval, .terminalState, .evidenceRequirement, .finalAnswerSupport:
                 return false

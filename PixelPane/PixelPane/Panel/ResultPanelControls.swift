@@ -296,61 +296,6 @@ struct OverlayPillButton: View {
     }
 }
 
-struct ChatHistoryMenuButton: View {
-    let sessions: [StoredChatSession]
-    let isDisabled: Bool
-    let onSelect: (StoredChatSession) -> Void
-    let onClearHistory: () -> Void
-
-    var body: some View {
-        Menu {
-            if sessions.isEmpty {
-                Text("No recent chats")
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(sessions) { session in
-                    Button {
-                        onSelect(session)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(session.displayTitle)
-                            Text(session.updatedAt, style: .relative)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .disabled(isDisabled)
-                }
-
-                Divider()
-
-                Button(role: .destructive) {
-                    onClearHistory()
-                } label: {
-                    Label("Clear Chat History", systemImage: "trash")
-                }
-                .disabled(isDisabled)
-            }
-        } label: {
-            HStack(spacing: 0) {
-                Image(systemName: "clock")
-                    .font(.system(size: 12, weight: .semibold))
-            }
-            .foregroundStyle(sessions.isEmpty ? .tertiary : .secondary)
-            .frame(width: 40)
-            .frame(height: 40)
-            .background(.black.opacity(0.24), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .stroke(.white.opacity(0.08), lineWidth: 1)
-            }
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .disabled(isDisabled || sessions.isEmpty)
-        .help(sessions.isEmpty ? "No recent chats yet" : "Open a recent chat")
-    }
-}
-
 struct FileSourceMenuButton: View {
     let grants: [LocalFileGrant]
     let isDisabled: Bool

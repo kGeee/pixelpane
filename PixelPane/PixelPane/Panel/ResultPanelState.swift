@@ -10,6 +10,22 @@ import ImageIO
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Distinguishes assistant chats from screen-capture chats in context IDs,
+/// durable session records, and history UI.
+enum ChatSessionContextKind: String, Codable, Sendable {
+    case assistant
+    case capture
+
+    var displayName: String {
+        switch self {
+        case .assistant:
+            "Chat"
+        case .capture:
+            "Screen region"
+        }
+    }
+}
+
 struct AskConversationTurn: Equatable {
     let question: String
     var answer: String
@@ -34,23 +50,6 @@ struct AskConversationTurn: Equatable {
         self.statistics = statistics
     }
 
-    init(storedTurn: StoredChatTurn) {
-        question = storedTurn.question
-        answer = storedTurn.answer
-        backendLabel = storedTurn.backendLabel
-        runtimeProgressSummary = nil
-        statistics = []
-    }
-
-    func storedTurn() -> StoredChatTurn {
-        StoredChatTurn(
-            id: UUID(),
-            question: question,
-            answer: answer,
-            backendLabel: backendLabel,
-            createdAt: Date()
-        )
-    }
 }
 
 struct PanelActionOutputState: Equatable {

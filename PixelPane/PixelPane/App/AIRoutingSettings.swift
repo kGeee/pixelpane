@@ -6,6 +6,9 @@ struct AIRoutingSettings: Equatable, Sendable {
 
     var useCloudModels: Bool
     var allowCloudImageContext: Bool
+    /// Explicit consent to attach an approximate (city-level) location to
+    /// Cloud Mode requests. Off by default; never applies to the local route.
+    var allowCloudLocationContext: Bool
     /// When set, Local mode uses exactly this installed model (by repository id)
     /// instead of the automatic router. Nil = automatic routing.
     var pinnedLocalModelID: String?
@@ -13,10 +16,12 @@ struct AIRoutingSettings: Equatable, Sendable {
     init(
         useCloudModels: Bool,
         allowCloudImageContext: Bool,
+        allowCloudLocationContext: Bool = false,
         pinnedLocalModelID: String? = nil
     ) {
         self.useCloudModels = useCloudModels
         self.allowCloudImageContext = allowCloudImageContext
+        self.allowCloudLocationContext = allowCloudLocationContext
         self.pinnedLocalModelID = pinnedLocalModelID
     }
 
@@ -61,5 +66,6 @@ enum AIRoutingMode: Equatable, Sendable {
 enum AIRoutingDefaults {
     static let useCloudModelsKey = "UseCloudModels"
     static let allowCloudImageContextKey = "AllowCloudImageContext"
+    static let allowCloudLocationContextKey = "AllowCloudLocationContext"
     static let pinnedLocalModelIDKey = "PinnedLocalModelID"
 }

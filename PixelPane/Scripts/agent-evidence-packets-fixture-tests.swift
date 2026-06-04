@@ -13,6 +13,10 @@ enum AgentEvidencePacketsFixtureHarness {
 
     static func run() async throws {
         try await testFileSearchEvidenceSupportsExactPath()
+        try await testFolderListEvidenceSupportsListingClaims()
+        try await testTemporalContextClaimsAcceptEchoedTargets()
+        try await testLocationContextClaimsVerifyByRecordedEvidence()
+        try await testVisualContextClaimsAcceptDescriptiveTargets()
         try await testFileGrantInventoryEvidenceIsDiscoveryOnly()
         try await testLocalServerEvidenceSupportsFinalAnswerWithoutModelVerifier()
         try await testLocalListenerSnapshotEvidenceSupportsOnlyListenerClaims()
@@ -46,6 +50,146 @@ enum AgentEvidencePacketsFixtureHarness {
         try expect(decision.evidenceIDs == [evidence.evidenceID], "support should point to search evidence")
         try expect(packets.first?.keyFields["topPath"] == .string(targetPath), "context packet should expose answer-critical path")
         try expect(packets.first?.artifactID != nil, "search detail should be artifact-backed")
+    }
+
+    private static func testTemporalContextClaimsAcceptEchoedTargets() async throws {
+        // Replays the cloud weather failure: the model echoed the recorded
+        // context block as its claim target ("currentDate: …, timeZone: …")
+        // and the exact-date predicate rejected an honest declaration.
+        // Temporal context is app-owned singleton evidence: existence is the
+        // verification; targets carry no extra signal.
+        let harness = try await makeHarness()
+        let context = AgentTemporalContext()
+        _ = try await harness.recorder.recordTemporalContext(
+            runID: harness.run.runID,
+            context: context
+        )
+
+        let records = await harness.store.evidenceArtifactSummary(runID: harness.run.runID).evidence
+        let echoed = harness.controller.verify(
+            AgentEvidenceClaim(
+                type: .temporalContextRecorded,
+                target: "currentDate: \(context.currentDate), timeZone: \(context.timeZoneIdentifier)"
+            ),
+            evidence: records
+        )
+        let bareDate = harness.controller.verify(
+            AgentEvidenceClaim(type: .temporalContextRecorded, target: context.currentDate),
+            evidence: records
+        )
+        let untargeted = harness.controller.verify(
+            AgentEvidenceClaim(type: .temporalContextRecorded),
+            evidence: records
+        )
+        let withoutEvidence = harness.controller.verify(
+            AgentEvidenceClaim(type: .temporalContextRecorded),
+            evidence: records.filter { $0.kind != AgentEvidenceKind.temporalContext.rawValue }
+        )
+
+        try expect(echoed.status == .supported, "echoed context-block targets should be supported")
+        try expect(bareDate.status == .supported, "bare current-date targets should be supported")
+        try expect(untargeted.status == .supported, "untargeted temporal claims should be supported")
+        try expect(withoutEvidence.status != .supported, "temporal claims still require recorded temporal evidence")
+    }
+
+    private static func testLocationContextClaimsVerifyByRecordedEvidence() async throws {
+        // App-owned singleton evidence like temporal context: claims verify by
+        // existence of the recorded approximate location, not target echoes.
+        let harness = try await makeHarness()
+        _ = try await harness.recorder.recordLocationContext(
+            runID: harness.run.runID,
+            context: AgentLocationContext(city: "Los Angeles", region: "CA", countryCode: "US")
+        )
+
+        let records = await harness.store.evidenceArtifactSummary(runID: harness.run.runID).evidence
+        let untargeted = harness.controller.verify(
+            AgentEvidenceClaim(type: .locationContextRecorded),
+            evidence: records
+        )
+        let echoed = harness.controller.verify(
+            AgentEvidenceClaim(type: .locationContextRecorded, target: "Los Angeles, CA, US"),
+            evidence: records
+        )
+        let withoutEvidence = harness.controller.verify(
+            AgentEvidenceClaim(type: .locationContextRecorded),
+            evidence: records.filter { $0.kind != AgentEvidenceKind.locationContext.rawValue }
+        )
+
+        try expect(untargeted.status == .supported, "location claims should be supported by recorded location evidence")
+        try expect(echoed.status == .supported, "echoed location targets should be supported")
+        try expect(withoutEvidence.status != .supported, "location claims still require recorded location evidence")
+    }
+
+    private static func testVisualContextClaimsAcceptDescriptiveTargets() async throws {
+        // Replays the cloud capture failure: the model declared
+        // visual_context with descriptive targets ("screen_capture",
+        // "Screen region – Activity Monitor memory tab") and the verifier
+        // demanded an exact echo of the internal source metadata ("capture").
+        // App-recorded visual context verifies by existence.
+        let harness = try await makeHarness()
+        _ = try await harness.recorder.recordVisualContext(
+            runID: harness.run.runID,
+            attachment: AgentKernelModelAttachment(
+                modality: .text,
+                label: "Screen region",
+                transientOnly: true,
+                metadata: [
+                    "source": .string("capture"),
+                    "hasImageInput": .bool(false),
+                    "hasOCRText": .bool(true),
+                    "ocrText": .string("Activity Monitor\nAll Processes")
+                ]
+            )
+        )
+
+        let records = await harness.store.evidenceArtifactSummary(runID: harness.run.runID).evidence
+        let descriptive = harness.controller.verify(
+            AgentEvidenceClaim(type: .visualContextRecorded, target: "screen_capture"),
+            evidence: records
+        )
+        let untargeted = harness.controller.verify(
+            AgentEvidenceClaim(type: .visualContextRecorded),
+            evidence: records
+        )
+        let withoutEvidence = harness.controller.verify(
+            AgentEvidenceClaim(type: .visualContextRecorded),
+            evidence: records.filter { $0.kind != AgentEvidenceKind.visualContext.rawValue }
+        )
+
+        try expect(descriptive.status == .supported, "descriptive visual-context targets should be supported")
+        try expect(untargeted.status == .supported, "untargeted visual-context claims should be supported")
+        try expect(withoutEvidence.status != .supported, "visual-context claims still require recorded visual evidence")
+    }
+
+    private static func testFolderListEvidenceSupportsListingClaims() async throws {
+        let harness = try await makeHarness()
+        let folderPath = "/Users/nayak/Documents/random-tests"
+        let filePath = "\(folderPath)/short_story.txt"
+        let evidence = try await harness.recorder.recordFolderList(
+            runID: harness.run.runID,
+            folderPath: folderPath,
+            entries: [
+                AgentFolderEntry(path: filePath, displayName: "short_story.txt", isDirectory: false, byteCount: 1_346)
+            ]
+        )
+
+        let records = await harness.store.evidenceArtifactSummary(runID: harness.run.runID).evidence
+        let byFolder = harness.controller.verify(.folderListed(folderPath), evidence: records)
+        let byEntry = harness.controller.verify(.folderListed(filePath), evidence: records)
+        let untargeted = harness.controller.verify(.folderListed(), evidence: records)
+        let wrongFolder = harness.controller.verify(.folderListed("/Users/nayak/Documents/other"), evidence: records)
+        // A listing observation says what exists, not what files contain.
+        let contentClaim = harness.controller.verify(
+            AgentEvidenceClaim(type: .localFileObserved, target: filePath),
+            evidence: records
+        )
+
+        try expect(byFolder.status == .supported, "folder-listing claim should be supported by listing evidence for the folder")
+        try expect(byFolder.evidenceIDs == [evidence.evidenceID], "support should point to the folder-list evidence")
+        try expect(byEntry.status == .supported, "folder-listing claim should be supported when targeting a listed entry")
+        try expect(untargeted.status == .supported, "untargeted listing claim should accept any recorded listing")
+        try expect(wrongFolder.status != .supported, "listing claim for an unlisted folder must not be supported")
+        try expect(contentClaim.status != .supported, "file-content claims must still require file-read evidence (GROUND-1)")
     }
 
     private static func testFileGrantInventoryEvidenceIsDiscoveryOnly() async throws {

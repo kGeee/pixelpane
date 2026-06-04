@@ -154,6 +154,7 @@ nonisolated struct AgentTemporalContext: Codable, Equatable, Sendable {
     }
 }
 
+
 nonisolated struct AgentRunTaskProfile: Codable, Equatable, Sendable {
     let userMessage: String
     let taskFrame: AgentTaskFrame

@@ -46,14 +46,23 @@ final class MLXVisionBackend: AIBackend, @unchecked Sendable {
                     return
                 }
 
-                guard let selection = store.selectedModel else {
+                // Vision routes deterministically to the strongest installed
+                // vision-capable model; the stored selection is only a
+                // fallback for custom-folder models outside the HF cache.
+                let candidateURLs: [URL] = [
+                    detector.bestInstalledVisionModel()?.localURL,
+                    store.selectedModel.map { URL(fileURLWithPath: $0.localPath) }
+                ].compactMap { $0 }
+                guard !candidateURLs.isEmpty else {
                     state.fail(error: AIBackendError.unavailable(.mlxModelMissing))
                     return
                 }
-
-                let modelURL = URL(fileURLWithPath: selection.localPath)
-                guard let snapshotURL = detector.usableVisionSnapshotURL(in: modelURL) else {
-                    state.fail(error: AIBackendError.unavailable(.mlxSmokeTestMissing))
+                guard let snapshotURL = candidateURLs.lazy.compactMap(detector.usableVisionSnapshotURL(in:)).first else {
+                    // No usable vision snapshot anywhere: distinguish "no
+                    // vision-capable model installed" (degrade to OCR-only
+                    // flows) from "a vision model exists but is unusable".
+                    let hasVisionCapableModel = detector.bestInstalledVisionModel() != nil
+                    state.fail(error: AIBackendError.unavailable(hasVisionCapableModel ? .mlxSmokeTestMissing : .mlxModelMissing))
                     return
                 }
 

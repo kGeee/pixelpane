@@ -56,6 +56,9 @@ enum AgentToolCallingFixtureHarness {
         try await testFolderEvidenceCannotSupportListenerGrounding()
         try await testModelRequestedListenerSnapshotRecordsEvidence()
         try await testToolLoopListsGrantedFolderAndContinues()
+        try await testFileListingClaimGroundsFolderAnswer()
+        try await testApproximateLocationContextGroundsLocationClaims()
+        try await testEmptyLocalEvidenceClaimsRepairToListingClaim()
         try await testSearchAndReadToolsRecordEvidence()
         try await testQuotedSearchUsesPreciseQuery()
         try await testMultipleQuotedSearchesCreateSeparateEvidence()
@@ -498,6 +501,137 @@ enum AgentToolCallingFixtureHarness {
         try expect(trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.folderList.rawValue }), "folder evidence should be recorded")
         try expect(!trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.localServer.rawValue }), "listener evidence should not be fabricated from folder evidence")
         try expect(harness.viewModel.state.activeStatus == .blocked, "listener claims should block without listener evidence")
+    }
+
+    @MainActor
+    private static func testFileListingClaimGroundsFolderAnswer() async throws {
+        // A "what is in my folder?" answer is a discovery claim: it must be
+        // groundable by folder-list evidence via the file_listing claim kind.
+        let harness = try await makeHarness(prefix: "grounding-file-listing")
+        try "fixture".write(to: harness.workspace.appendingPathComponent("fixture.txt"), atomically: true, encoding: .utf8)
+        let listingGrounding = AgentKernelAnswerGrounding(
+            basis: .localEvidence,
+            claims: [AgentKernelAnswerClaim(kind: .fileListing, target: harness.workspace.path)]
+        )
+        let adapter = tierBFixtureAdapter(
+            responses: [
+                .toolCall(name: "list_folder", arguments: ["path": harness.workspace.path], reason: nil),
+                groundedFinalAnswer("The folder contains fixture.txt.", grounding: listingGrounding)
+            ]
+        )
+        let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
+
+        let runID = try await harness.viewModel.startRun(
+            userMessage: "What is in my folder?",
+            context: AgentRunViewContext(title: "Grounding File Listing", contextID: "grounding-file-listing", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use the structured protocol.",
+            timeout: 4
+        )
+        try await harness.viewModel.waitForIdle(timeout: 6)
+        await harness.viewModel.refresh()
+
+        let trace = try await harness.store.traceProjection(runID: runID)
+        try expect(trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.folderList.rawValue }), "folder evidence should be recorded")
+        try expect(harness.viewModel.state.activeStatus == .completed, "file_listing claim backed by folder-list evidence should complete")
+    }
+
+    @MainActor
+    private static func testApproximateLocationContextGroundsLocationClaims() async throws {
+        // When the app provides consented approximate location, the runtime
+        // must record it as evidence, surface it to the model as a preflight
+        // observation, and accept location_context grounding claims.
+        let harness = try await makeHarness(prefix: "grounding-location")
+        let adapter = tierBFixtureAdapter(
+            responses: [
+                groundedFinalAnswer(
+                    "Tomorrow in Los Angeles should be sunny.",
+                    grounding: AgentKernelAnswerGrounding(
+                        basis: .localEvidence,
+                        claims: [AgentKernelAnswerClaim(kind: .locationContext)]
+                    )
+                )
+            ]
+        )
+        let config = toolConfig(
+            grants: [harness.grant],
+            runMode: .readOnly,
+            adapter: adapter,
+            approximateLocation: AgentLocationContext(city: "Los Angeles", region: "CA", countryCode: "US")
+        )
+
+        let runID = try await harness.viewModel.startRun(
+            userMessage: "What is the weather tomorrow?",
+            context: AgentRunViewContext(title: "Grounding Location", contextID: "grounding-location", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use the structured protocol.",
+            timeout: 4
+        )
+        try await harness.viewModel.waitForIdle(timeout: 6)
+        await harness.viewModel.refresh()
+
+        let requests = await adapter.requests()
+        let trace = try await harness.store.traceProjection(runID: runID)
+        try expect(
+            trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.locationContext.rawValue && $0.metadata["city"] == .string("Los Angeles") }),
+            "consented approximate location should be recorded as evidence"
+        )
+        try expect(
+            requests.first?.messages.contains(where: { $0.role == .observation && $0.content.contains("App-owned approximate location") }) == true,
+            "model should receive the approximate-location observation"
+        )
+        try expect(harness.viewModel.state.activeStatus == .completed, "location_context claim backed by recorded location evidence should complete")
+    }
+
+    @MainActor
+    private static func testEmptyLocalEvidenceClaimsRepairToListingClaim() async throws {
+        // Replays the cloud chat1 failure: local_evidence with claims:[] is
+        // rejected, but the repair observation must teach the claim
+        // vocabulary so a compliant model can fix its declaration and finish.
+        let harness = try await makeHarness(prefix: "grounding-empty-claims")
+        try "fixture".write(to: harness.workspace.appendingPathComponent("fixture.txt"), atomically: true, encoding: .utf8)
+        let adapter = tierBFixtureAdapter(
+            responses: [
+                .toolCall(name: "list_folder", arguments: ["path": harness.workspace.path], reason: nil),
+                groundedFinalAnswer("The folder contains fixture.txt.", basis: .localEvidence),
+                groundedFinalAnswer(
+                    "The folder contains fixture.txt.",
+                    grounding: AgentKernelAnswerGrounding(
+                        basis: .localEvidence,
+                        claims: [AgentKernelAnswerClaim(kind: .fileListing, target: harness.workspace.path)]
+                    )
+                )
+            ]
+        )
+        let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
+
+        let runID = try await harness.viewModel.startRun(
+            userMessage: "What is in my folder?",
+            context: AgentRunViewContext(title: "Grounding Empty Claims", contextID: "grounding-empty-claims", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use the structured protocol.",
+            timeout: 4
+        )
+        try await harness.viewModel.waitForIdle(timeout: 6)
+        await harness.viewModel.refresh()
+
+        let trace = try await harness.store.traceProjection(runID: runID)
+        let repairMessages = trace.controlRecords.compactMap { record -> String? in
+            guard record.kind == .finalAnswerRepairObservation,
+                  case .modelMessage(let message) = record.payload else { return nil }
+            return message.content
+        }
+        try expect(repairMessages.contains(where: { $0.contains("file_listing") }), "repair observation should name the claim kind vocabulary")
+        try expect(harness.viewModel.state.activeStatus == .completed, "declaring file_listing after the repair observation should complete the run")
     }
 
     @MainActor
@@ -2400,7 +2534,8 @@ enum AgentToolCallingFixtureHarness {
         grants: [AgentLocalFileGrant],
         runMode: AgentRunPermissionMode,
         adapter: any AgentKernelModelAdapter,
-        modelConformanceProfile: AgentModelConformanceProfile? = nil
+        modelConformanceProfile: AgentModelConformanceProfile? = nil,
+        approximateLocation: AgentLocationContext? = nil
     ) -> (mode: AgentModelGatewayMode, tools: [AgentKernelToolSchema], context: AgentToolRunContext) {
         let tier = AgentModelGateway.tier(
             for: adapter.capabilities,
@@ -2409,7 +2544,8 @@ enum AgentToolCallingFixtureHarness {
         let context = AgentToolRunContext(
             runMode: runMode,
             localGrants: grants,
-            deniedScopes: [.network, .processControl, .privileged]
+            deniedScopes: [.network, .processControl, .privileged],
+            approximateLocation: approximateLocation
         )
         let tools = AgentToolCatalog().visibleModelSchemas(
             providerTier: tier,

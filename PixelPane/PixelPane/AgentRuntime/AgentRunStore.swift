@@ -80,6 +80,27 @@ actor AgentRunStore {
             .appendingPathComponent("AgentRuns", isDirectory: true)
     }
 
+    /// Recovery for a default store that exists but cannot be read: move the
+    /// snapshot files into a timestamped quarantine folder (preserving them
+    /// for offline repair) and reopen fresh in the same durable location.
+    nonisolated static func quarantiningUnreadableStore() throws -> AgentRunStore {
+        let root = try defaultRootDirectory()
+        let fileManager = FileManager.default
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+            .replacingOccurrences(of: ":", with: "-")
+        let quarantineDirectory = root.appendingPathComponent("Quarantined-\(timestamp)", isDirectory: true)
+        try fileManager.createDirectory(at: quarantineDirectory, withIntermediateDirectories: true)
+        for fileName in ["store.json", "store.sqlite3", "store.sqlite3-wal", "store.sqlite3-shm"] {
+            let source = root.appendingPathComponent(fileName, isDirectory: false)
+            guard fileManager.fileExists(atPath: source.path) else { continue }
+            try fileManager.moveItem(
+                at: source,
+                to: quarantineDirectory.appendingPathComponent(fileName, isDirectory: false)
+            )
+        }
+        return try AgentRunStore(rootDirectory: root)
+    }
+
     func schemaVersion() -> Int {
         snapshot.schemaVersion
     }
@@ -740,6 +761,57 @@ actor AgentRunStore {
 
     func allSessions() -> [AgentRunSessionRecord] {
         snapshot.sessions.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    /// Sessions that contain at least one user message, newest first, with
+    /// counts suitable for history UI. Sessions created by opening a panel
+    /// without ever sending a message are not counted as saved chats.
+    func sessionSummaries(limit: Int? = nil) -> [AgentRunSessionSummary] {
+        var messageCounts: [UUID: Int] = [:]
+        for event in snapshot.events where event.kind == .userMessage {
+            messageCounts[event.sessionID, default: 0] += 1
+        }
+        let summaries = snapshot.sessions
+            .compactMap { session -> AgentRunSessionSummary? in
+                guard let messageCount = messageCounts[session.id], messageCount > 0 else {
+                    return nil
+                }
+                return AgentRunSessionSummary(
+                    id: session.id,
+                    title: session.title,
+                    contextKind: session.contextKind,
+                    updatedAt: session.updatedAt,
+                    userMessageCount: messageCount
+                )
+            }
+            .sorted { $0.updatedAt > $1.updatedAt }
+        guard let limit else { return summaries }
+        return Array(summaries.prefix(limit))
+    }
+
+    /// Removes one session and everything recorded under it, including
+    /// artifact files on disk.
+    func deleteSession(sessionID: UUID) throws {
+        guard snapshot.sessions.contains(where: { $0.id == sessionID }) else {
+            throw AgentRunStoreError.missingSession(sessionID)
+        }
+
+        for artifact in snapshot.artifacts where artifact.sessionID == sessionID {
+            if let url = try? artifactURL(relativePath: artifact.relativePath) {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+
+        snapshot.sessions.removeAll { $0.id == sessionID }
+        snapshot.runs.removeAll { $0.sessionID == sessionID }
+        snapshot.steps.removeAll { $0.sessionID == sessionID }
+        snapshot.waits.removeAll { $0.sessionID == sessionID }
+        snapshot.artifacts.removeAll { $0.sessionID == sessionID }
+        snapshot.evidence.removeAll { $0.sessionID == sessionID }
+        snapshot.sideEffects.removeAll { $0.sessionID == sessionID }
+        snapshot.controlRecords.removeAll { $0.sessionID == sessionID }
+        snapshot.events.removeAll { $0.sessionID == sessionID }
+        try persist()
     }
 
     func sessionRecord(sessionID: UUID) throws -> AgentRunSessionRecord {

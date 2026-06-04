@@ -467,6 +467,38 @@ actor AgentEvidenceRecorder {
         )
     }
 
+    func recordLocationContext(
+        runID: UUID,
+        stepID: UUID? = nil,
+        context: AgentLocationContext
+    ) async throws -> AgentRunEvidenceRecord {
+        var metadata: [String: AgentRunMetadataValue] = [
+            "city": .string(context.city),
+            "source": .string(context.source)
+        ]
+        if let region = context.region {
+            metadata["region"] = .string(region)
+        }
+        if let countryCode = context.countryCode {
+            metadata["countryCode"] = .string(countryCode)
+        }
+        return try await record(
+            AgentEvidencePacket(
+                sourceID: "location-context:\(runID.uuidString)",
+                kind: .locationContext,
+                summary: AgentRunText("Recorded app-owned approximate location context."),
+                body: AgentRunText(context.modelObservation),
+                artifactMimeType: "text/plain",
+                artifactFileExtension: "txt",
+                privacyClass: .controlPlane,
+                trustClass: .appControl,
+                metadata: metadata
+            ),
+            runID: runID,
+            stepID: stepID
+        )
+    }
+
     @discardableResult
     func recordSideEffect(
         runID: UUID,

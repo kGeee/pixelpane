@@ -11,13 +11,22 @@ struct AgentKernelCloudChatAdapter: AgentKernelModelAdapter {
     private let parser: AgentKernelTextProtocolParser
     private let allowsSingleRepairAttempt: Bool
 
+    /// Hosted models may run provider-side capabilities (e.g. web search)
+    /// before answering; the protocol envelope must still hold afterwards,
+    /// or correct searched answers fall into the recovery path and degrade.
+    nonisolated static let cloudProtocolPreamble = """
+    Provider-hosted web search may be available to you in addition to the local tools below; use it when the question needs current public information. Even after searching, your entire reply must be exactly one JSON object from this protocol, with searched facts inside the final answer text.
+    """
+
     nonisolated init(
         descriptor: AgentKernelModelDescriptor,
         backend: any AIBackend,
         backendCapabilities: AIBackendCapabilities,
         preferredProvider: AIBackendProvider? = .pixelPaneCloud,
         supportsLocalToolProtocol: Bool = false,
-        promptBuilder: AgentKernelTextProtocolPromptBuilder = AgentKernelTextProtocolPromptBuilder(),
+        promptBuilder: AgentKernelTextProtocolPromptBuilder = AgentKernelTextProtocolPromptBuilder(
+            providerPreamble: AgentKernelCloudChatAdapter.cloudProtocolPreamble
+        ),
         parser: AgentKernelTextProtocolParser = AgentKernelTextProtocolParser(),
         allowsSingleRepairAttempt: Bool = true
     ) {

@@ -66,19 +66,28 @@ struct AgentKernelToolProtocolDecoder: Sendable {
             return .failure(reason(code: "text_protocol_unknown_grounding_basis", summary: "Final answer grounding basis is not supported."))
         }
 
-        let rawClaims = groundingObject["claims"] as? [[String: Any]] ?? []
+        let rawClaims = groundingObject["claims"] as? [Any] ?? []
         var claims: [AgentKernelAnswerClaim] = []
         for rawClaim in rawClaims {
-            guard let kindValue = rawClaim["kind"] as? String,
-                  let kind = AgentKernelAnswerClaimKind(rawValue: kindValue) else {
+            // Accept both the documented object form {"kind":...,"target":...}
+            // and a bare kind string; silently dropping unrecognized shapes
+            // would strip the model's declared grounding.
+            let kindValue: String?
+            let target: String?
+            if let object = rawClaim as? [String: Any] {
+                kindValue = object["kind"] as? String
+                target = object["target"] as? String
+            } else if let string = rawClaim as? String {
+                kindValue = string
+                target = nil
+            } else {
+                kindValue = nil
+                target = nil
+            }
+            guard let kindValue, let kind = AgentKernelAnswerClaimKind(rawValue: kindValue) else {
                 return .failure(reason(code: "text_protocol_unknown_grounding_claim", summary: "Final answer grounding claim kind is not supported."))
             }
-            claims.append(
-                AgentKernelAnswerClaim(
-                    kind: kind,
-                    target: rawClaim["target"] as? String
-                )
-            )
+            claims.append(AgentKernelAnswerClaim(kind: kind, target: target))
         }
 
         return .event(

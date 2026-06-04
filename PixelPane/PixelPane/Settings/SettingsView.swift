@@ -139,6 +139,8 @@ struct SettingsView: View {
                 }
             }
 
+            LocationPermissionSection(provider: appState.locationProvider)
+
             Section("Privacy Introduction") {
                 Text("Show the first-run privacy introduction again without changing captures, chats, or model settings.")
                     .font(.callout)
@@ -201,7 +203,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Label("Automatic model routing", systemImage: "arrow.triangle.branch")
                         .font(.headline)
-                    Text("In Local mode, Pixel Pane picks the strongest agent-ready on-device model for each request — or always uses one specific model if you choose it below. Check a model to measure its agent-tool readiness. Cloud Mode (above) bypasses routing and uses Pixel Pane Cloud directly.")
+                    Text("In Local mode, Pixel Pane picks the strongest agent-ready on-device model for each request — or always uses one specific model if you choose it below. Check a model to validate text, vision (when supported), and agent tools. Cloud Mode (above) bypasses routing and uses Pixel Pane Cloud directly.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -224,15 +226,29 @@ struct SettingsView: View {
                         ModelRouterRow(
                             model: model,
                             tier: appState.agentReadinessTier(for: model),
-                            isChecking: appState.isRunningAgentModelConformanceCheck
+                            isChecking: appState.isRunningMLXSetupCheck || appState.isRunningAgentModelConformanceCheck
                         ) {
-                            appState.checkAgentReadiness(for: model)
+                            appState.runMLXSetupCheck(for: model)
                         }
                     }
                 }
 
-                DisclosureGroup("Advanced · base model setup") {
-                    localAISectionContent
+                HStack(spacing: 8) {
+                    Button {
+                        appState.chooseMLXModelFolder()
+                    } label: {
+                        Label("Choose Folder", systemImage: "folder")
+                    }
+                    .disabled(appState.isRunningMLXSetupCheck)
+                    .help("Validate and add an MLX model from a local folder.")
+
+                    if appState.isRunningMLXSetupCheck || appState.isRunningAgentModelConformanceCheck {
+                        Button {
+                            appState.cancelMLXSetupCheck()
+                        } label: {
+                            Label("Cancel", systemImage: "xmark.circle")
+                        }
+                    }
                 }
             }
         }
@@ -378,7 +394,7 @@ struct SettingsView: View {
     }
 
     private var chatHistorySettings: some View {
-        ChatHistorySettingsView(store: appState.chatHistory)
+        ChatHistorySettingsView()
     }
 
     private var routingModeSection: some View {
@@ -414,6 +430,19 @@ struct SettingsView: View {
             Text(appState.aiRoutingSettings.detail)
                 .font(.callout)
                 .foregroundStyle(.secondary)
+
+            if appState.aiRoutingSettings.effectiveMode == .cloud {
+                Toggle(
+                    "Share approximate location with Cloud",
+                    isOn: Binding(
+                        get: { appState.aiRoutingSettings.allowCloudLocationContext },
+                        set: { appState.setAllowCloudLocationContext($0) }
+                    )
+                )
+                Text("City-level only, never precise coordinates. Lets Cloud answer location-aware questions like weather or sunrise. Requires Location permission (see Permissions).")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
 
             if !hasActiveMLXModel {
                 Text("Choose and validate an MLX model before using Local.")
@@ -632,14 +661,21 @@ private struct ModelRouterRow: View {
                     .font(.callout)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text(model.approximateDiskSize)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 6) {
+                    Text(model.approximateDiskSize)
+                    if model.isVisionCompatible {
+                        Label("Vision", systemImage: "eye")
+                            .help("Vision-capable: screen captures with images route to the strongest installed vision model automatically.")
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
             readinessBadge
             Button("Check", action: onCheck)
                 .disabled(isChecking)
+                .help("Validates this model: text generation, vision (when supported), and agent-tool readiness.")
         }
         .padding(.vertical, 2)
     }
@@ -784,8 +820,53 @@ private struct LocalFilesSettingsView: View {
     }
 }
 
+/// Observes the location provider directly so permission and resolved-city
+/// changes update the row without routing through AppState.
+private struct LocationPermissionSection: View {
+    @ObservedObject var provider: LocationContextProvider
+
+    var body: some View {
+        Section("Location") {
+            LabeledContent("Location") {
+                StatusPill(
+                    title: provider.permissionStatus.label,
+                    systemImage: provider.permissionStatus.isGranted ? "checkmark.circle.fill" : "location.slash",
+                    tint: provider.permissionStatus.isGranted ? .green : .orange
+                )
+            }
+
+            Text(provider.permissionStatus.detail)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            if let location = provider.approximateLocation {
+                LabeledContent("Approximate location", value: location.displayLabel)
+            }
+
+            HStack {
+                Button {
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices") {
+                        NSWorkspace.shared.open(url)
+                    }
+                } label: {
+                    Label("Open Settings", systemImage: "gearshape")
+                }
+
+                Button {
+                    provider.refresh()
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+            }
+        }
+    }
+}
+
+/// Backed by the durable agent run store — the single place chats persist.
 private struct ChatHistorySettingsView: View {
-    @ObservedObject var store: ChatHistoryStore
+    @State private var viewModel: AgentRunViewModel?
+    @State private var summaries: [AgentRunSessionSummary] = []
+    @State private var didLoad = false
 
     var body: some View {
         Form {
@@ -795,32 +876,35 @@ private struct ChatHistorySettingsView: View {
                     .foregroundStyle(.secondary)
 
                 HStack {
-                    LabeledContent("Saved chats", value: "\(store.sessions.filter { !$0.turns.isEmpty }.count)")
+                    LabeledContent("Saved chats", value: didLoad ? "\(summaries.count)" : "…")
 
                     Spacer()
 
                     Button(role: .destructive) {
-                        store.clearAll()
+                        Task {
+                            try? await viewModel?.clearHistory()
+                            await reload()
+                        }
                     } label: {
                         Label("Clear Chat History", systemImage: "trash")
                     }
-                    .disabled(store.sessions.isEmpty)
+                    .disabled(summaries.isEmpty)
                 }
             }
 
-            if !store.sessions.isEmpty {
+            if !summaries.isEmpty {
                 Section("Recent") {
-                    ForEach(store.recentSessions(limit: 12)) { session in
+                    ForEach(summaries.prefix(12)) { session in
                         HStack(spacing: 10) {
-                            Image(systemName: session.contextKind == .capture ? "viewfinder" : "bubble.left.and.bubble.right")
+                            Image(systemName: contextDisplay(session).icon)
                                 .foregroundStyle(.secondary)
                                 .frame(width: 20)
 
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(session.displayTitle)
+                                Text(displayTitle(session))
                                     .font(.system(size: 13, weight: .semibold))
                                     .lineLimit(1)
-                                Text("\(session.contextKind.displayName) - \(session.turns.count) messages")
+                                Text("\(contextDisplay(session).name) - \(session.userMessageCount) message\(session.userMessageCount == 1 ? "" : "s")")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -828,7 +912,10 @@ private struct ChatHistorySettingsView: View {
                             Spacer()
 
                             Button {
-                                store.deleteSession(session)
+                                Task {
+                                    try? await viewModel?.deleteSession(sessionID: session.id)
+                                    await reload()
+                                }
                             } label: {
                                 Image(systemName: "minus.circle")
                             }
@@ -840,6 +927,29 @@ private struct ChatHistorySettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .task {
+            if viewModel == nil {
+                viewModel = AgentRunViewModel.makeDefault()
+            }
+            await reload()
+        }
+    }
+
+    private func reload() async {
+        summaries = await viewModel?.sessionSummaries() ?? []
+        didLoad = true
+    }
+
+    private func displayTitle(_ session: AgentRunSessionSummary) -> String {
+        let trimmed = session.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? contextDisplay(session).name : trimmed
+    }
+
+    private func contextDisplay(_ session: AgentRunSessionSummary) -> (name: String, icon: String) {
+        if let kind = session.contextKind.flatMap(ChatSessionContextKind.init(rawValue:)) {
+            return (kind.displayName, kind == .capture ? "viewfinder" : "bubble.left.and.bubble.right")
+        }
+        return (ChatSessionContextKind.assistant.displayName, "bubble.left.and.bubble.right")
     }
 }
 

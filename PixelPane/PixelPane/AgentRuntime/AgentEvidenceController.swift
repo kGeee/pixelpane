@@ -86,19 +86,38 @@ nonisolated struct AgentEvidenceController: Sendable {
                 missing: "Side-effect claims need side-effect evidence."
             )
         case .temporalContextRecorded:
+            // Temporal context is app-owned singleton evidence: the kinds
+            // filter already proves the app recorded it this run, and the
+            // claim target cannot add verification (models naturally echo
+            // the whole context block, e.g. "currentDate: …, timeZone: …").
+            // Requiring an exact currentDate echo only rejects honest claims.
             return matching(
                 claim,
                 evidence: evidence,
                 kinds: [.temporalContext],
-                predicate: { record in matchesTarget(record.stringMetadata("currentDate"), claim.target) },
+                predicate: { record in record.stringMetadata("currentDate") != nil },
                 missing: "Temporal claims need temporal context evidence."
             )
+        case .locationContextRecorded:
+            // App-owned singleton evidence, like temporal context: existence
+            // is the verification; targets carry no extra signal.
+            return matching(
+                claim,
+                evidence: evidence,
+                kinds: [.locationContext],
+                predicate: { record in record.stringMetadata("city") != nil },
+                missing: "Location claims need app-recorded approximate location evidence."
+            )
         case .visualContextRecorded:
+            // App-owned context evidence, like temporal/location: the app
+            // records the active capture itself, so existence is the
+            // verification. Requiring the target to echo internal metadata
+            // ("capture") rejected honest declarations like "screen_capture".
             return matching(
                 claim,
                 evidence: evidence,
                 kinds: [.visualContext],
-                predicate: { record in matchesTarget(record.stringMetadata("source"), claim.target) },
+                predicate: { record in record.stringMetadata("source") != nil },
                 missing: "Visual-context claims need visual context evidence."
             )
         case .fileExists:
@@ -123,6 +142,21 @@ nonisolated struct AgentEvidenceController: Sendable {
                         || record.stringMetadata("topPath") == target
                 },
                 missing: "File search needs evidence containing the target path."
+            )
+        case .folderListed:
+            // Discovery claims: "the folder contains X" / "these files exist".
+            // Backed by a recorded listing or search; the target may name the
+            // listed folder or one of the listed entries, or be omitted to
+            // lean on any recorded listing.
+            return matching(
+                claim,
+                evidence: evidence,
+                kinds: [.folderList, .fileSearch],
+                predicate: { record in
+                    matchesTarget(record.stringMetadata("path"), claim.target)
+                        || matchesLine(in: record.stringMetadata("paths"), target: claim.target)
+                },
+                missing: "Folder listing claims need folder-list or file-search evidence."
             )
         case .fileChanged:
             return matching(
@@ -351,7 +385,7 @@ nonisolated struct AgentEvidenceController: Sendable {
         switch kind {
         case .fileRead, .fileSearch, .localServer, .sideEffect:
             100
-        case .commandOutput, .processSnapshot, .processState, .temporalContext, .folderList:
+        case .commandOutput, .processSnapshot, .processState, .temporalContext, .locationContext, .folderList:
             80
         case .terminalState, .approval, .evidenceRequirement:
             60
@@ -369,7 +403,7 @@ nonisolated struct AgentEvidenceController: Sendable {
             "rowCount", "topPID", "topExecutable", "topCPUPercent", "topMemoryPercent",
             "status", "sideEffectID", "targetPath", "operation", "currentDate", "localTime",
             "weekday", "timeZone", "utcOffset", "source", "grantCount", "entryCount",
-            "displayNames", "grantIDs", "kinds"
+            "displayNames", "grantIDs", "kinds", "city", "region", "countryCode"
         ] {
             if let value = record.metadata[key] {
                 fields[key] = value
