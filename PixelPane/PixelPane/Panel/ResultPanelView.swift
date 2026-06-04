@@ -539,15 +539,13 @@ struct ResultPanelView: View {
     }
 
     private var assistantModelStatusText: String {
-        switch routingSettings.effectiveMode {
-        case .cloud:
-            return "Cloud Mode"
-        case .local:
-            if let selectedModelName {
-                return "Local - \(selectedModelName)"
-            }
-            return localAICapabilities.text.isAvailable ? "Local - MLX" : "Local"
+        // The router picks the model per request, so the idle header advertises the
+        // routing pool rather than a specific model that may not be used.
+        let cloudEnabled = routingSettings.useCloudModels && AIRoutingSettings.cloudBackendAvailable
+        if cloudEnabled {
+            return "Auto · Local + Cloud"
         }
+        return localAICapabilities.text.isAvailable ? "Auto · Local" : "Local setup needed"
     }
 
     private var selectedModelName: String? {
@@ -555,7 +553,7 @@ struct ResultPanelView: View {
         return Self.compactModelName(selection.repositoryID)
     }
 
-    private static func compactModelName(_ repositoryID: String) -> String {
+    static func compactModelName(_ repositoryID: String) -> String {
         let name = repositoryID
             .split(separator: "/")
             .last
@@ -1561,10 +1559,18 @@ struct ResultPanelView: View {
         case .appleLocal:
             return descriptor.modelName.map { "Apple Foundation Models - \($0)" } ?? "Apple Foundation Models"
         case .mlxLocal:
+            // Prefer the routed model named by the adapter; the stored selection can differ
+            // from what the router actually ran.
+            if let modelName = descriptor.modelName {
+                let path = mlxDetector.cachedModels()
+                    .first { $0.repositoryID == modelName }?
+                    .localURL?.path
+                return path.map { "\(modelName) [MLX] at \($0)" } ?? "\(modelName) [MLX]"
+            }
             if let selection = mlxModelStore.selectedModel {
                 return "\(selection.repositoryID) [MLX] at \(selection.localPath)"
             }
-            return descriptor.modelName.map { "\($0) [MLX]" } ?? "MLX local model (selection unavailable)"
+            return "MLX local model (selection unavailable)"
         case .pixelPaneCloud:
             return descriptor.modelName.map { "Pixel Pane Cloud - \($0)" } ?? "Pixel Pane Cloud"
         case .fixture, .openAICompatible, .custom:
@@ -1788,7 +1794,7 @@ struct ResultPanelView: View {
            agentRunViewModel.state.activeStatus != .completed {
             switch agentRunViewModel.state.activeStatus {
             case .queued, .running, .waitingForApproval, .waitingForUserInput, .interrupted:
-                turns[index].runtimeProgressSummary = agentRunViewModel.state.statusSummary
+                turns[index].runtimeProgressSummary = compactActivitySummary(agentRunViewModel.state.statusSummary)
             case .blocked, .failed, .canceled:
                 turns[index].answer = agentRunViewModel.state.statusSummary
             case .draft, .completed, .none:
@@ -2503,6 +2509,36 @@ struct ResultPanelView: View {
         case .none:
             return fallback
         }
+    }
+
+    /// Compacts the app's own durable progress strings into short live-activity labels for the
+    /// thinking indicator ("Asking Qwen3.6-35B…", "Read landing.css", "Listed folder"). These are
+    /// app-emitted constants, not model output, so format mapping is safe; unknown strings pass through.
+    private func compactActivitySummary(_ raw: String) -> String {
+        if raw == "Asking the model." {
+            if let label = actionBackendLabel, label.hasPrefix("MLX Text: ") {
+                let model = String(label.dropFirst("MLX Text: ".count))
+                return "Asking \(Self.compactModelName(model))…"
+            }
+            if actionBackendLabel == Self.cloudBackendLabel {
+                return "Asking Cloud…"
+            }
+            return "Thinking…"
+        }
+        if raw.hasPrefix("Read ") {
+            let path = String(raw.dropFirst("Read ".count)).trimmingCharacters(in: CharacterSet(charactersIn: ". "))
+            return "Read \(URL(fileURLWithPath: path).lastPathComponent)"
+        }
+        if raw.hasPrefix("Listed ") {
+            return "Listed folder"
+        }
+        if raw.hasPrefix("Found ") {
+            return "Searched files"
+        }
+        if raw.hasPrefix("Repacking") {
+            return "Compacting context…"
+        }
+        return raw
     }
 
     /// A user-facing label naming the model the router actually chose for this run, so the panel

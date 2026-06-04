@@ -330,6 +330,35 @@ actor AgentToolOrchestrator {
         )
     }
 
+    /// Short live-activity label for a starting tool call ("Reading landing.css",
+    /// "Listing folder"). Maps the app's own tool primitives to display copy.
+    private nonisolated static func toolActivityLabel(for call: AgentKernelToolCall) -> String {
+        func basename(_ key: String) -> String? {
+            guard let value = call.arguments[key], !value.isEmpty else { return nil }
+            return URL(fileURLWithPath: value).lastPathComponent
+        }
+        switch call.name {
+        case "read_file":
+            return basename("path").map { "Reading \($0)" } ?? "Reading file"
+        case "list_folder":
+            return basename("path").map { "Listing \($0)" } ?? "Listing folder"
+        case "search_files":
+            return "Searching files"
+        case "list_grants":
+            return "Checking access"
+        case "get_process_snapshot":
+            return "Checking processes"
+        case "get_local_listener_snapshot":
+            return "Checking servers"
+        case "stage_write_proposal":
+            return basename("targetPath").map { "Drafting \($0)" } ?? "Drafting write"
+        case "run_finite_command":
+            return "Running command"
+        default:
+            return "Running \(call.name)"
+        }
+    }
+
     private nonisolated static func toolCallSignature(_ call: AgentKernelToolCall) -> String {
         let argumentKey = call.arguments
             .sorted { $0.key < $1.key }
@@ -1874,6 +1903,14 @@ actor AgentToolOrchestrator {
             stepID: requestStep.stepID,
             kind: .custom,
             payload: .metadata(toolMetadata(call))
+        )
+        // Surface a compact live-activity line when the tool STARTS (results already
+        // emit progress on completion), so the UI can show what is happening now.
+        try await store.appendEvent(
+            runID: runID,
+            stepID: requestStep.stepID,
+            kind: .progress,
+            payload: .progress(AgentRunText(Self.toolActivityLabel(for: call)))
         )
         try await recordToolCall(
             call,
