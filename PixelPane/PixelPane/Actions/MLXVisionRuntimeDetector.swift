@@ -225,7 +225,7 @@ nonisolated struct MLXVisionRuntimeDetector: @unchecked Sendable {
             ?? MLXVisionModel(
                 repositoryID: selection.repositoryID,
                 localURL: selectedURL,
-                approximateDiskSize: "Already installed",
+                approximateDiskSize: formattedDirectorySize(selectedURL) ?? "Size unknown",
                 license: "See model card",
                 isPreferred: selection.repositoryID == MLXVisionSetupConstants.preferredModelRepositoryID,
                 capability: modelCapability(in: selectedURL)
@@ -238,15 +238,35 @@ nonisolated struct MLXVisionRuntimeDetector: @unchecked Sendable {
         return MLXVisionModel(
             repositoryID: repositoryID,
             localURL: url,
-            approximateDiskSize: repositoryID == MLXVisionSetupConstants.preferredModelRepositoryID
-                ? MLXVisionSetupConstants.preferredModelApproximateDiskSize
-                : "Already installed",
+            approximateDiskSize: formattedDirectorySize(url) ?? "Size unknown",
             license: repositoryID == MLXVisionSetupConstants.preferredModelRepositoryID
                 ? MLXVisionSetupConstants.preferredModelLicense
                 : "See model card",
             isPreferred: repositoryID == MLXVisionSetupConstants.preferredModelRepositoryID,
             capability: capability
         )
+    }
+
+    /// Measured on-disk size of an installed model directory (allocated
+    /// bytes, symlinks not followed so HF cache blobs count once).
+    private nonisolated func formattedDirectorySize(_ url: URL) -> String? {
+        guard let enumerator = fileManager.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey],
+            options: [],
+            errorHandler: nil
+        ) else {
+            return nil
+        }
+        var total: Int64 = 0
+        for case let fileURL as URL in enumerator {
+            guard let values = try? fileURL.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey]) else {
+                continue
+            }
+            total += Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
+        }
+        guard total > 0 else { return nil }
+        return ByteCountFormatter.string(fromByteCount: total, countStyle: .file)
     }
 
     private nonisolated func isCacheModelDirectory(_ url: URL) -> Bool {

@@ -669,8 +669,9 @@ private struct ModelRouterRow: View {
                         Label("Vision", systemImage: "eye")
                     }
                     if isActiveBaseModel {
-                        Label("Active base", systemImage: "checkmark.circle")
+                        Label("Default", systemImage: "checkmark.circle")
                             .foregroundStyle(.green)
+                            .help("Used for vision captures and as the fallback when the router has no checked model. The router still picks the best text model per request.")
                     }
                 }
                 .font(.caption)
