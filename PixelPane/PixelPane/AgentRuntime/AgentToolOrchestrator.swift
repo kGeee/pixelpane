@@ -175,23 +175,22 @@ actor AgentToolOrchestrator {
                         )
                         return
                     }
-                    // Evidence backfill: the gate extracted grant-covered,
-                    // read-only paths the answer cited without evidence. The
-                    // runtime can satisfy that requirement deterministically —
-                    // read the paths itself and retry once — instead of asking
-                    // a model that already failed to self-correct (chat2).
-                    if !didAttemptEvidenceBackfill,
-                       !rejection.backfillablePaths.isEmpty,
-                       baseRequest.tools.contains(where: { $0.name == "read_file" }) {
+                    // Evidence backfill: the gate derived read-only tool
+                    // calls that acquire the evidence the answer lacked
+                    // (cited paths, undeclared snapshots). The runtime can
+                    // satisfy that requirement deterministically and retry
+                    // once instead of asking a model that already failed to
+                    // self-correct (chat2, cloud listener fabrication).
+                    let executableBackfillCalls = rejection.backfillToolCalls.filter { call in
+                        baseRequest.tools.contains(where: { $0.name == call.name })
+                            && !Self.isSideEffectTool(call.name)
+                    }
+                    if !didAttemptEvidenceBackfill, !executableBackfillCalls.isEmpty {
                         didAttemptEvidenceBackfill = true
                         var backfilledAnyPath = false
-                        for path in rejection.backfillablePaths.prefix(Self.maxEvidenceBackfillReads) {
+                        for call in executableBackfillCalls.prefix(Self.maxEvidenceBackfillReads) {
                             let result = try await executeToolCall(
-                                AgentKernelToolCall(
-                                    name: "read_file",
-                                    arguments: ["path": path],
-                                    reason: "Runtime evidence backfill: the final answer referenced this path without recorded evidence."
-                                ),
+                                call,
                                 runID: runID,
                                 providerTier: tier,
                                 context: context,
@@ -209,7 +208,7 @@ actor AgentToolOrchestrator {
                                 kind: .toolObservation,
                                 metadata: [
                                     "iteration": .int(iteration),
-                                    "toolName": .string("read_file"),
+                                    "toolName": .string(call.name),
                                     "source": .string("evidence_backfill")
                                 ]
                             )
@@ -723,20 +722,22 @@ actor AgentToolOrchestrator {
     private struct FinalAnswerRejection {
         let kind: FinalAnswerRejectionKind
         let reason: AgentRunText
-        /// Grant-covered, read-only paths the gate extracted from the
-        /// rejected answer. When present, the runtime may satisfy the
-        /// missing evidence itself (read + retry) instead of failing the
-        /// run because the model would not self-correct.
-        let backfillablePaths: [String]
+        /// Read-only tool calls the gate derived deterministically from the
+        /// rejected answer (cited grant-covered paths, or unverifiable claim
+        /// kinds whose evidence the runtime can acquire itself). When
+        /// present, the runtime may satisfy the missing evidence and retry
+        /// instead of failing the run because the model would not
+        /// self-correct.
+        let backfillToolCalls: [AgentKernelToolCall]
 
         init(
             kind: FinalAnswerRejectionKind,
             reason: AgentRunText,
-            backfillablePaths: [String] = []
+            backfillToolCalls: [AgentKernelToolCall] = []
         ) {
             self.kind = kind
             self.reason = reason
-            self.backfillablePaths = backfillablePaths
+            self.backfillToolCalls = backfillToolCalls
         }
     }
 
@@ -1248,19 +1249,18 @@ actor AgentToolOrchestrator {
             let decisions = AgentEvidenceController().verify(claims, evidence: evidence)
             let unsupported = decisions.filter { $0.status != .supported }
             if let first = unsupported.first {
-                // Unverifiable claims that name grant-covered readable paths
-                // carry them for evidence backfill — same root cause as
+                // Unverifiable claims carry the read-only tool calls that
+                // would acquire their evidence — same root cause as
                 // answer-text path references without evidence.
-                let backfillablePaths = backfillableClaimPaths(
-                    from: unsupported.map(\.claim),
-                    evidence: evidence,
-                    grants: grants
-                )
                 return .retry(
                     FinalAnswerRejection(
                         kind: .unsupportedGroundingClaims,
                         reason: first.summary,
-                        backfillablePaths: backfillablePaths
+                        backfillToolCalls: backfillToolCalls(
+                            from: unsupported.map(\.claim),
+                            evidence: evidence,
+                            grants: grants
+                        )
                     )
                 )
             }
@@ -2237,35 +2237,64 @@ actor AgentToolOrchestrator {
         }
     }
 
-    /// Paths named by unverifiable claims that resolve under read grants and
-    /// have no recorded evidence yet — candidates for runtime evidence
-    /// backfill. Resolution reuses the deterministic grant resolver; no
-    /// answer text is interpreted.
-    private nonisolated func backfillableClaimPaths(
+    /// Read-only tool calls derived deterministically from unverifiable
+    /// claims: each claim kind maps to the tool that acquires its evidence,
+    /// with arguments taken from the claim target (path targets resolved by
+    /// the grant resolver, port targets parsed as integers). No answer text
+    /// is interpreted.
+    private nonisolated func backfillToolCalls(
         from claims: [AgentEvidenceClaim],
         evidence: [AgentRunEvidenceRecord],
         grants: [AgentLocalFileGrant]
-    ) -> [String] {
-        guard !grants.isEmpty else { return [] }
-        let resolver = AgentLocalPathResolver()
+    ) -> [AgentKernelToolCall] {
+        let backfillReason = "Runtime evidence backfill: the rejected answer declared this claim without recorded evidence."
         var seen = Set<String>()
-        var paths: [String] = []
-        for claim in claims {
-            guard let target = claim.target, target.hasPrefix("/") else { continue }
-            guard case .resolved(let resolution) = resolver.resolve(
+        var calls: [AgentKernelToolCall] = []
+
+        func append(_ name: String, _ arguments: [String: String]) {
+            let signature = "\(name):\(arguments.sorted(by: { $0.key < $1.key }).map { "\($0.key)=\($0.value)" }.joined(separator: ","))"
+            guard seen.insert(signature).inserted else { return }
+            calls.append(AgentKernelToolCall(name: name, arguments: arguments, reason: backfillReason))
+        }
+
+        func resolvedReadablePath(_ target: String?) -> String? {
+            guard let target, target.hasPrefix("/"), !grants.isEmpty else { return nil }
+            guard case .resolved(let resolution) = AgentLocalPathResolver().resolve(
                 target,
                 grants: grants,
                 access: .read,
                 target: .any
             ) else {
+                return nil
+            }
+            return URL(fileURLWithPath: resolution.path).standardizedFileURL.path
+        }
+
+        for claim in claims {
+            switch claim.type {
+            case .localFileObserved:
+                if let path = resolvedReadablePath(claim.target), !localReferenceIsBacked(path, by: evidence) {
+                    append("read_file", ["path": path])
+                }
+            case .folderListed:
+                if let path = resolvedReadablePath(claim.target) {
+                    append("list_folder", ["path": path])
+                }
+            case .localListenerSnapshotRecorded:
+                if let target = claim.target, Int(target) != nil {
+                    append("get_local_listener_snapshot", ["port": target])
+                } else if let path = resolvedReadablePath(claim.target) {
+                    append("get_local_listener_snapshot", ["rootPath": path])
+                } else {
+                    append("get_local_listener_snapshot", [:])
+                }
+            case .processSnapshotRecorded:
+                append("get_process_snapshot", [:])
+            default:
                 continue
             }
-            let path = URL(fileURLWithPath: resolution.path).standardizedFileURL.path
-            guard seen.insert(path).inserted else { continue }
-            guard !localReferenceIsBacked(path, by: evidence) else { continue }
-            paths.append(path)
         }
-        return paths
+        return calls
     }
 
     private nonisolated func unsupportedAnswerLocalReferences(
@@ -2305,7 +2334,13 @@ actor AgentToolOrchestrator {
             reason: AgentRunText(
                 "The final answer references accessible local path(s) without recorded evidence: \(displayed)\(suffix). Call an available local file tool for those path(s), or answer without unsupported local references."
             ),
-            backfillablePaths: unsupportedLocalReferences
+            backfillToolCalls: unsupportedLocalReferences.map { path in
+                AgentKernelToolCall(
+                    name: "read_file",
+                    arguments: ["path": path],
+                    reason: "Runtime evidence backfill: the final answer referenced this path without recorded evidence."
+                )
+            }
         )
     }
 

@@ -60,6 +60,7 @@ enum AgentToolCallingFixtureHarness {
         try await testApproximateLocationContextGroundsLocationClaims()
         try await testEmptyLocalEvidenceClaimsRepairToListingClaim()
         try await testEvidenceBackfillReadsCitedPathAndRecovers()
+        try await testEvidenceBackfillRunsListenerSnapshotForFabricatedClaim()
         try await testGrantNameReferencesClassifyAsLocalState()
         try await testSearchAndReadToolsRecordEvidence()
         try await testQuotedSearchUsesPreciseQuery()
@@ -501,8 +502,18 @@ enum AgentToolCallingFixtureHarness {
 
         let trace = try await harness.store.traceProjection(runID: runID)
         try expect(trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.folderList.rawValue }), "folder evidence should be recorded")
-        try expect(!trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.localServer.rawValue }), "listener evidence should not be fabricated from folder evidence")
-        try expect(harness.viewModel.state.activeStatus == .blocked, "listener claims should block without listener evidence")
+        // The invariant: folder evidence alone never supports listener
+        // claims. With claim-kind backfill the runtime now takes a REAL
+        // listener snapshot for the unverifiable claim and the run recovers —
+        // any listener evidence must come from that backfill, never from
+        // reinterpreting folder evidence.
+        let listenerEvidence = trace.evidence.filter { $0.kind == AgentEvidenceKind.localServer.rawValue }
+        let backfillObservations = trace.controlRecords.filter { record in
+            record.kind == .toolObservation && record.metadata["source"]?.stringValue == "evidence_backfill"
+        }
+        try expect(!listenerEvidence.isEmpty, "backfill should record a real listener snapshot for the unverifiable claim")
+        try expect(!backfillObservations.isEmpty, "the listener snapshot must come from marked runtime backfill, not folder evidence")
+        try expect(harness.viewModel.state.activeStatus == .completed, "the re-declared claim should verify against the backfilled snapshot")
     }
 
     @MainActor
@@ -634,6 +645,50 @@ enum AgentToolCallingFixtureHarness {
         }
         try expect(repairMessages.contains(where: { $0.contains("file_listing") }), "repair observation should name the claim kind vocabulary")
         try expect(harness.viewModel.state.activeStatus == .completed, "declaring file_listing after the repair observation should complete the run")
+    }
+
+    @MainActor
+    private static func testEvidenceBackfillRunsListenerSnapshotForFabricatedClaim() async throws {
+        // Replays the cloud listener fabrication: the model declared
+        // local_listeners without ever calling the snapshot tool. The claim
+        // kind maps deterministically to a read-only tool, so the runtime
+        // takes the snapshot itself and retries instead of blocking.
+        let harness = try await makeHarness(prefix: "backfill-listener")
+        let listenerClaim = AgentKernelAnswerGrounding(
+            basis: .localEvidence,
+            claims: [AgentKernelAnswerClaim(kind: .localListeners)]
+        )
+        let adapter = tierBFixtureAdapter(
+            responses: [
+                groundedFinalAnswer("Your site is not running on any localhost port.", grounding: listenerClaim),
+                groundedFinalAnswer("Your site is not running on any localhost port.", grounding: listenerClaim)
+            ]
+        )
+        let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
+
+        let runID = try await harness.viewModel.startRun(
+            userMessage: "Is my site running on a localhost port?",
+            context: AgentRunViewContext(title: "Backfill Listener", contextID: "backfill-listener", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use the structured protocol.",
+            timeout: 4
+        )
+        try await harness.viewModel.waitForIdle(timeout: 6)
+        await harness.viewModel.refresh()
+
+        let trace = try await harness.store.traceProjection(runID: runID)
+        let backfillObservations = trace.controlRecords.filter { record in
+            record.kind == .toolObservation && record.metadata["source"]?.stringValue == "evidence_backfill"
+        }
+        try expect(
+            trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.localServer.rawValue }),
+            "backfill should record a listener snapshot for the fabricated claim"
+        )
+        try expect(!backfillObservations.isEmpty, "backfill snapshot observation should be durable with its source marked")
+        try expect(harness.viewModel.state.activeStatus == .completed, "the re-declared claim should verify against the backfilled snapshot")
     }
 
     @MainActor
