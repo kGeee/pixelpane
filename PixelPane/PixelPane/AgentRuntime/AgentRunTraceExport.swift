@@ -189,7 +189,13 @@ nonisolated struct AgentRunTraceExporter: Sendable {
         case .modelResponse(let response):
             return "modelResponse request=\(response.requestID.uuidString) adapter=\(response.adapterID) tier=\(response.tier.rawValue) format=\(response.responseFormat.rawValue) events=\(response.events.count)"
         case .modelFailure(let failure):
-            return "modelFailure adapter=\(failure.adapterID) kind=\(failure.kind.rawValue) message=\(redactFreeText(failure.message.text))"
+            // Include the failure's own metadata (e.g. rawOutput with the
+            // underlying transport error) so exports stay debuggable.
+            var summary = "modelFailure adapter=\(failure.adapterID) kind=\(failure.kind.rawValue) message=\(redactFreeText(failure.message.text))"
+            if !failure.metadata.isEmpty {
+                summary += " metadata=\(metadataSummary(failure.metadata))"
+            }
+            return summary
         case .modelMessage(let message):
             return "message role=\(message.role.rawValue) content=\(redactFreeText(message.content))"
         case .toolCall(let call):
