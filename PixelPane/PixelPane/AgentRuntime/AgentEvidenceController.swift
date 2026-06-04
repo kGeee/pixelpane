@@ -109,11 +109,15 @@ nonisolated struct AgentEvidenceController: Sendable {
                 missing: "Location claims need app-recorded approximate location evidence."
             )
         case .visualContextRecorded:
+            // App-owned context evidence, like temporal/location: the app
+            // records the active capture itself, so existence is the
+            // verification. Requiring the target to echo internal metadata
+            // ("capture") rejected honest declarations like "screen_capture".
             return matching(
                 claim,
                 evidence: evidence,
                 kinds: [.visualContext],
-                predicate: { record in matchesTarget(record.stringMetadata("source"), claim.target) },
+                predicate: { record in record.stringMetadata("source") != nil },
                 missing: "Visual-context claims need visual context evidence."
             )
         case .fileExists:

@@ -16,6 +16,7 @@ enum AgentEvidencePacketsFixtureHarness {
         try await testFolderListEvidenceSupportsListingClaims()
         try await testTemporalContextClaimsAcceptEchoedTargets()
         try await testLocationContextClaimsVerifyByRecordedEvidence()
+        try await testVisualContextClaimsAcceptDescriptiveTargets()
         try await testFileGrantInventoryEvidenceIsDiscoveryOnly()
         try await testLocalServerEvidenceSupportsFinalAnswerWithoutModelVerifier()
         try await testLocalListenerSnapshotEvidenceSupportsOnlyListenerClaims()
@@ -117,6 +118,47 @@ enum AgentEvidencePacketsFixtureHarness {
         try expect(untargeted.status == .supported, "location claims should be supported by recorded location evidence")
         try expect(echoed.status == .supported, "echoed location targets should be supported")
         try expect(withoutEvidence.status != .supported, "location claims still require recorded location evidence")
+    }
+
+    private static func testVisualContextClaimsAcceptDescriptiveTargets() async throws {
+        // Replays the cloud capture failure: the model declared
+        // visual_context with descriptive targets ("screen_capture",
+        // "Screen region – Activity Monitor memory tab") and the verifier
+        // demanded an exact echo of the internal source metadata ("capture").
+        // App-recorded visual context verifies by existence.
+        let harness = try await makeHarness()
+        _ = try await harness.recorder.recordVisualContext(
+            runID: harness.run.runID,
+            attachment: AgentKernelModelAttachment(
+                modality: .text,
+                label: "Screen region",
+                transientOnly: true,
+                metadata: [
+                    "source": .string("capture"),
+                    "hasImageInput": .bool(false),
+                    "hasOCRText": .bool(true),
+                    "ocrText": .string("Activity Monitor\nAll Processes")
+                ]
+            )
+        )
+
+        let records = await harness.store.evidenceArtifactSummary(runID: harness.run.runID).evidence
+        let descriptive = harness.controller.verify(
+            AgentEvidenceClaim(type: .visualContextRecorded, target: "screen_capture"),
+            evidence: records
+        )
+        let untargeted = harness.controller.verify(
+            AgentEvidenceClaim(type: .visualContextRecorded),
+            evidence: records
+        )
+        let withoutEvidence = harness.controller.verify(
+            AgentEvidenceClaim(type: .visualContextRecorded),
+            evidence: records.filter { $0.kind != AgentEvidenceKind.visualContext.rawValue }
+        )
+
+        try expect(descriptive.status == .supported, "descriptive visual-context targets should be supported")
+        try expect(untargeted.status == .supported, "untargeted visual-context claims should be supported")
+        try expect(withoutEvidence.status != .supported, "visual-context claims still require recorded visual evidence")
     }
 
     private static func testFolderListEvidenceSupportsListingClaims() async throws {
