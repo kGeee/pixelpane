@@ -169,6 +169,17 @@ struct SettingsView: View {
         appState.mlxVisionSetupSnapshot.installedModels.filter { $0.isTextCompatible && $0.isInstalled }
     }
 
+    /// Models shown in the router list: all installed models under automatic
+    /// routing, or just the pinned one when the user pinned a model. Falls back
+    /// to the full list if the pinned model is no longer installed.
+    private var routerListModels: [MLXVisionModel] {
+        guard let pinnedID = appState.aiRoutingSettings.pinnedLocalModelID else {
+            return installedTextModels
+        }
+        let pinned = installedTextModels.filter { $0.repositoryID == pinnedID }
+        return pinned.isEmpty ? installedTextModels : pinned
+    }
+
     /// Binds the model picker: the sentinel means automatic routing; any other value
     /// pins Local mode to that installed model.
     private var pinnedModelBinding: Binding<String> {
@@ -209,7 +220,7 @@ struct SettingsView: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(installedTextModels) { model in
+                    ForEach(routerListModels) { model in
                         ModelRouterRow(
                             model: model,
                             tier: appState.agentReadinessTier(for: model),

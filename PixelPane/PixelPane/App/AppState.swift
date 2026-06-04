@@ -497,6 +497,12 @@ final class AppState: ObservableObject {
     func setPinnedLocalModel(_ repositoryID: String?) {
         aiRoutingSettings.pinnedLocalModelID = repositoryID
         persistAIRoutingSettings()
+        panelController.refreshRoutingSettings(
+            aiRoutingSettings,
+            localAICapabilities: localAICapabilities,
+            localFileAccess: localFileAccess,
+            chatHistory: chatHistory
+        )
     }
 
     private func runAgentModelConformanceCheck(
