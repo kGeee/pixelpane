@@ -2355,7 +2355,7 @@ actor AgentToolOrchestrator {
                 if !trimmed.isEmpty {
                     return AgentKernelFinalAnswer(text: trimmed)
                 }
-            case .toolCall, .malformedOutput, .emptyOutput, .timedOut:
+            case .toolCall, .malformedOutput, .transportFailure, .emptyOutput, .timedOut:
                 continue
             }
         }

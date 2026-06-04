@@ -33,6 +33,7 @@ enum AgentModelGatewayFixtureHarness {
         try await testAIBackendBridgeUsesRawProtocolText()
         try await testCloudChatAdapterIsPlainChatOnly()
         try await testCloudChatAdapterSupportsToolProtocolWhenEnabled()
+        try await testCloudChatAdapterReportsTransportFailures()
         try await testTierCCloudRouteRejectsToolsBeforeAdapterCall()
     }
 
@@ -410,15 +411,28 @@ enum AgentModelGatewayFixtureHarness {
         let unavailable = fixtureAdapter(id: "fixture.unavailable", isAvailable: false, responses: [.finalAnswer("unused")])
         let malformed = fixtureAdapter(id: "fixture.malformed", responses: [.malformedOutput("{")])
         let empty = fixtureAdapter(id: "fixture.empty", responses: [.emptyOutput])
-        let gateway = AgentModelGateway(adapters: [unavailable, malformed, empty])
+        let transport = fixtureAdapter(
+            id: "fixture.transport",
+            responses: [.events([.transportFailure("Keychain operation failed with status -25293.")])]
+        )
+        let gateway = AgentModelGateway(adapters: [unavailable, malformed, empty, transport])
 
         let unavailableResult = await gateway.response(adapterID: unavailable.descriptor.id, request: request(mode: .fullAgent))
         let malformedResult = await gateway.response(adapterID: malformed.descriptor.id, request: request(mode: .fullAgent))
         let emptyResult = await gateway.response(adapterID: empty.descriptor.id, request: request(mode: .plainChat))
+        let transportResult = await gateway.response(adapterID: transport.descriptor.id, request: request(mode: .fullAgent))
 
         try expect(unavailableResult.failure?.kind == .unavailable, "unavailable adapter should map to unavailable")
         try expect(malformedResult.failure?.kind == .structuredOutputInvalid, "malformed structured output should map to structuredOutputInvalid")
         try expect(emptyResult.failure?.kind == .emptyOutput, "empty output should map to emptyOutput")
+        // Transport problems (network, auth, rate limit) must never masquerade
+        // as model structured-output failures, even in tool-capable modes,
+        // and the underlying reason must survive into the failure message.
+        try expect(transportResult.failure?.kind == .transportError, "transport failure should map to transportError, not structuredOutputInvalid")
+        try expect(
+            transportResult.failure?.message.text.contains("-25293") == true,
+            "transport failure should surface the underlying error message"
+        )
     }
 
     private static func testContextOverflow() async throws {
@@ -596,6 +610,45 @@ enum AgentModelGatewayFixtureHarness {
         try expect(captured?.cloudQuestion?.contains("Valid tool call format") == true, "cloud tool adapter should send the AGENTR protocol prompt as the cloud question")
         try expect(captured?.prompt == captured?.cloudQuestion, "cloud prompt and question should carry the same protocol text")
         try expect(captured?.cloudConversation.isEmpty == true, "cloud tool protocol should keep observations inside the protocol prompt")
+    }
+
+    private static func testCloudChatAdapterReportsTransportFailures() async throws {
+        // Regression: a thrown backend error (keychain auth, rate limit,
+        // network) used to surface as "invalid structured output" in tool
+        // mode. It must map to transportError and keep the real reason.
+        struct FixtureTransportError: LocalizedError {
+            var errorDescription: String? { "Keychain operation failed with status -25293." }
+        }
+        let backend = FixtureCloudChatBackend(responseText: "unused", thrownError: FixtureTransportError())
+        let descriptor = AgentKernelModelDescriptor(
+            id: "fixture.cloud-transport",
+            providerKind: .pixelPaneCloud,
+            route: .cloud,
+            displayName: "Fixture Cloud Transport"
+        )
+        let adapter = AgentKernelCloudChatAdapter(
+            descriptor: descriptor,
+            backend: backend,
+            backendCapabilities: await backend.capabilities(),
+            supportsLocalToolProtocol: true
+        )
+
+        let gateway = AgentModelGateway(adapters: [adapter])
+        let result = await gateway.response(
+            adapterID: descriptor.id,
+            request: AgentModelGatewayRequest(
+                mode: .constrainedStructuredText,
+                messages: [AgentKernelMessage(role: .user, content: "read notes")],
+                tools: [readFileTool()],
+                requestedMaxOutputTokens: 256
+            )
+        )
+
+        try expect(result.failure?.kind == .transportError, "thrown backend error should map to transportError, not structuredOutputInvalid")
+        try expect(
+            result.failure?.message.text.contains("-25293") == true,
+            "transport failure should surface the underlying error message"
+        )
     }
 
     private static func testTierCCloudRouteRejectsToolsBeforeAdapterCall() async throws {
@@ -800,11 +853,13 @@ final class FixtureCloudChatBackend: AIBackend, @unchecked Sendable {
     let displayName = "Fixture Cloud Chat"
 
     private let responseText: String
+    private let thrownError: Error?
     private let lock = NSLock()
     private var capturedRequests: [AIBackendRequest] = []
 
-    init(responseText: String) {
+    init(responseText: String, thrownError: Error? = nil) {
         self.responseText = responseText
+        self.thrownError = thrownError
     }
 
     func capabilities() async -> AIBackendCapabilities {
@@ -822,7 +877,12 @@ final class FixtureCloudChatBackend: AIBackend, @unchecked Sendable {
         capturedRequests.append(request)
         lock.unlock()
         let responseText = self.responseText
+        let thrownError = self.thrownError
         return AsyncThrowingStream { continuation in
+            if let thrownError {
+                continuation.finish(throwing: thrownError)
+                return
+            }
             continuation.yield(.snapshot(responseText))
             continuation.yield(.completed)
             continuation.finish()

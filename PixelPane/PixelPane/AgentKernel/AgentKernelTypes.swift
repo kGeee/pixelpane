@@ -215,7 +215,11 @@ nonisolated struct AgentKernelFinalAnswer: Codable, Equatable, Sendable {
 nonisolated enum AgentKernelModelEvent: Codable, Equatable, Sendable {
     case finalAnswer(AgentKernelFinalAnswer)
     case toolCall(AgentKernelToolCall)
+    /// The model replied but the reply could not be used (parse/protocol failure).
     case malformedOutput(String)
+    /// The request failed before the model produced any output (network, auth,
+    /// rate limit, local runtime).
+    case transportFailure(String)
     case emptyOutput
     case timedOut
 
