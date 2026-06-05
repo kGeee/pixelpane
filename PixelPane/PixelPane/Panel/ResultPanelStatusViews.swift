@@ -70,24 +70,14 @@ struct TypingStatusView: View {
     let title: String
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 0.35)) { context in
-            let phase = Int(context.date.timeIntervalSinceReferenceDate * 3) % 4
-            HStack(spacing: 8) {
-                Text(title)
-                    .font(.system(size: 15, weight: .semibold))
+        HStack(spacing: 8) {
+            Text(title)
+                .font(.system(size: 15, weight: .semibold))
 
-                HStack(spacing: 3) {
-                    ForEach(0..<3, id: \.self) { index in
-                        Circle()
-                            .fill(Color.primary.opacity(index < phase ? 0.75 : 0.22))
-                            .frame(width: 4, height: 4)
-                    }
-                }
-                .frame(width: 20, alignment: .leading)
-            }
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            MoonPhaseIndicator(diameter: 12)
         }
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -319,46 +309,11 @@ struct AssistantThinkingIndicator: View {
     /// Earlier compact activity labels (oldest first) shown as a faint breadcrumb so
     /// fast steps remain visible instead of flashing by.
     var history: [String] = []
-    @State private var phase = false
-    private let accent = Color(red: 0.72, green: 0.82, blue: 1.0)
 
     var body: some View {
         HStack(spacing: 9) {
-            ZStack {
-                Circle()
-                    .stroke(accent.opacity(phase ? 0.18 : 0.34), lineWidth: 1.2)
-                    .frame(width: 18, height: 18)
-                    .scaleEffect(phase ? 1.22 : 0.78)
-                    .blur(radius: phase ? 0.6 : 0)
-
-                Circle()
-                    .fill(accent.opacity(0.24))
-                    .frame(width: 16, height: 16)
-                    .blur(radius: 5)
-                    .scaleEffect(phase ? 1.15 : 0.85)
-
-                Circle()
-                    .fill(accent.opacity(0.82))
-                    .frame(width: 4.5, height: 4.5)
-                    .shadow(color: accent.opacity(0.7), radius: phase ? 5 : 2)
-            }
-            .frame(width: 22, height: 22)
-
-            HStack(spacing: 3) {
-                ForEach(0..<3, id: \.self) { index in
-                    Capsule(style: .continuous)
-                        .fill(accent.opacity(phase ? 0.95 : 0.38))
-                        .frame(width: 4, height: phase ? 15 : 7)
-                        .shadow(color: accent.opacity(0.35), radius: phase ? 4 : 1)
-                        .animation(
-                            .easeInOut(duration: 0.64)
-                                .repeatForever(autoreverses: true)
-                                .delay(Double(index) * 0.13),
-                            value: phase
-                        )
-                }
-            }
-            .frame(width: 23, height: 18)
+            MoonPhaseIndicator(diameter: 18)
+                .frame(width: 22, height: 22)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(summary?.isEmpty == false ? summary! : "Thinking")
@@ -377,9 +332,6 @@ struct AssistantThinkingIndicator: View {
             }
         }
         .padding(.vertical, 2)
-        .onAppear {
-            phase = true
-        }
     }
 }
 
