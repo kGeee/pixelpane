@@ -1586,18 +1586,6 @@ struct ResultPanelView: View {
         }
     }
 
-    private func debugStatisticValues(named label: String) -> [String] {
-        let activeValues = outputStatistics
-            .filter { $0.label == label }
-            .map(\.value)
-        let turnValues = displayedAskTurns.flatMap { turn in
-            turn.statistics
-                .filter { $0.label == label }
-                .map(\.value)
-        }
-        return Array(Set(activeValues + turnValues)).sorted()
-    }
-
     private static func debugCapabilityStatus(_ status: AIBackendCapabilityStatus) -> String {
         "\(status.label) - \(status.detail)"
     }
@@ -1613,6 +1601,22 @@ struct ResultPanelView: View {
         return remaining > 0 ? "\(visible), ... (+\(remaining) more)" : visible
     }
 #endif
+
+    /// Statistic values recorded under a label, across the active output and
+    /// displayed turns. Used by the DEBUG appendix AND by production model
+    /// labeling (surfacing the reported cloud model), so it must live
+    /// outside the DEBUG-only block.
+    private func debugStatisticValues(named label: String) -> [String] {
+        let activeValues = outputStatistics
+            .filter { $0.label == label }
+            .map(\.value)
+        let turnValues = displayedAskTurns.flatMap { turn in
+            turn.statistics
+                .filter { $0.label == label }
+                .map(\.value)
+        }
+        return Array(Set(activeValues + turnValues)).sorted()
+    }
 
     private func exportText() {
         let panel = NSSavePanel()

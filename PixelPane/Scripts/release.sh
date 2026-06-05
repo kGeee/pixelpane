@@ -48,6 +48,10 @@ rm -rf "${BUILD_DIR}"
 mkdir -p "${BUILD_DIR}" "${DIST_DIR}"
 
 step "Archive (Release, Developer ID)"
+# SWIFT_OPTIMIZATION_LEVEL=-Onone: the Xcode 26.4 Swift optimizer crashes
+# (SIL pipeline segfault) on this codebase at -O/-Osize in whole-module and
+# incremental modes. Acceptable here: heavy compute runs in MLX subprocesses
+# or the cloud, not in app code. Revisit with the next Xcode release.
 xcodebuild archive \
   -project "${PROJECT}" \
   -scheme "${SCHEME}" \
@@ -56,6 +60,7 @@ xcodebuild archive \
   -destination "generic/platform=macOS" \
   DEVELOPMENT_TEAM="${TEAM_ID}" \
   CODE_SIGN_STYLE=Automatic \
+  SWIFT_OPTIMIZATION_LEVEL=-Onone \
   | grep -E "error|warning: code sign|ARCHIVE" || true
 [ -d "${ARCHIVE_PATH}" ] || fail "Archive failed."
 
