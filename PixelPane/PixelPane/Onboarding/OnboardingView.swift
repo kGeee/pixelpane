@@ -77,11 +77,11 @@ private struct OnboardingView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 12) {
-                Image(systemName: "viewfinder")
+                Image(systemName: "moon.fill")
                     .font(.system(size: 28, weight: .semibold))
-                    .foregroundStyle(.blue)
+                    .foregroundStyle(PixelPaneBrand.beige)
                     .frame(width: 44, height: 44)
-                    .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .background(PixelPaneBrand.ink, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Pixel Pane")
