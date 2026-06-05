@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Sparkle updates: the appcast is published as a stable asset on the
+	     latest GitHub release; release.sh generates and signs it. -->
+	<key>SUFeedURL</key>
+	<string>https://github.com/snehith01001110/pixelpane/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>vcZ3EIXXXQbdHUcBdI7HM3Lz6LuLxu2EbpGdvbR1nuQ=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+</dict>
+</plist>

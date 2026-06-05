@@ -81,6 +81,20 @@ struct SettingsView: View {
                     .disabled(!appState.canTogglePauseHotkey)
                 }
             }
+
+            Section("Updates") {
+                LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—")
+
+                Text("Pixel Pane checks for updates automatically and installs them only with your approval.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    AppUpdater.shared.checkForUpdates()
+                } label: {
+                    Label("Check for Updates…", systemImage: "arrow.down.circle")
+                }
+            }
         }
         .formStyle(.grouped)
     }
