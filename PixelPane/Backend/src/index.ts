@@ -6,7 +6,14 @@ interface Env {
   ANTHROPIC_MODEL?: string;
   APP_AUTH_SECRET?: string;
   DEV_APP_TOKEN?: string;
+  /** Free-tier cloud actions per device per UTC day. Default 20. */
   FREE_DAILY_LIMIT?: string;
+  /** Total cloud actions across ALL devices per UTC day — bounds worst-case
+   * provider spend even under minted-device-ID abuse. Default 1000. */
+  GLOBAL_DAILY_LIMIT?: string;
+  /** Token issuances per client IP per UTC day — raises the cost of minting
+   * fresh device IDs. Default 10. */
+  TOKEN_ISSUE_DAILY_LIMIT?: string;
   RATE_LIMIT_KV?: KVNamespace;
   /** Max server-side web searches per request for chat/ask. "0" disables. Default 3. */
   WEB_SEARCH_MAX_USES?: string;
@@ -91,9 +98,15 @@ export default {
         return jsonError(validationError.code, validationError.message, requestID, validationError.status);
       }
 
+      // Global cap first: bounds total provider spend per day across all
+      // devices, so minted-device-ID abuse cannot make the bill unbounded.
+      if (!(await consumeGlobalQuota(env))) {
+        return jsonError("rate_limited", "Pixel Pane Cloud is at capacity right now. Try again later or use Local Mode.", requestID, 429, 3600);
+      }
+
       const quota = await consumeQuota(env, identity);
       if (!quota.allowed) {
-        return jsonError("rate_limited", "Cloud action limit reached.", requestID, 429, 3600);
+        return jsonError("rate_limited", "Daily free Cloud limit reached. Resets at midnight UTC; Local Mode keeps working.", requestID, 429, 3600);
       }
 
       return streamAnthropic(action, payload, env, identity, quota, requestID);
@@ -115,6 +128,10 @@ function actionFromPath(pathname: string): Action | undefined {
 async function issueToken(request: Request, env: Env, requestID: string): Promise<Response> {
   if (!env.APP_AUTH_SECRET) {
     return jsonError("server_error", "App auth secret is not configured.", requestID, 500);
+  }
+
+  if (!(await allowTokenIssuance(request, env))) {
+    return jsonError("rate_limited", "Too many device registrations from this address today.", requestID, 429, 3600);
   }
 
   const payload = await request.json<TokenRequest>();
@@ -278,11 +295,54 @@ async function signHMACToken(payload: Record<string, unknown>, secret: string): 
   return `${signatureInput}.${base64URLEncode(signature)}`;
 }
 
+/// Daily, all-device action counter. Fails open only when KV is unbound
+/// (local dev); in production a KV failure counts as capacity reached so the
+/// spend bound holds.
+async function consumeGlobalQuota(env: Env): Promise<boolean> {
+  const limit = Math.max(0, Number.parseInt(env.GLOBAL_DAILY_LIMIT ?? "1000", 10));
+  if (!env.RATE_LIMIT_KV) {
+    return true;
+  }
+  try {
+    const key = `global:${new Date().toISOString().slice(0, 10)}`;
+    const current = Number.parseInt((await env.RATE_LIMIT_KV.get(key)) ?? "0", 10);
+    if (current >= limit) {
+      return false;
+    }
+    await env.RATE_LIMIT_KV.put(key, String(current + 1), { expirationTtl: secondsUntilNextUTCMidnight() });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/// Per-IP daily limit on token issuance: minting a fresh anonymous device ID
+/// requires a token, so this caps how many "new devices" one address can
+/// create per day.
+async function allowTokenIssuance(request: Request, env: Env): Promise<boolean> {
+  const limit = Math.max(1, Number.parseInt(env.TOKEN_ISSUE_DAILY_LIMIT ?? "10", 10));
+  if (!env.RATE_LIMIT_KV) {
+    return true;
+  }
+  const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+  try {
+    const key = `tokenip:${new Date().toISOString().slice(0, 10)}:${ip}`;
+    const current = Number.parseInt((await env.RATE_LIMIT_KV.get(key)) ?? "0", 10);
+    if (current >= limit) {
+      return false;
+    }
+    await env.RATE_LIMIT_KV.put(key, String(current + 1), { expirationTtl: secondsUntilNextUTCMidnight() });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function consumeQuota(
   env: Env,
   identity: AuthIdentity
 ): Promise<{ allowed: boolean; remaining: number; resetAt: string }> {
-  const limit = Math.max(0, Number.parseInt(env.FREE_DAILY_LIMIT ?? "10", 10));
+  const limit = Math.max(0, Number.parseInt(env.FREE_DAILY_LIMIT ?? "20", 10));
   const resetAt = nextUTCMidnight();
   if (identity.plan === "pro") {
     return { allowed: true, remaining: Number.MAX_SAFE_INTEGER, resetAt };
