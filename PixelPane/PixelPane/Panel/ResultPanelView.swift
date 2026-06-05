@@ -1874,7 +1874,9 @@ struct ResultPanelView: View {
     }
 
     private var preferredAskNotchSize: CGSize {
-        let width: CGFloat = hasCaptureContext ? 820 : 760
+        // One expanded width for every mode: the panel shouldn't jump wider
+        // just because a capture is attached.
+        let width = ResultPanelPresentationStyle.notchExpandedSize.width
         let headerHeight: CGFloat = 82
         let chipHeight: CGFloat = assistantContextBadges.isEmpty ? 0 : 34
         let composerHeight = estimatedAskComposerHeight
