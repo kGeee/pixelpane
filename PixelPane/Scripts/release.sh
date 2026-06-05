@@ -101,6 +101,19 @@ cp -R "${APP_PATH}" "${DMG_STAGING}/"
 ln -s /Applications "${DMG_STAGING}/Applications"
 hdiutil create -volname "Pixel Pane" -srcfolder "${DMG_STAGING}" -ov -format UDZO "${DMG_PATH}"
 
+step "Generate Sparkle appcast"
+GENERATE_APPCAST="$(find "${HOME}/Library/Developer/Xcode/DerivedData" -path "*artifacts*parkle*" -name "generate_appcast" 2>/dev/null | head -1)"
+if [ -n "${GENERATE_APPCAST}" ]; then
+  # Signs with the EdDSA private key in the login keychain (created once via
+  # Sparkle's generate_keys). Produces/updates dist/appcast.xml.
+  "${GENERATE_APPCAST}" \
+    --download-url-prefix "https://github.com/snehith01001110/pixelpane/releases/latest/download/" \
+    "${DIST_DIR}"
+else
+  echo "warning: generate_appcast not found (resolve Swift packages first); skipping appcast."
+fi
+
 step "Done"
 echo "Release artifact: ${DMG_PATH}"
-echo "Upload it to GitHub Releases (gh release create v${VERSION} \"${DMG_PATH}\")."
+echo "Publish: gh release create v${VERSION} \"${DMG_PATH}\" \"${DIST_DIR}/appcast.xml\""
+echo "(The app's update feed reads appcast.xml from the latest release's assets.)"

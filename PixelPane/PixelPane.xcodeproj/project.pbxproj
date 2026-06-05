@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		CDA15ABE2FA1D8CE00AC86F2 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = CDA15ABE2FA1D8CE00AC86F3 /* Sparkle */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		CD02CA2D2FA1D8CE00AC86F9 /* PixelPane.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PixelPane.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -23,6 +27,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				CDA15ABE2FA1D8CE00AC86F2 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -65,6 +70,7 @@
 			);
 			name = PixelPane;
 			packageProductDependencies = (
+				CDA15ABE2FA1D8CE00AC86F3 /* Sparkle */,
 			);
 			productName = PixelPane;
 			productReference = CD02CA2D2FA1D8CE00AC86F9 /* PixelPane.app */;
@@ -94,6 +100,9 @@
 			);
 			mainGroup = CD02CA242FA1D8CE00AC86F9;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				CDA15ABE2FA1D8CE00AC86F1 /* XCRemoteSwiftPackageReference "Sparkle" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = CD02CA2E2FA1D8CE00AC86F9 /* Products */;
 			projectDirPath = "";
@@ -264,9 +273,10 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_LSUIElement = YES;
-				INFOPLIST_KEY_NSLocationUsageDescription = "Pixel Pane uses an approximate, city-level location only to answer location-aware questions in Cloud Mode, and only when you enable sharing.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSLocationUsageDescription = "Pixel Pane uses an approximate, city-level location only to answer location-aware questions in Cloud Mode, and only when you enable sharing.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -299,9 +309,10 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_LSUIElement = YES;
-				INFOPLIST_KEY_NSLocationUsageDescription = "Pixel Pane uses an approximate, city-level location only to answer location-aware questions in Cloud Mode, and only when you enable sharing.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSLocationUsageDescription = "Pixel Pane uses an approximate, city-level location only to answer location-aware questions in Cloud Mode, and only when you enable sharing.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -341,6 +352,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		CDA15ABE2FA1D8CE00AC86F1 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.6.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		CDA15ABE2FA1D8CE00AC86F3 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = CDA15ABE2FA1D8CE00AC86F1 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = CD02CA252FA1D8CE00AC86F9 /* Project object */;
 }
