@@ -107,7 +107,7 @@ if [ -n "${GENERATE_APPCAST}" ]; then
   # Signs with the EdDSA private key in the login keychain (created once via
   # Sparkle's generate_keys). Produces/updates dist/appcast.xml.
   "${GENERATE_APPCAST}" \
-    --download-url-prefix "https://github.com/snehith01001110/pixelpane/releases/latest/download/" \
+    --download-url-prefix "https://github.com/snehith01001110/pixelpane-releases/releases/latest/download/" \
     "${DIST_DIR}"
 else
   echo "warning: generate_appcast not found (resolve Swift packages first); skipping appcast."
@@ -115,5 +115,6 @@ fi
 
 step "Done"
 echo "Release artifact: ${DMG_PATH}"
-echo "Publish: gh release create v${VERSION} \"${DMG_PATH}\" \"${DIST_DIR}/appcast.xml\""
-echo "(The app's update feed reads appcast.xml from the latest release's assets.)"
+echo "Publish to the PUBLIC releases repo (source repo is private):"
+echo "  gh release create v${VERSION} \"${DMG_PATH}\" \"${DIST_DIR}/appcast.xml\" --repo snehith01001110/pixelpane-releases"
+echo "(The app's update feed reads appcast.xml from that repo's latest release.)"
