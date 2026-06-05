@@ -105,6 +105,12 @@ final class AppState: ObservableObject {
             onOpenScreenRecordingSettings: { [weak self] in
                 self?.openScreenRecordingSettings()
                 return self?.screenRecordingStatus ?? .notGranted
+            },
+            onUserClose: { [weak self] in
+                // Title-bar close still finishes onboarding; otherwise the
+                // assistant surface never arms and the notch stays dead.
+                self?.completeOnboarding()
+                self?.showAssistant()
             }
         )
     }
