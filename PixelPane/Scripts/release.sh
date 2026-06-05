@@ -118,8 +118,15 @@ else
   echo "warning: generate_appcast not found (resolve Swift packages first); skipping appcast."
 fi
 
+# The website links to releases/latest/download/PixelPane.dmg, so every
+# release must also carry a version-agnostic copy. (Sparkle's appcast keeps
+# using the versioned name; the copy is for the site's stable URL only.)
+STABLE_DMG_PATH="${DIST_DIR}/PixelPane.dmg"
+cp "${DMG_PATH}" "${STABLE_DMG_PATH}"
+
 step "Done"
 echo "Release artifact: ${DMG_PATH}"
 echo "Publish to the PUBLIC releases repo (source repo is private):"
-echo "  gh release create v${VERSION} \"${DMG_PATH}\" \"${DIST_DIR}/appcast.xml\" --repo snehith01001110/pixelpane-releases"
-echo "(The app's update feed reads appcast.xml from that repo's latest release.)"
+echo "  gh release create v${VERSION} \"${DMG_PATH}\" \"${STABLE_DMG_PATH}\" \"${DIST_DIR}/appcast.xml\" --repo snehith01001110/pixelpane-releases"
+echo "(The app's update feed reads appcast.xml from that repo's latest release;"
+echo " the website's download button reads releases/latest/download/PixelPane.dmg.)"
