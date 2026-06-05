@@ -28,14 +28,14 @@ final class OnboardingWindowController {
         )
         let hostingView = NSHostingView(rootView: view)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 540, height: 560),
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 700),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
         window.title = "Welcome to Pixel Pane"
         window.contentView = hostingView
-        window.minSize = NSSize(width: 540, height: 560)
+        window.minSize = NSSize(width: 560, height: 700)
         window.center()
         window.isReleasedWhenClosed = false
         window.level = .floating
@@ -86,7 +86,7 @@ private struct OnboardingView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Pixel Pane")
                         .font(.system(size: 24, weight: .bold, design: .rounded))
-                    Text("Private screen help, only when you ask.")
+                    Text("Local-first help for your screen and files — only when you ask.")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(.secondary)
                 }
@@ -95,23 +95,33 @@ private struct OnboardingView: View {
             VStack(alignment: .leading, spacing: 10) {
                 OnboardingPrivacyRow(
                     systemImage: "selection.pin.in.out",
-                    title: "You choose the region",
-                    detail: "Capture starts only from the hotkey, menu, or this window. You drag over the exact area Pixel Pane should read."
-                )
-                OnboardingPrivacyRow(
-                    systemImage: "record.circle",
-                    title: "No background recording",
-                    detail: "Pixel Pane does not watch your screen in the background and never keeps a screen timeline."
-                )
-                OnboardingPrivacyRow(
-                    systemImage: "memorychip",
-                    title: "Screenshots are not saved",
-                    detail: "OCR starts from an in-memory image. Chat text can be saved locally, but screenshots are not retained by default."
+                    title: "Capture only what you choose",
+                    detail: "Capture starts only from the hotkey or menu, and reads just the region you drag. No background recording, no screen timeline; screenshots stay in memory and are not saved."
                 )
                 OnboardingPrivacyRow(
                     systemImage: "network.slash",
                     title: "Local Mode is the default",
-                    detail: "Pixel Pane starts with local processing. Cloud Mode is an explicit opt-in from Settings."
+                    detail: "Questions, file reading, and answers run on this Mac with your own models. Nothing leaves your computer unless you turn on Cloud Mode."
+                )
+                OnboardingPrivacyRow(
+                    systemImage: "folder.badge.person.crop",
+                    title: "Your files, your grants",
+                    detail: "The assistant sees only folders you grant, every read is recorded in the run trace, and any change to a file is proposed to you for approval first."
+                )
+                OnboardingPrivacyRow(
+                    systemImage: "cloud",
+                    title: "Cloud Mode is explicit — and transparent",
+                    detail: "When you enable it, your question and the local context the assistant gathers (such as text it reads from granted files or captures) are sent to Pixel Pane Cloud to answer, and web search may fetch current public information. The free tier includes a daily allowance."
+                )
+                OnboardingPrivacyRow(
+                    systemImage: "location.slash",
+                    title: "Location stays off until you turn it on",
+                    detail: "Approximate, city-level location is shared only in Cloud Mode, and only after you grant macOS access and enable sharing in Settings — two explicit switches."
+                )
+                OnboardingPrivacyRow(
+                    systemImage: "clock.arrow.circlepath",
+                    title: "Chats stay on this Mac",
+                    detail: "Conversation history is stored locally. Review or delete any chat from Settings → History at any time."
                 )
             }
 
@@ -148,8 +158,8 @@ private struct OnboardingView: View {
             }
         }
         .padding(24)
-        .frame(width: 540)
-        .frame(minHeight: 560)
+        .frame(width: 560)
+        .frame(minHeight: 700)
     }
 }
 
