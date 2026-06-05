@@ -403,10 +403,10 @@ nonisolated enum CloudAIBackendError: LocalizedError, Sendable {
         case .unauthorized:
             "Cloud authentication is unavailable."
         case .rateLimited(let retryAfterSeconds):
-            if let retryAfterSeconds {
-                "Cloud action limit reached. Try again in \(retryAfterSeconds) seconds."
+            if let retryAfterSeconds, retryAfterSeconds < 3_600 {
+                "Cloud limit reached. Try again in about \(max(1, retryAfterSeconds / 60)) minute(s), or use Local Mode."
             } else {
-                "Cloud action limit reached."
+                "Daily free Cloud limit reached. It resets at midnight UTC — Local Mode keeps working."
             }
         case .networkUnavailable:
             "Cloud is unreachable."
