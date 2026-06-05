@@ -26,6 +26,9 @@ actor AgentToolOrchestrator {
     private let maxRequiredSideEffectFinalAnswerRepairs = 1
     private let maxPreflightObservationCharacters = 5_500
     private let maxPreflightToolObservationCharacters = 1_000
+    /// Evidence backfill is bounded: at most this many runtime-initiated
+    /// reads, once per run, only for grant-covered paths the gate extracted.
+    private static let maxEvidenceBackfillReads = 3
 
     init(
         store: AgentRunStore,
@@ -88,6 +91,7 @@ actor AgentToolOrchestrator {
         var observedRequiredSideEffectToolNames = Set<String>()
         var loopController = AgentToolLoopController(maxIterations: maxIterations)
         var finalAnswerRejectionCounts: [FinalAnswerRejectionKind: Int] = [:]
+        var didAttemptEvidenceBackfill = false
         let shouldRunPreflight = baseRequest.metadata["skipPreflight"]?.boolValue != true
         if shouldRunPreflight,
            let preflight = try await preflightObservation(
@@ -122,7 +126,18 @@ actor AgentToolOrchestrator {
             )
             try Task.checkCancellation()
 
-            if let finalAnswer = Self.finalAnswer(from: response.events) {
+            // Protocol-channel recovery: a final answer whose text embeds a
+            // schema-valid call to an available, non-side-effecting tool is a
+            // tool call delivered in the wrong channel (models sometimes
+            // write the JSON into the answer and tell the user to run it).
+            // The intent is machine-readable, so execute it as the tool call
+            // it is instead of accepting a deflection. Side-effect tools are
+            // never recovered this way.
+            let embeddedAnswerToolCall = Self.finalAnswer(from: response.events)
+                .flatMap { Self.embeddedToolCall(in: $0.text, tools: baseRequest.tools) }
+                .flatMap { Self.isSideEffectTool($0.name) ? nil : $0 }
+
+            if let finalAnswer = Self.finalAnswer(from: response.events), embeddedAnswerToolCall == nil {
                 let answerDecision = await finalAnswerDecision(
                     finalAnswer,
                     runID: runID,
@@ -171,6 +186,69 @@ actor AgentToolOrchestrator {
                         )
                         return
                     }
+                    // Evidence backfill: the gate derived read-only tool
+                    // calls that acquire the evidence the answer lacked
+                    // (cited paths, undeclared snapshots). The runtime can
+                    // satisfy that requirement deterministically and retry
+                    // once instead of asking a model that already failed to
+                    // self-correct (chat2, cloud listener fabrication).
+                    let executableBackfillCalls = rejection.backfillToolCalls.filter { call in
+                        baseRequest.tools.contains(where: { $0.name == call.name })
+                            && !Self.isSideEffectTool(call.name)
+                    }
+                    if !didAttemptEvidenceBackfill, !executableBackfillCalls.isEmpty {
+                        didAttemptEvidenceBackfill = true
+                        var backfilledAnyPath = false
+                        for call in executableBackfillCalls.prefix(Self.maxEvidenceBackfillReads) {
+                            let result = try await executeToolCall(
+                                call,
+                                runID: runID,
+                                providerTier: tier,
+                                context: context,
+                                iteration: iteration
+                            )
+                            guard result.status == .succeeded else { continue }
+                            observedToolResults += 1
+                            let backfillObservation = AgentKernelMessage(
+                                role: .observation,
+                                content: result.modelObservationText
+                            )
+                            try await recordControlMessage(
+                                backfillObservation,
+                                runID: runID,
+                                kind: .toolObservation,
+                                metadata: [
+                                    "iteration": .int(iteration),
+                                    "toolName": .string(call.name),
+                                    "source": .string("evidence_backfill")
+                                ]
+                            )
+                            messages.append(backfillObservation)
+                            backfilledAnyPath = true
+                        }
+                        if backfilledAnyPath {
+                            let backfillRepair = AgentKernelMessage(
+                                role: .observation,
+                                content: """
+                                Runtime rejected the previous final answer.
+                                Reason: \(rejection.reason.text)
+                                The runtime has now read the referenced path(s); their contents are recorded above. Answer again using that evidence, declaring grounding.claims that match it.
+                                """
+                            )
+                            try await recordControlMessage(
+                                backfillRepair,
+                                runID: runID,
+                                kind: .finalAnswerRepairObservation,
+                                metadata: [
+                                    "iteration": .int(iteration),
+                                    "rejectionKind": .string(String(describing: rejection.kind)),
+                                    "source": .string("evidence_backfill")
+                                ]
+                            )
+                            messages.append(backfillRepair)
+                            continue
+                        }
+                    }
                     let repairObservation = AgentKernelMessage(
                         role: .observation,
                         content: """
@@ -194,7 +272,14 @@ actor AgentToolOrchestrator {
                 }
             }
 
-            guard let toolCall = Self.firstToolCall(from: response.events) else {
+            if embeddedAnswerToolCall != nil {
+                try await store.appendEvent(
+                    runID: runID,
+                    kind: .providerDiagnostic,
+                    payload: .diagnostic(AgentRunText("Final answer embedded a tool call in its text; executing it as the intended action."))
+                )
+            }
+            guard let toolCall = embeddedAnswerToolCall ?? Self.firstToolCall(from: response.events) else {
                 try await failRun(runID: runID, reason: AgentRunText(AgentToolOrchestratorError.noFinalAnswer.description))
                 return
             }
@@ -655,6 +740,23 @@ actor AgentToolOrchestrator {
     private struct FinalAnswerRejection {
         let kind: FinalAnswerRejectionKind
         let reason: AgentRunText
+        /// Read-only tool calls the gate derived deterministically from the
+        /// rejected answer (cited grant-covered paths, or unverifiable claim
+        /// kinds whose evidence the runtime can acquire itself). When
+        /// present, the runtime may satisfy the missing evidence and retry
+        /// instead of failing the run because the model would not
+        /// self-correct.
+        let backfillToolCalls: [AgentKernelToolCall]
+
+        init(
+            kind: FinalAnswerRejectionKind,
+            reason: AgentRunText,
+            backfillToolCalls: [AgentKernelToolCall] = []
+        ) {
+            self.kind = kind
+            self.reason = reason
+            self.backfillToolCalls = backfillToolCalls
+        }
     }
 
     private enum FinalAnswerDecision {
@@ -1078,7 +1180,8 @@ actor AgentToolOrchestrator {
             answer,
             evidence: evidence,
             hasSubstantiveEvidence: hasSubstantiveEvidence,
-            requiresGroundingWhenUnevidenced: requiresGroundingWhenUnevidenced && profile.hasToolPath
+            requiresGroundingWhenUnevidenced: requiresGroundingWhenUnevidenced && profile.hasToolPath,
+            grants: profile.taskFrame.localGrants
         )
         if case .retry = groundingDecision {
             return groundingDecision
@@ -1144,7 +1247,8 @@ actor AgentToolOrchestrator {
         _ answer: AgentKernelFinalAnswer,
         evidence: [AgentRunEvidenceRecord],
         hasSubstantiveEvidence: Bool,
-        requiresGroundingWhenUnevidenced: Bool
+        requiresGroundingWhenUnevidenced: Bool,
+        grants: [AgentLocalFileGrant]
     ) -> FinalAnswerDecision {
         guard let grounding = answer.grounding else {
             if requiresGroundingWhenUnevidenced && !hasSubstantiveEvidence && !hasAnyToolEvidence(evidence) {
@@ -1163,10 +1267,18 @@ actor AgentToolOrchestrator {
             let decisions = AgentEvidenceController().verify(claims, evidence: evidence)
             let unsupported = decisions.filter { $0.status != .supported }
             if let first = unsupported.first {
+                // Unverifiable claims carry the read-only tool calls that
+                // would acquire their evidence — same root cause as
+                // answer-text path references without evidence.
                 return .retry(
                     FinalAnswerRejection(
                         kind: .unsupportedGroundingClaims,
-                        reason: first.summary
+                        reason: first.summary,
+                        backfillToolCalls: backfillToolCalls(
+                            from: unsupported.map(\.claim),
+                            evidence: evidence,
+                            grants: grants
+                        )
                     )
                 )
             }
@@ -1689,7 +1801,17 @@ actor AgentToolOrchestrator {
             && hasSubstantiveAnswerEvidence(evidence, requirements: requirements)
         let hasRecordedEvidence = hasSubstantiveAnswerEvidence(evidence, requirements: requirements)
             || (!requirements.isEmpty && hasAnyToolEvidence(evidence))
-        let shouldDisableTools = baseRequest.tools.isEmpty || requirementsSatisfied
+        // An invalid call to an AVAILABLE evidence-gathering tool is the
+        // model declaring unmet evidence need; recovery must keep the
+        // toolset even when preflight requirements are already satisfied —
+        // satisfied requirements do not mean the answer's evidence is
+        // complete. Unknown or side-effect tool names get no such benefit.
+        let invalidToolName = failure.metadata["toolName"]?.stringValue
+        let invalidCallSignalsEvidenceNeed = invalidToolName.map { name in
+            baseRequest.tools.contains { $0.name == name } && !Self.isSideEffectTool(name)
+        } ?? false
+        let shouldDisableTools = baseRequest.tools.isEmpty
+            || (requirementsSatisfied && !invalidCallSignalsEvidenceNeed)
         let sideEffectReady = !profile.requiresSideEffectEvidenceBeforeCompletion ||
             Set(profile.requiredSideEffectToolNames).isSubset(of: terminalRequiredSideEffectToolNames(evidence))
         guard sideEffectReady else { return nil }
@@ -2133,6 +2255,66 @@ actor AgentToolOrchestrator {
         }
     }
 
+    /// Read-only tool calls derived deterministically from unverifiable
+    /// claims: each claim kind maps to the tool that acquires its evidence,
+    /// with arguments taken from the claim target (path targets resolved by
+    /// the grant resolver, port targets parsed as integers). No answer text
+    /// is interpreted.
+    private nonisolated func backfillToolCalls(
+        from claims: [AgentEvidenceClaim],
+        evidence: [AgentRunEvidenceRecord],
+        grants: [AgentLocalFileGrant]
+    ) -> [AgentKernelToolCall] {
+        let backfillReason = "Runtime evidence backfill: the rejected answer declared this claim without recorded evidence."
+        var seen = Set<String>()
+        var calls: [AgentKernelToolCall] = []
+
+        func append(_ name: String, _ arguments: [String: String]) {
+            let signature = "\(name):\(arguments.sorted(by: { $0.key < $1.key }).map { "\($0.key)=\($0.value)" }.joined(separator: ","))"
+            guard seen.insert(signature).inserted else { return }
+            calls.append(AgentKernelToolCall(name: name, arguments: arguments, reason: backfillReason))
+        }
+
+        func resolvedReadablePath(_ target: String?) -> String? {
+            guard let target, target.hasPrefix("/"), !grants.isEmpty else { return nil }
+            guard case .resolved(let resolution) = AgentLocalPathResolver().resolve(
+                target,
+                grants: grants,
+                access: .read,
+                target: .any
+            ) else {
+                return nil
+            }
+            return URL(fileURLWithPath: resolution.path).standardizedFileURL.path
+        }
+
+        for claim in claims {
+            switch claim.type {
+            case .localFileObserved:
+                if let path = resolvedReadablePath(claim.target), !localReferenceIsBacked(path, by: evidence) {
+                    append("read_file", ["path": path])
+                }
+            case .folderListed:
+                if let path = resolvedReadablePath(claim.target) {
+                    append("list_folder", ["path": path])
+                }
+            case .localListenerSnapshotRecorded:
+                if let target = claim.target, Int(target) != nil {
+                    append("get_local_listener_snapshot", ["port": target])
+                } else if let path = resolvedReadablePath(claim.target) {
+                    append("get_local_listener_snapshot", ["rootPath": path])
+                } else {
+                    append("get_local_listener_snapshot", [:])
+                }
+            case .processSnapshotRecorded:
+                append("get_process_snapshot", [:])
+            default:
+                continue
+            }
+        }
+        return calls
+    }
+
     private nonisolated func unsupportedAnswerLocalReferences(
         in answer: String,
         evidence: [AgentRunEvidenceRecord],
@@ -2169,7 +2351,14 @@ actor AgentToolOrchestrator {
             kind: .unsupportedLocalReferences,
             reason: AgentRunText(
                 "The final answer references accessible local path(s) without recorded evidence: \(displayed)\(suffix). Call an available local file tool for those path(s), or answer without unsupported local references."
-            )
+            ),
+            backfillToolCalls: unsupportedLocalReferences.map { path in
+                AgentKernelToolCall(
+                    name: "read_file",
+                    arguments: ["path": path],
+                    reason: "Runtime evidence backfill: the final answer referenced this path without recorded evidence."
+                )
+            }
         )
     }
 
@@ -2391,6 +2580,96 @@ actor AgentToolOrchestrator {
             }
         }
         return nil
+    }
+
+    /// A schema-valid tool call embedded in answer text: every top-level JSON
+    /// object in the text is parsed structurally and accepted only when its
+    /// name matches an available tool and its arguments are scalar. No text
+    /// patterns are interpreted — this recovers protocol messages delivered
+    /// in the wrong channel.
+    nonisolated static func embeddedToolCall(
+        in text: String,
+        tools: [AgentKernelToolSchema]
+    ) -> AgentKernelToolCall? {
+        guard !tools.isEmpty, text.contains("{") else { return nil }
+        for candidate in jsonObjectCandidates(in: text, limit: 8) {
+            guard let data = candidate.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                continue
+            }
+            if let type = object["type"] as? String, type != "tool_call" {
+                continue
+            }
+            guard let name = object["name"] as? String,
+                  tools.contains(where: { $0.name == name }) else {
+                continue
+            }
+            let rawArguments = object["arguments"] as? [String: Any] ?? [:]
+            var arguments: [String: String] = [:]
+            var argumentsAreScalar = true
+            for (key, value) in rawArguments {
+                if let string = value as? String {
+                    arguments[key] = string
+                } else if let number = value as? NSNumber {
+                    arguments[key] = number.stringValue
+                } else {
+                    argumentsAreScalar = false
+                    break
+                }
+            }
+            guard argumentsAreScalar else { continue }
+            return AgentKernelToolCall(
+                name: name,
+                arguments: arguments,
+                reason: object["reason"] as? String
+            )
+        }
+        return nil
+    }
+
+    /// Top-level `{...}` runs in the text, found by a string-aware balanced
+    /// brace scan (works inside or outside code fences).
+    private nonisolated static func jsonObjectCandidates(in text: String, limit: Int) -> [String] {
+        var candidates: [String] = []
+        var depth = 0
+        var start: String.Index?
+        var inString = false
+        var escaped = false
+        for index in text.indices {
+            let character = text[index]
+            if inString {
+                if escaped {
+                    escaped = false
+                } else if character == "\\" {
+                    escaped = true
+                } else if character == "\"" {
+                    inString = false
+                }
+                continue
+            }
+            switch character {
+            case "\"":
+                inString = true
+            case "{":
+                if depth == 0 {
+                    start = index
+                }
+                depth += 1
+            case "}":
+                guard depth > 0 else { continue }
+                depth -= 1
+                if depth == 0, let startIndex = start {
+                    candidates.append(String(text[startIndex...index]))
+                    start = nil
+                    if candidates.count >= limit {
+                        return candidates
+                    }
+                }
+            default:
+                break
+            }
+        }
+        return candidates
     }
 
     private nonisolated func toolMetadata(_ call: AgentKernelToolCall) -> [String: AgentRunMetadataValue] {

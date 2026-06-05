@@ -59,6 +59,10 @@ enum AgentToolCallingFixtureHarness {
         try await testFileListingClaimGroundsFolderAnswer()
         try await testApproximateLocationContextGroundsLocationClaims()
         try await testEmptyLocalEvidenceClaimsRepairToListingClaim()
+        try await testEvidenceBackfillReadsCitedPathAndRecovers()
+        try await testEvidenceBackfillRunsListenerSnapshotForFabricatedClaim()
+        try await testEmbeddedToolCallInAnswerTextIsExecuted()
+        try await testGrantNameReferencesClassifyAsLocalState()
         try await testSearchAndReadToolsRecordEvidence()
         try await testQuotedSearchUsesPreciseQuery()
         try await testMultipleQuotedSearchesCreateSeparateEvidence()
@@ -499,8 +503,18 @@ enum AgentToolCallingFixtureHarness {
 
         let trace = try await harness.store.traceProjection(runID: runID)
         try expect(trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.folderList.rawValue }), "folder evidence should be recorded")
-        try expect(!trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.localServer.rawValue }), "listener evidence should not be fabricated from folder evidence")
-        try expect(harness.viewModel.state.activeStatus == .blocked, "listener claims should block without listener evidence")
+        // The invariant: folder evidence alone never supports listener
+        // claims. With claim-kind backfill the runtime now takes a REAL
+        // listener snapshot for the unverifiable claim and the run recovers —
+        // any listener evidence must come from that backfill, never from
+        // reinterpreting folder evidence.
+        let listenerEvidence = trace.evidence.filter { $0.kind == AgentEvidenceKind.localServer.rawValue }
+        let backfillObservations = trace.controlRecords.filter { record in
+            record.kind == .toolObservation && record.metadata["source"]?.stringValue == "evidence_backfill"
+        }
+        try expect(!listenerEvidence.isEmpty, "backfill should record a real listener snapshot for the unverifiable claim")
+        try expect(!backfillObservations.isEmpty, "the listener snapshot must come from marked runtime backfill, not folder evidence")
+        try expect(harness.viewModel.state.activeStatus == .completed, "the re-declared claim should verify against the backfilled snapshot")
     }
 
     @MainActor
@@ -632,6 +646,211 @@ enum AgentToolCallingFixtureHarness {
         }
         try expect(repairMessages.contains(where: { $0.contains("file_listing") }), "repair observation should name the claim kind vocabulary")
         try expect(harness.viewModel.state.activeStatus == .completed, "declaring file_listing after the repair observation should complete the run")
+    }
+
+    @MainActor
+    private static func testEvidenceBackfillRunsListenerSnapshotForFabricatedClaim() async throws {
+        // Replays the cloud listener fabrication: the model declared
+        // local_listeners without ever calling the snapshot tool. The claim
+        // kind maps deterministically to a read-only tool, so the runtime
+        // takes the snapshot itself and retries instead of blocking.
+        let harness = try await makeHarness(prefix: "backfill-listener")
+        let listenerClaim = AgentKernelAnswerGrounding(
+            basis: .localEvidence,
+            claims: [AgentKernelAnswerClaim(kind: .localListeners)]
+        )
+        let adapter = tierBFixtureAdapter(
+            responses: [
+                groundedFinalAnswer("Your site is not running on any localhost port.", grounding: listenerClaim),
+                groundedFinalAnswer("Your site is not running on any localhost port.", grounding: listenerClaim)
+            ]
+        )
+        let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
+
+        let runID = try await harness.viewModel.startRun(
+            userMessage: "Is my site running on a localhost port?",
+            context: AgentRunViewContext(title: "Backfill Listener", contextID: "backfill-listener", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use the structured protocol.",
+            timeout: 4
+        )
+        try await harness.viewModel.waitForIdle(timeout: 6)
+        await harness.viewModel.refresh()
+
+        let trace = try await harness.store.traceProjection(runID: runID)
+        let backfillObservations = trace.controlRecords.filter { record in
+            record.kind == .toolObservation && record.metadata["source"]?.stringValue == "evidence_backfill"
+        }
+        try expect(
+            trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.localServer.rawValue }),
+            "backfill should record a listener snapshot for the fabricated claim"
+        )
+        try expect(!backfillObservations.isEmpty, "backfill snapshot observation should be durable with its source marked")
+        try expect(harness.viewModel.state.activeStatus == .completed, "the re-declared claim should verify against the backfilled snapshot")
+    }
+
+    @MainActor
+    private static func testEmbeddedToolCallInAnswerTextIsExecuted() async throws {
+        // Replays the Hermes deflection: the model wrote the read_file
+        // tool-call JSON inside its answer text and told the user to run it.
+        // A schema-valid call to an available read-only tool is a protocol
+        // message in the wrong channel; the runtime executes it as the
+        // intended action instead of accepting a non-answer.
+        let harness = try await makeHarness(prefix: "embedded-tool-call")
+        let cited = harness.workspace.appendingPathComponent("styles.css")
+        try ":root { --ink: #0b0b0c; }".write(to: cited, atomically: true, encoding: .utf8)
+        let citedPath = cited.path
+
+        let deflection = """
+        To view the colors, you can use the read_file tool. Here's how:
+
+        ```json
+        {
+          "name": "read_file",
+          "arguments": {
+            "path": "\(citedPath)"
+          }
+        }
+        ```
+
+        This will return the content of the file.
+        """
+        let adapter = tierBFixtureAdapter(
+            responses: [
+                .finalAnswer(deflection),
+                groundedFinalAnswer(
+                    "The background color is #0b0b0c.",
+                    grounding: AgentKernelAnswerGrounding(
+                        basis: .localEvidence,
+                        claims: [AgentKernelAnswerClaim(kind: .localFile, target: citedPath)]
+                    )
+                )
+            ]
+        )
+        let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
+
+        let runID = try await harness.viewModel.startRun(
+            userMessage: "What is the background color?",
+            context: AgentRunViewContext(title: "Embedded Tool Call", contextID: "embedded-tool-call", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use the structured protocol.",
+            timeout: 4
+        )
+        try await harness.viewModel.waitForIdle(timeout: 6)
+        await harness.viewModel.refresh()
+
+        let trace = try await harness.store.traceProjection(runID: runID)
+        try expect(
+            trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.fileRead.rawValue && $0.metadata["path"]?.stringValue == citedPath }),
+            "the embedded read_file call should be executed and recorded as evidence"
+        )
+        try expect(
+            harness.viewModel.state.messages.last?.text.text.contains("#0b0b0c") == true,
+            "the follow-up answer should use the read content, not the deflection"
+        )
+        try expect(harness.viewModel.state.activeStatus == .completed, "the run should complete after executing the embedded call")
+    }
+
+    @MainActor
+    private static func testGrantNameReferencesClassifyAsLocalState() async throws {
+        // Replays chat1 (7B): "whats the color scheme of the pixelpane site?"
+        // referenced the user's "pixel-pane-site" grant, but exact-string
+        // matching missed it, so the question was never classified as
+        // local-state and a fabricated answer completed. Grant names match
+        // normalized (case/separator-folded) token runs — identifiers the
+        // user declared, never shipped vocabulary.
+        let harness = try await makeHarness(prefix: "grant-name-classify")
+        let site = harness.workspace.appendingPathComponent("pixel-pane-site", isDirectory: true)
+        try FileManager.default.createDirectory(at: site, withIntermediateDirectories: true)
+        let siteGrant = AgentLocalFileGrant(path: site.path, isDirectory: true)
+        let adapter = FixtureAgentKernelAdapter(responses: [])
+        let config = toolConfig(grants: [siteGrant], runMode: .readOnly, adapter: adapter)
+
+        let fuzzyReference = AgentRunTaskProfile.classify(
+            userMessage: "whats the color scheme of the pixelpane site?",
+            tools: config.tools,
+            context: config.context
+        )
+        try expect(fuzzyReference.isLocalStateRequest, "separator-folded grant name references should classify as local-state")
+        try expect(
+            fuzzyReference.taskFrame.localReferences.contains(where: { $0.path == site.path }),
+            "the fuzzy reference should resolve to the named grant"
+        )
+
+        let spacedReference = AgentRunTaskProfile.classify(
+            userMessage: "describe my pixel pane site for me",
+            tools: config.tools,
+            context: config.context
+        )
+        try expect(spacedReference.isLocalStateRequest, "spaced grant name references should classify as local-state")
+
+        let unrelated = AgentRunTaskProfile.classify(
+            userMessage: "what is the latest news about swift concurrency?",
+            tools: config.tools,
+            context: config.context
+        )
+        try expect(!unrelated.isLocalStateRequest, "questions that never reference a grant must stay unclassified (no blind evidence)")
+        try expect(unrelated.taskFrame.localReferences.isEmpty, "no grant reference should be fabricated from unrelated wording")
+    }
+
+    @MainActor
+    private static func testEvidenceBackfillReadsCitedPathAndRecovers() async throws {
+        // Replays chat2 (Hermes): the model cites a granted file it never
+        // read. Instead of rejecting twice and blocking, the runtime reads
+        // the cited path itself (grant-covered, read-only), records the
+        // evidence, and retries once — turning the block into an answer.
+        let harness = try await makeHarness(prefix: "evidence-backfill")
+        let cited = harness.workspace.appendingPathComponent("style.css")
+        try "body { background: #0b0b0c; }".write(to: cited, atomically: true, encoding: .utf8)
+        let citedPath = cited.path
+
+        let adapter = tierBFixtureAdapter(
+            responses: [
+                groundedFinalAnswer(
+                    "Check \(citedPath) for the colors.",
+                    basis: .localEvidence,
+                    claims: [AgentKernelAnswerClaim(kind: .localFile, target: citedPath)]
+                ),
+                groundedFinalAnswer(
+                    "The background color is #0b0b0c, per \(citedPath).",
+                    grounding: AgentKernelAnswerGrounding(
+                        basis: .localEvidence,
+                        claims: [AgentKernelAnswerClaim(kind: .localFile, target: citedPath)]
+                    )
+                )
+            ]
+        )
+        let config = toolConfig(grant: harness.grant, runMode: .readOnly, adapter: adapter)
+
+        let runID = try await harness.viewModel.startRun(
+            userMessage: "What is the background color?",
+            context: AgentRunViewContext(title: "Evidence Backfill", contextID: "evidence-backfill", contextKind: "assistant"),
+            adapter: adapter,
+            mode: config.mode,
+            tools: config.tools,
+            toolContext: config.context,
+            systemPrompt: "Use the structured protocol.",
+            timeout: 4
+        )
+        try await harness.viewModel.waitForIdle(timeout: 6)
+        await harness.viewModel.refresh()
+
+        let trace = try await harness.store.traceProjection(runID: runID)
+        let backfillObservations = trace.controlRecords.filter { record in
+            record.kind == .toolObservation && record.metadata["source"]?.stringValue == "evidence_backfill"
+        }
+        try expect(
+            trace.evidence.contains(where: { $0.kind == AgentEvidenceKind.fileRead.rawValue && $0.metadata["path"]?.stringValue == citedPath }),
+            "backfill should record file-read evidence for the cited path"
+        )
+        try expect(!backfillObservations.isEmpty, "backfill observation should be durable with its source marked")
+        try expect(harness.viewModel.state.activeStatus == .completed, "backfilled evidence should let the corrected answer complete")
     }
 
     @MainActor

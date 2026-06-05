@@ -68,6 +68,15 @@ final class LocationContextProvider: NSObject, ObservableObject, CLLocationManag
         manager.requestLocation()
     }
 
+    /// Idempotent cold-start guard: kick off resolution only when consented
+    /// and nothing is resolved or in flight. Cheap to call on every panel
+    /// open, so a failed or slow one-shot fix gets retried instead of
+    /// leaving the session without a city.
+    func resolveIfNeeded() {
+        guard approximateLocation == nil, !isResolving else { return }
+        refresh()
+    }
+
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         let status = manager.authorizationStatus
         Task { @MainActor in

@@ -248,7 +248,8 @@ struct ResultPanelView: View {
             "Treat this chat as isolated from previous chats. Use only messages visible in this chat as conversation history.",
             "If asked about previous chats or sessions and this chat does not contain them, say that no previous chat context is available here.",
             "If the available context is insufficient, say what is missing instead of inventing details.",
-            "Never offer follow-up actions that no available tool can perform."
+            "Never offer follow-up actions that no available tool can perform.",
+            "When an available read-only tool can answer the question, call the tool and answer from its result. Do not ask the user for permission to use read-only tools, describe how a tool could be used, or tell the user to run one themselves."
         ]
 
         // Keep the capability statement truthful per route: the local route is

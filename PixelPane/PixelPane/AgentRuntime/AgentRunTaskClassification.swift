@@ -142,6 +142,7 @@ nonisolated struct AgentTemporalContext: Codable, Equatable, Sendable {
         timeZone: \(timeZoneIdentifier)
         utcOffset: \(utcOffset)
         Use this context for current date, current time, today, tomorrow, and yesterday. Do not use model pretraining for current temporal facts.
+        The time zone identifies a UTC-offset region, not the user's city; do not infer or assert a city from it. If the user's location matters and no location context is provided, ask or answer without assuming one.
         """
     }
 

@@ -515,12 +515,18 @@ final class AppState: ObservableObject {
     }
 
     /// Location context attached to runs: cloud route only, explicit toggle,
-    /// macOS permission granted, and a resolved city available.
+    /// macOS permission granted, and a resolved city available. Consented but
+    /// unresolved location triggers an idempotent retry, so a failed or slow
+    /// cold-start fix lands for the next run instead of being lost for the
+    /// session (the resolution sink refreshes the open panel when it lands).
     var cloudRunLocationContext: AgentLocationContext? {
         guard aiRoutingSettings.effectiveMode == .cloud,
               aiRoutingSettings.allowCloudLocationContext,
               locationProvider.permissionStatus.isGranted else {
             return nil
+        }
+        if locationProvider.approximateLocation == nil {
+            locationProvider.resolveIfNeeded()
         }
         return locationProvider.approximateLocation
     }
