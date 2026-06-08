@@ -1,11 +1,104 @@
 import AppKit
 import Foundation
 
+/// One downloadable local model, with the machine capacity it needs. Disk
+/// sizes are measured from the Hugging Face repos; memory floors leave headroom
+/// for the KV cache, activations, and the rest of the system.
+nonisolated struct MLXModelTier: Sendable, Identifiable, Hashable {
+    let repositoryID: String
+    let approximateDiskSizeBytes: Int64
+    let minUnifiedMemoryBytes: UInt64
+    let capability: MLXModelCapability
+    let license: String
+
+    nonisolated var id: String { repositoryID }
+
+    nonisolated var approximateDiskSize: String {
+        ByteCountFormatter.string(fromByteCount: approximateDiskSizeBytes, countStyle: .file)
+    }
+
+    nonisolated var url: URL {
+        URL(string: "https://huggingface.co/\(repositoryID)")!
+    }
+}
+
+/// The ladder of recommended local models, smallest to largest, and the policy
+/// that picks the one a given machine should download. Sizes verified against
+/// mlx-community on Hugging Face.
+nonisolated enum MLXModelCatalog {
+    static let giB: UInt64 = 1_073_741_824
+    static let defaultLicense = "See Hugging Face model card"
+
+    /// Ordered smallest → largest. All text 4-bit except the top tier, which is
+    /// the long-standing default and is treated as text+vision.
+    static let tiers: [MLXModelTier] = [
+        MLXModelTier(
+            repositoryID: "mlx-community/Qwen3-4B-4bit",
+            approximateDiskSizeBytes: 2_280_000_000,
+            minUnifiedMemoryBytes: 0,
+            capability: .text,
+            license: defaultLicense
+        ),
+        MLXModelTier(
+            repositoryID: "mlx-community/Qwen3-8B-4bit",
+            approximateDiskSizeBytes: 4_620_000_000,
+            minUnifiedMemoryBytes: 16 * giB,
+            capability: .text,
+            license: defaultLicense
+        ),
+        MLXModelTier(
+            repositoryID: "mlx-community/Qwen3-14B-4bit",
+            approximateDiskSizeBytes: 8_320_000_000,
+            minUnifiedMemoryBytes: 24 * giB,
+            capability: .text,
+            license: defaultLicense
+        ),
+        MLXModelTier(
+            repositoryID: "mlx-community/Qwen3-30B-A3B-4bit",
+            approximateDiskSizeBytes: 17_190_000_000,
+            minUnifiedMemoryBytes: 32 * giB,
+            capability: .text,
+            license: defaultLicense
+        ),
+        MLXModelTier(
+            repositoryID: "mlx-community/Qwen3.6-35B-A3B-6bit",
+            approximateDiskSizeBytes: 29_100_000_000,
+            minUnifiedMemoryBytes: 48 * giB,
+            capability: .textAndVision,
+            license: defaultLicense
+        )
+    ]
+
+    /// The historical default; still the strongest tier.
+    static var topTier: MLXModelTier { tiers[tiers.count - 1] }
+
+    /// The largest tier whose memory floor the machine meets and whose download
+    /// fits in free disk with 20% headroom. If memory fits nothing, falls back
+    /// to the smallest tier; if disk fits none of the memory-eligible tiers,
+    /// returns the smallest eligible one (the UI surfaces the disk shortfall
+    /// separately).
+    static func recommended(for profile: HardwareProfile) -> MLXModelTier {
+        let memoryEligible = tiers.filter { profile.physicalMemoryBytes >= $0.minUnifiedMemoryBytes }
+        let candidates = memoryEligible.isEmpty ? [tiers[0]] : memoryEligible
+
+        guard let disk = profile.availableDiskBytes else {
+            return candidates[candidates.count - 1]
+        }
+        let diskEligible = candidates.filter {
+            Double(disk) >= Double($0.approximateDiskSizeBytes) * 1.2
+        }
+        return diskEligible.last ?? candidates[0]
+    }
+}
+
+/// Backward-compatible accessors for the historical "single preferred model"
+/// concept. These now resolve to the catalog's top tier so existing call sites
+/// (sorting, `isPreferred`, the "open model page" action) keep working.
 nonisolated enum MLXVisionSetupConstants {
-    static let preferredModelRepositoryID = "mlx-community/Qwen3.6-35B-A3B-6bit"
-    static let preferredModelApproximateDiskSize = "29.1 GB"
-    static let preferredModelLicense = "See Hugging Face model card"
-    static let preferredModelURL = URL(string: "https://huggingface.co/mlx-community/Qwen3.6-35B-A3B-6bit")!
+    static var preferredModelRepositoryID: String { MLXModelCatalog.topTier.repositoryID }
+    static var preferredModelApproximateDiskSize: String { MLXModelCatalog.topTier.approximateDiskSize }
+    static let preferredModelLicense = MLXModelCatalog.defaultLicense
+    static var preferredModelURL: URL { MLXModelCatalog.topTier.url }
 }
 
 nonisolated enum MLXModelCapability: String, Codable, Sendable {

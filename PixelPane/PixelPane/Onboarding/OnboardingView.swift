@@ -7,6 +7,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
     private var onUserClose: (() -> Void)?
 
     func show(
+        appState: AppState,
         screenRecordingStatus: ScreenRecordingPermissionStatus,
         onStartCapture: @escaping () -> Void,
         onOpenAssistant: @escaping () -> Void,
@@ -23,6 +24,7 @@ final class OnboardingWindowController: NSObject, NSWindowDelegate {
         }
 
         let view = OnboardingView(
+            appState: appState,
             initialScreenRecordingStatus: screenRecordingStatus,
             onStartCapture: onStartCapture,
             onOpenAssistant: onOpenAssistant,
@@ -71,6 +73,7 @@ private struct OnboardingPage {
 }
 
 private struct OnboardingView: View {
+    @ObservedObject var appState: AppState
     let onStartCapture: () -> Void
     let onOpenAssistant: () -> Void
     let onRequestScreenRecordingAccess: () -> ScreenRecordingPermissionStatus
@@ -80,12 +83,14 @@ private struct OnboardingView: View {
     @State private var pageIndex = 0
 
     init(
+        appState: AppState,
         initialScreenRecordingStatus: ScreenRecordingPermissionStatus,
         onStartCapture: @escaping () -> Void,
         onOpenAssistant: @escaping () -> Void,
         onRequestScreenRecordingAccess: @escaping () -> ScreenRecordingPermissionStatus,
         onOpenScreenRecordingSettings: @escaping () -> ScreenRecordingPermissionStatus
     ) {
+        self.appState = appState
         self.onStartCapture = onStartCapture
         self.onOpenAssistant = onOpenAssistant
         self.onRequestScreenRecordingAccess = onRequestScreenRecordingAccess
@@ -141,8 +146,10 @@ private struct OnboardingView: View {
         )
     ]
 
-    /// The pages of static rows, followed by the permission/launch page.
-    private var pageCount: Int { Self.pages.count + 1 }
+    /// The pages of static rows, followed by the local-AI setup page and the
+    /// permission/launch page.
+    private var pageCount: Int { Self.pages.count + 2 }
+    private var localAIPageIndex: Int { Self.pages.count }
     private var isLastPage: Bool { pageIndex == pageCount - 1 }
 
     var body: some View {
@@ -152,6 +159,8 @@ private struct OnboardingView: View {
             Group {
                 if pageIndex < Self.pages.count {
                     rowsPage(Self.pages[pageIndex])
+                } else if pageIndex == localAIPageIndex {
+                    localAIPage
                 } else {
                     readyPage
                 }
@@ -218,6 +227,24 @@ private struct OnboardingView: View {
                 systemImage: "moon.fill",
                 title: "The assistant lives in your notch",
                 detail: "Hover the notch or press the hotkey to ask anything. Start with a capture, or open the assistant and just type."
+            )
+        }
+    }
+
+    private var localAIPage: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Set up local AI")
+                .font(.system(size: 15, weight: .bold, design: .rounded))
+                .foregroundStyle(.secondary)
+
+            Text("Pixel Pane runs on your Mac with an open model. We picked one that fits your hardware — download it now, or skip and use Cloud Mode.")
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            RecommendedModelDownloadView(
+                appState: appState,
+                onChooseFolder: { appState.chooseMLXModelFolder() }
             )
         }
     }
