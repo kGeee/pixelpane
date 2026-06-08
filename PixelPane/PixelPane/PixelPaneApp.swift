@@ -9,6 +9,10 @@ import AppKit
 import SwiftUI
 
 final class PixelPaneAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.appearance = NSAppearance(named: .darkAqua)
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         let semaphore = DispatchSemaphore(value: 0)
         Task {
