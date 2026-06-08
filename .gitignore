@@ -24,9 +24,13 @@ xcuserdata/
 .claude/
 .codex/
 AGENTS.md
+CLAUDE.md
 docs/
 workflow/
 
 # Node / Cloudflare Workers
 node_modules/
 .wrangler/
+
+# Release pipeline output (published to the public releases repo)
+dist/

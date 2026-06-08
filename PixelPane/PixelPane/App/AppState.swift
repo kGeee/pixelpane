@@ -13,6 +13,8 @@ final class AppState: ObservableObject {
     @Published private(set) var isRunningMLXSetupCheck = false
     @Published private(set) var isRunningAgentModelConformanceCheck = false
     @Published private(set) var agentModelConformanceProfile: AgentModelConformanceProfile?
+    @Published private(set) var modelDownload: ModelDownloadState?
+    @Published private(set) var runtimeInstall: RuntimeInstallState?
     @Published private(set) var hasCompletedOnboarding: Bool
     @Published private(set) var hasCompletedFirstCaptureTutorial: Bool
     @Published private(set) var aiRoutingSettings: AIRoutingSettings
@@ -30,10 +32,14 @@ final class AppState: ObservableObject {
     private let hotkeyManager = HotkeyManager()
     private let mlxVisionSetupRunner = MLXVisionSetupRunner()
     private let mlxRuntimeDetector = MLXVisionRuntimeDetector()
+    private let modelDownloader = ModelDownloader()
+    let hardwareProfile = HardwareProfile.current()
     private let agentModelConformanceStore: AgentModelConformanceStore
     private let localAIBackend: any AIBackend = HybridLocalAIBackend()
     private let userDefaults: UserDefaults
     private var mlxSetupCheckTask: Task<Void, Never>?
+    private var modelDownloadTask: Task<Void, Never>?
+    private var runtimeInstallTask: Task<Void, Never>?
     private var cancellables: Set<AnyCancellable> = []
     private let onboardingCompletedKey = "PrivacyOnboarding.Completed"
     private let firstCaptureTutorialCompletedKey = "FirstCaptureTutorial.Completed"
@@ -89,6 +95,7 @@ final class AppState: ObservableObject {
 
     func showOnboarding() {
         onboardingController.show(
+            appState: self,
             screenRecordingStatus: screenRecordingStatus,
             onStartCapture: { [weak self] in
                 self?.completeOnboarding()
@@ -105,6 +112,12 @@ final class AppState: ObservableObject {
             onOpenScreenRecordingSettings: { [weak self] in
                 self?.openScreenRecordingSettings()
                 return self?.screenRecordingStatus ?? .notGranted
+            },
+            onUserClose: { [weak self] in
+                // Title-bar close still finishes onboarding; otherwise the
+                // assistant surface never arms and the notch stays dead.
+                self?.completeOnboarding()
+                self?.showAssistant()
             }
         )
     }
@@ -256,6 +269,130 @@ final class AppState: ObservableObject {
                     self.refreshPresentedPanel()
                 }
             }
+        }
+    }
+
+    /// Downloads the hardware-recommended model and validates it.
+    func downloadRecommendedModel() {
+        downloadModel(mlxVisionSetupSnapshot.recommendedModel.repositoryID)
+    }
+
+    /// Downloads `repositoryID` in-app (native HTTPS), then runs the existing
+    /// setup check to validate and select it. Safe to call once at a time.
+    func downloadModel(_ repositoryID: String) {
+        guard modelDownload == nil, modelDownloadTask == nil, !isRunningMLXSetupCheck else { return }
+
+        let tier = MLXModelCatalog.tiers.first { $0.repositoryID == repositoryID }
+        modelDownload = .preparing(repositoryID: repositoryID)
+
+        modelDownloadTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.modelDownloader.download(repositoryID: repositoryID) { [weak self] progress in
+                    Task { @MainActor in
+                        self?.updateModelDownloadProgress(repositoryID: repositoryID, progress: progress)
+                    }
+                }
+                await MainActor.run {
+                    self.modelDownload = .validating(repositoryID: repositoryID)
+                    self.modelDownloadTask = nil
+
+                    let cacheURL = MLXVisionModelStore.defaultCacheURL(for: repositoryID)
+                    let model = MLXVisionModel(
+                        repositoryID: repositoryID,
+                        localURL: cacheURL,
+                        approximateDiskSize: tier?.approximateDiskSize ?? "Already installed",
+                        license: tier?.license ?? MLXModelCatalog.defaultLicense,
+                        isPreferred: repositoryID == MLXVisionSetupConstants.preferredModelRepositoryID,
+                        capability: tier?.capability ?? .text
+                    )
+                    self.modelDownload = nil
+                    self.runMLXSetupCheck(for: model)
+                }
+            } catch is CancellationError {
+                await MainActor.run {
+                    self.modelDownload = nil
+                    self.modelDownloadTask = nil
+                }
+            } catch {
+                await MainActor.run {
+                    self.modelDownload = .failed(repositoryID: repositoryID, message: error.localizedDescription)
+                    self.modelDownloadTask = nil
+                }
+            }
+        }
+    }
+
+    func cancelModelDownload() {
+        modelDownloadTask?.cancel()
+        modelDownloadTask = nil
+        modelDownload = nil
+    }
+
+    func dismissModelDownloadError() {
+        if case .failed = modelDownload {
+            modelDownload = nil
+        }
+    }
+
+    /// Whether the Python MLX runtime (mlx_lm/mlx_vlm) is discoverable. The
+    /// downloaded model is useless without it, so onboarding surfaces this.
+    var isMLXRuntimeInstalled: Bool {
+        mlxVisionSetupSnapshot.textRuntimeURL != nil || mlxVisionSetupSnapshot.runtimeURL != nil
+    }
+
+    /// The copyable fallback for installing the runtime manually.
+    var mlxRuntimeInstallCommand: String { MLXRuntimeInstaller.copyableCommand }
+
+    func copyMLXRuntimeInstallCommand() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(MLXRuntimeInstaller.copyableCommand, forType: .string)
+    }
+
+    /// Best-effort one-click runtime install. Falls back to a clear message
+    /// (and the copyable command in the UI) when python3 is missing or pip fails.
+    func installMLXRuntime() {
+        guard runtimeInstallTask == nil else { return }
+        guard let python3URL = mlxRuntimeDetector.python3ExecutableURL() else {
+            runtimeInstall = .failed(
+                message: "No python3 found. Install Python 3 (python.org or Homebrew), then retry — or copy the command and run it in Terminal."
+            )
+            return
+        }
+
+        runtimeInstall = .installing
+        let installer = MLXRuntimeInstaller(python3URL: python3URL)
+        runtimeInstallTask = Task { [weak self] in
+            let failure = await installer.install()
+            await MainActor.run {
+                guard let self else { return }
+                self.runtimeInstallTask = nil
+                if let failure {
+                    self.runtimeInstall = .failed(message: failure)
+                } else {
+                    self.runtimeInstall = .finished
+                    // Re-detect: the runtime should now be present.
+                    self.mlxVisionSetupSnapshot = self.mlxVisionSetupRunner.snapshot()
+                    self.refreshLocalAIStatus()
+                }
+            }
+        }
+    }
+
+    func dismissRuntimeInstallState() {
+        if runtimeInstallTask == nil {
+            runtimeInstall = nil
+        }
+    }
+
+    private func updateModelDownloadProgress(repositoryID: String, progress: ModelDownloadProgress) {
+        // Ignore stale callbacks from a cancelled/replaced download.
+        switch modelDownload {
+        case .preparing(let repo), .downloading(let repo, _):
+            guard repo == repositoryID else { return }
+            modelDownload = .downloading(repositoryID: repositoryID, progress: progress)
+        default:
+            return
         }
     }
 
@@ -515,12 +652,18 @@ final class AppState: ObservableObject {
     }
 
     /// Location context attached to runs: cloud route only, explicit toggle,
-    /// macOS permission granted, and a resolved city available.
+    /// macOS permission granted, and a resolved city available. Consented but
+    /// unresolved location triggers an idempotent retry, so a failed or slow
+    /// cold-start fix lands for the next run instead of being lost for the
+    /// session (the resolution sink refreshes the open panel when it lands).
     var cloudRunLocationContext: AgentLocationContext? {
         guard aiRoutingSettings.effectiveMode == .cloud,
               aiRoutingSettings.allowCloudLocationContext,
               locationProvider.permissionStatus.isGranted else {
             return nil
+        }
+        if locationProvider.approximateLocation == nil {
+            locationProvider.resolveIfNeeded()
         }
         return locationProvider.approximateLocation
     }

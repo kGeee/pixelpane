@@ -81,6 +81,20 @@ struct SettingsView: View {
                     .disabled(!appState.canTogglePauseHotkey)
                 }
             }
+
+            Section("Updates") {
+                LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—")
+
+                Text("Pixel Pane checks for updates automatically and installs them only with your approval.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    AppUpdater.shared.checkForUpdates()
+                } label: {
+                    Label("Check for Updates…", systemImage: "arrow.down.circle")
+                }
+            }
         }
         .formStyle(.grouped)
     }
@@ -218,9 +232,7 @@ struct SettingsView: View {
                 .help("Automatic lets the router pick the strongest agent-ready model per request; choosing a model always uses that one.")
 
                 if installedTextModels.isEmpty {
-                    Text("No local models detected. Download an MLX text model so the router has something to route to.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                    recommendedDownloadView
                 } else {
                     ForEach(routerListModels) { model in
                         ModelRouterRow(
@@ -252,6 +264,49 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    /// Shown when no local model is installed: hardware-aware recommendation,
+    /// in-app download with progress, and runtime guidance.
+    @ViewBuilder
+    private var recommendedDownloadView: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("No local models detected. Download the model we recommend for your Mac, or choose a folder if you already have one.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 6) {
+                Image(systemName: "memorychip")
+                    .foregroundStyle(.secondary)
+                Text("\(appState.hardwareProfile.displaySummary) · recommends \(appState.mlxVisionSetupSnapshot.recommendedModel.repositoryID)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            RuntimeSetupRow(appState: appState)
+
+            if let state = appState.modelDownload {
+                ModelDownloadProgressView(
+                    state: state,
+                    onCancel: { appState.cancelModelDownload() },
+                    onDismissError: { appState.dismissModelDownloadError() }
+                )
+            } else {
+                Button {
+                    appState.downloadRecommendedModel()
+                } label: {
+                    Label(
+                        "Download · \(appState.mlxVisionSetupSnapshot.recommendedModel.approximateDiskSize)",
+                        systemImage: "arrow.down.circle.fill"
+                    )
+                }
+                .help("Downloads the recommended MLX model into the local cache and validates it.")
+            }
+        }
+        .padding(.vertical, 2)
     }
 
     @ViewBuilder

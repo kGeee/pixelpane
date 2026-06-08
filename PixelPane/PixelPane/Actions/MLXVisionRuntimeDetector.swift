@@ -5,17 +5,20 @@ nonisolated struct MLXVisionRuntimeDetector: @unchecked Sendable {
     private let environment: [String: String]
     private let homeDirectory: URL
     private let store: MLXVisionModelStore
+    private let hardwareProfile: HardwareProfile
 
     nonisolated init(
         fileManager: FileManager = .default,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
-        store: MLXVisionModelStore = MLXVisionModelStore()
+        store: MLXVisionModelStore = MLXVisionModelStore(),
+        hardwareProfile: HardwareProfile = .current()
     ) {
         self.fileManager = fileManager
         self.environment = environment
         self.homeDirectory = homeDirectory
         self.store = store
+        self.hardwareProfile = hardwareProfile
     }
 
     nonisolated func imageCapabilityStatus() -> AIBackendCapabilityStatus {
@@ -107,6 +110,20 @@ nonisolated struct MLXVisionRuntimeDetector: @unchecked Sendable {
         cachedModels().first { $0.isVisionCompatible }?.localURL
     }
 
+    /// Locates a `python3` interpreter for the optional one-click runtime
+    /// install. Searches PATH and the common Homebrew locations.
+    nonisolated func python3ExecutableURL() -> URL? {
+        let candidates = pathCandidates(named: "python3") + [
+            "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3",
+            "/usr/bin/python3"
+        ]
+
+        return candidates
+            .map(URL.init(fileURLWithPath:))
+            .first { fileManager.isExecutableFile(atPath: $0.path) }
+    }
+
     nonisolated func cachedModels() -> [MLXVisionModel] {
         let preferredURL = MLXVisionModelStore.defaultCacheURL(
             for: MLXVisionSetupConstants.preferredModelRepositoryID,
@@ -194,26 +211,30 @@ nonisolated struct MLXVisionRuntimeDetector: @unchecked Sendable {
         }
     }
 
+    /// The model this machine should download: the largest catalog tier that
+    /// fits its memory and free disk. Returns the installed instance if it is
+    /// already present, otherwise a not-installed placeholder the downloader can
+    /// act on.
     private nonisolated func recommendedModel(installedModels: [MLXVisionModel]) -> MLXVisionModel {
-        installedModels.first { $0.repositoryID == MLXVisionSetupConstants.preferredModelRepositoryID }
-            ?? MLXVisionModel(
-                repositoryID: MLXVisionSetupConstants.preferredModelRepositoryID,
-                localURL: fileManager.fileExists(
-                    atPath: MLXVisionModelStore.defaultCacheURL(
-                        for: MLXVisionSetupConstants.preferredModelRepositoryID,
-                        homeDirectory: homeDirectory
-                    ).path
-                )
-                    ? MLXVisionModelStore.defaultCacheURL(
-                        for: MLXVisionSetupConstants.preferredModelRepositoryID,
-                        homeDirectory: homeDirectory
-                    )
-                    : nil,
-                approximateDiskSize: MLXVisionSetupConstants.preferredModelApproximateDiskSize,
-                license: MLXVisionSetupConstants.preferredModelLicense,
-                isPreferred: true,
-                capability: .textAndVision
-            )
+        let tier = MLXModelCatalog.recommended(for: hardwareProfile)
+
+        if let installed = installedModels.first(where: { $0.repositoryID == tier.repositoryID }) {
+            return installed
+        }
+
+        let cacheURL = MLXVisionModelStore.defaultCacheURL(
+            for: tier.repositoryID,
+            homeDirectory: homeDirectory
+        )
+        let isInstalled = fileManager.fileExists(atPath: cacheURL.path)
+        return MLXVisionModel(
+            repositoryID: tier.repositoryID,
+            localURL: isInstalled ? cacheURL : nil,
+            approximateDiskSize: tier.approximateDiskSize,
+            license: tier.license,
+            isPreferred: tier.repositoryID == MLXVisionSetupConstants.preferredModelRepositoryID,
+            capability: tier.capability
+        )
     }
 
     private nonisolated func selectedModel(from installedModels: [MLXVisionModel]) -> MLXVisionModel? {

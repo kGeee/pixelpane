@@ -50,6 +50,26 @@ enum AgentEvidencePacketsFixtureHarness {
         try expect(decision.evidenceIDs == [evidence.evidenceID], "support should point to search evidence")
         try expect(packets.first?.keyFields["topPath"] == .string(targetPath), "context packet should expose answer-critical path")
         try expect(packets.first?.artifactID != nil, "search detail should be artifact-backed")
+
+        // Negative search answers ("no file matches X") declare the QUERY as
+        // the discovery-claim target; the recorded search grounds them even
+        // with zero matches.
+        _ = try await harness.recorder.recordFileSearch(
+            runID: harness.run.runID,
+            query: "missing-thing",
+            matches: []
+        )
+        let refreshed = await harness.store.evidenceArtifactSummary(runID: harness.run.runID).evidence
+        let negativeQuery = harness.controller.verify(
+            AgentEvidenceClaim(type: .folderListed, target: "missing-thing"),
+            evidence: refreshed
+        )
+        let unrelatedQuery = harness.controller.verify(
+            AgentEvidenceClaim(type: .folderListed, target: "never-searched"),
+            evidence: refreshed
+        )
+        try expect(negativeQuery.status == .supported, "a zero-match search should ground a negative answer via its query target")
+        try expect(unrelatedQuery.status != .supported, "queries never run must not be supported")
     }
 
     private static func testTemporalContextClaimsAcceptEchoedTargets() async throws {
@@ -294,6 +314,31 @@ enum AgentEvidencePacketsFixtureHarness {
         try expect(absentListeningDecision.status == .needsEvidence, "negative listener snapshots must not support positive port-listening claims")
         try expect(packets.first?.kind == .localServer, "listener evidence should be selected as local server context")
         try expect(packets.first?.keyFields["rowCount"] == .int(1), "context packet should expose listener row count")
+
+        // Replays the cloud chat5 failure: a correct NEGATIVE answer
+        // ("nothing is serving this folder") declares the queried root path
+        // as its target. Claim targets may name what was queried, not only
+        // what was found.
+        let queriedScopeDecision = harness.controller.verify(
+            AgentEvidenceClaim(type: .localListenerSnapshotRecorded, target: "/Users/test/project"),
+            evidence: records
+        )
+        let queriedPortDecision = harness.controller.verify(
+            AgentEvidenceClaim(type: .localListenerSnapshotRecorded, target: "9876"),
+            evidence: records
+        )
+        let executableDecision = harness.controller.verify(
+            AgentEvidenceClaim(type: .localListenerSnapshotRecorded, target: "fixture-server"),
+            evidence: records
+        )
+        let unrelatedDecision = harness.controller.verify(
+            AgentEvidenceClaim(type: .localListenerSnapshotRecorded, target: "/Users/test/other-project"),
+            evidence: records
+        )
+        try expect(queriedScopeDecision.status == .supported, "queried root path should be a valid listener claim target")
+        try expect(queriedPortDecision.status == .supported, "queried port with zero rows should ground a negative answer")
+        try expect(executableDecision.status == .supported, "observed executable names should be valid listener claim targets")
+        try expect(unrelatedDecision.status != .supported, "paths never queried or observed must not be supported")
     }
 
     private static func testCommandAndTerminalSupport() async throws {
@@ -348,6 +393,24 @@ enum AgentEvidencePacketsFixtureHarness {
         try expect(packets.first?.kind == .processSnapshot, "process snapshot should be selected as relevant context")
         try expect(packets.first?.keyFields["topExecutable"] == .string("swift"), "context packet should expose top executable")
         try expect(packets.first?.keyFields["rowCount"] == .int(2), "context packet should expose row count")
+
+        // Snapshot claims may target ANY observed row, not just the top one,
+        // and untargeted claims ground "I took a snapshot" answers.
+        let secondRowDecision = harness.controller.verify(
+            AgentEvidenceClaim(type: .processSnapshotRecorded, target: "launchd"),
+            evidence: records
+        )
+        let untargetedDecision = harness.controller.verify(
+            AgentEvidenceClaim(type: .processSnapshotRecorded),
+            evidence: records
+        )
+        let unobservedDecision = harness.controller.verify(
+            AgentEvidenceClaim(type: .processSnapshotRecorded, target: "Firefox"),
+            evidence: records
+        )
+        try expect(secondRowDecision.status == .supported, "non-top snapshot rows should be valid claim targets")
+        try expect(untargetedDecision.status == .supported, "untargeted snapshot claims should be supported by the snapshot")
+        try expect(unobservedDecision.status != .supported, "executables never observed must not be supported")
     }
 
     private static func testSideEffectEvidenceSupportsWriteClaims() async throws {

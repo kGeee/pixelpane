@@ -4,7 +4,9 @@ compatibility_date = "2026-04-29"
 
 [vars]
 ANTHROPIC_MODEL = "claude-sonnet-4-6"
-FREE_DAILY_LIMIT = "100"
+FREE_DAILY_LIMIT = "40"
+GLOBAL_DAILY_LIMIT = "1000"
+TOKEN_ISSUE_DAILY_LIMIT = "10"
 
 [[kv_namespaces]]
 binding = "RATE_LIMIT_KV"

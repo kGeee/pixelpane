@@ -135,7 +135,7 @@ struct CompactNotchNotificationView: View {
                     .scaleEffect(isPulsing ? 1.18 : 0.88)
                     .opacity(isPulsing ? 0.64 : 0.26)
 
-                CompactThinkingDots(color: state.color)
+                CompactThinkingMoon(color: state.color)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
@@ -147,30 +147,12 @@ struct CompactNotchNotificationView: View {
     }
 }
 
-struct CompactThinkingDots: View {
+struct CompactThinkingMoon: View {
     let color: Color
-    @State private var animate = false
 
     var body: some View {
-        HStack(spacing: 2.5) {
-            ForEach(0..<3, id: \.self) { index in
-                Circle()
-                    .fill(color.opacity(animate ? 1.0 : 0.5))
-                    .frame(width: 2.8, height: 2.8)
-                    .scaleEffect(animate ? 1.18 : 0.72)
-                    .offset(y: animate ? -1.2 : 1.0)
-                    .shadow(color: color.opacity(0.55), radius: animate ? 3 : 1.5)
-                    .animation(
-                        .easeInOut(duration: 0.62)
-                            .repeatForever(autoreverses: true)
-                            .delay(Double(index) * 0.16),
-                        value: animate
-                    )
-            }
-        }
-        .onAppear {
-            animate = true
-        }
+        MoonPhaseIndicator(diameter: 7, color: color)
+            .shadow(color: color.opacity(0.55), radius: 2)
     }
 }
 

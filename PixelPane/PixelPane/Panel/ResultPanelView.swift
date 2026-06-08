@@ -248,7 +248,8 @@ struct ResultPanelView: View {
             "Treat this chat as isolated from previous chats. Use only messages visible in this chat as conversation history.",
             "If asked about previous chats or sessions and this chat does not contain them, say that no previous chat context is available here.",
             "If the available context is insufficient, say what is missing instead of inventing details.",
-            "Never offer follow-up actions that no available tool can perform."
+            "Never offer follow-up actions that no available tool can perform.",
+            "When an available read-only tool can answer the question, call the tool and answer from its result. Do not ask the user for permission to use read-only tools, describe how a tool could be used, or tell the user to run one themselves."
         ]
 
         // Keep the capability statement truthful per route: the local route is
@@ -1585,18 +1586,6 @@ struct ResultPanelView: View {
         }
     }
 
-    private func debugStatisticValues(named label: String) -> [String] {
-        let activeValues = outputStatistics
-            .filter { $0.label == label }
-            .map(\.value)
-        let turnValues = displayedAskTurns.flatMap { turn in
-            turn.statistics
-                .filter { $0.label == label }
-                .map(\.value)
-        }
-        return Array(Set(activeValues + turnValues)).sorted()
-    }
-
     private static func debugCapabilityStatus(_ status: AIBackendCapabilityStatus) -> String {
         "\(status.label) - \(status.detail)"
     }
@@ -1612,6 +1601,22 @@ struct ResultPanelView: View {
         return remaining > 0 ? "\(visible), ... (+\(remaining) more)" : visible
     }
 #endif
+
+    /// Statistic values recorded under a label, across the active output and
+    /// displayed turns. Used by the DEBUG appendix AND by production model
+    /// labeling (surfacing the reported cloud model), so it must live
+    /// outside the DEBUG-only block.
+    private func debugStatisticValues(named label: String) -> [String] {
+        let activeValues = outputStatistics
+            .filter { $0.label == label }
+            .map(\.value)
+        let turnValues = displayedAskTurns.flatMap { turn in
+            turn.statistics
+                .filter { $0.label == label }
+                .map(\.value)
+        }
+        return Array(Set(activeValues + turnValues)).sorted()
+    }
 
     private func exportText() {
         let panel = NSSavePanel()
@@ -1869,7 +1874,9 @@ struct ResultPanelView: View {
     }
 
     private var preferredAskNotchSize: CGSize {
-        let width: CGFloat = hasCaptureContext ? 820 : 760
+        // One expanded width for every mode: the panel shouldn't jump wider
+        // just because a capture is attached.
+        let width = ResultPanelPresentationStyle.notchExpandedSize.width
         let headerHeight: CGFloat = 82
         let chipHeight: CGFloat = assistantContextBadges.isEmpty ? 0 : 34
         let composerHeight = estimatedAskComposerHeight
