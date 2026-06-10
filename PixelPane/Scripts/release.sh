@@ -43,6 +43,12 @@ VERSION="$(sed -n 's/.*MARKETING_VERSION = \([0-9.]*\);.*/\1/p' "${PROJECT}/proj
 [ -n "${VERSION}" ] || fail "Could not read MARKETING_VERSION."
 echo "Version: ${VERSION}"
 
+BUILD="$(sed -n 's/.*CURRENT_PROJECT_VERSION = \([0-9]*\);.*/\1/p' "${PROJECT}/project.pbxproj" | head -1)"
+[ -n "${BUILD}" ] || fail "Could not read CURRENT_PROJECT_VERSION."
+BUILD=$(( BUILD + 1 ))
+sed -i '' "s/CURRENT_PROJECT_VERSION = [0-9]*/CURRENT_PROJECT_VERSION = ${BUILD}/g" "${PROJECT}/project.pbxproj"
+echo "Build: ${BUILD}"
+
 step "Clean"
 rm -rf "${BUILD_DIR}"
 mkdir -p "${BUILD_DIR}" "${DIST_DIR}"
