@@ -54,6 +54,7 @@ struct ResultPanelView: View {
     @State private var isNotchExpanded = false
     @State private var isNotchContentVisible = false
     @State private var notchShellOpacity = 1.0
+    @State private var isCollapsingToBlack = false
     @State private var pendingNotchCollapse: DispatchWorkItem?
     @State private var notchHoverCollapseSuppressedUntil = Date.distantPast
     @State private var compactNotchNotification: CompactNotchNotificationState?
@@ -327,7 +328,8 @@ struct ResultPanelView: View {
             ) {
                 if isNotchExpanded {
                     notchExpandedStack
-                        .opacity(isNotchContentVisible ? 1 : 0)
+                        .colorMultiply(isCollapsingToBlack ? .black : .white)
+                        .opacity(isCollapsingToBlack ? 1 : (isNotchContentVisible ? 1 : 0))
                         .scaleEffect(isNotchContentVisible ? 1 : 0.985, anchor: .top)
                         .animation(.easeOut(duration: 0.20), value: isNotchContentVisible)
                 } else {
@@ -407,11 +409,12 @@ struct ResultPanelView: View {
         pendingNotchCollapse?.cancel()
         pendingNotchCollapse = nil
         isNotchContentVisible = false
+        isCollapsingToBlack = true
         let hasNotification = compactNotchNotification != nil
         if hasNotification {
             onPresentationSizeChange?(ResultPanelPresentationStyle.notchCompactSize)
         } else {
-            withAnimation(.easeOut(duration: 0.10)) {
+            withAnimation(.easeInOut(duration: 0.2)) {
                 notchShellOpacity = 0
             }
             onPresentationSizeChange?(ResultPanelPresentationStyle.notchHoverTargetSize)
@@ -420,9 +423,10 @@ struct ResultPanelView: View {
             guard isNotchExpanded else { return }
             isNotchExpanded = false
             notchShellOpacity = 1
+            isCollapsingToBlack = false
         }
         pendingNotchCollapse = completion
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.14, execute: completion)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.22, execute: completion)
     }
 
     private func handleNotchHover(_ isHovering: Bool) {
