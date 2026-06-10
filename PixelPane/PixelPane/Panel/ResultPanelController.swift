@@ -259,8 +259,14 @@ final class ResultPanelController {
         )
 
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = size.width > panel.frame.width ? 0.36 : 0.12
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.18, 0.86, 0.24, 1.0)
+            let isExpanding = size.width > panel.frame.width || size.height > panel.frame.height
+            if isExpanding {
+                context.duration = 0.5
+                context.timingFunction = CASpringTimingFunction(mass: 1.0, stiffness: 200, damping: 26, initialVelocity: 0)
+            } else {
+                context.duration = 0.2
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            }
             panel.animator().setFrame(targetFrame, display: true)
         }
         updateContentCornerMask(for: size)
