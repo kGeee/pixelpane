@@ -259,8 +259,9 @@ final class ResultPanelController {
         )
 
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = size.width > panel.frame.width ? 0.36 : 0.12
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.18, 0.86, 0.24, 1.0)
+            let isExpanding = size.width > panel.frame.width || size.height > panel.frame.height
+            context.duration = isExpanding ? 0.5 : 0.2
+            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1, 0.36, 1)
             panel.animator().setFrame(targetFrame, display: true)
         }
         updateContentCornerMask(for: size)
