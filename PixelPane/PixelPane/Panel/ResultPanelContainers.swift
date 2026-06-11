@@ -109,41 +109,19 @@ enum CompactNotchNotificationState {
 
 struct CompactNotchNotificationView: View {
     let state: CompactNotchNotificationState
-    @State private var isPulsing = false
     private let shape = UnevenRoundedRectangle(
         topLeadingRadius: 0,
-        bottomLeadingRadius: 0,
-        bottomTrailingRadius: 4,
+        bottomLeadingRadius: 8,
+        bottomTrailingRadius: 8,
         topTrailingRadius: 0,
         style: .continuous
     )
 
     var body: some View {
-        HStack(spacing: 0) {
-            ZStack {
-                shape
-                    .fill(Color(nsColor: .black))
-                    .frame(
-                        width: ResultPanelPresentationStyle.notchCompactSize.width,
-                        height: ResultPanelPresentationStyle.notchCompactSize.height
-                    )
-
-                Circle()
-                    .fill(state.color.opacity(0.22))
-                    .frame(width: 14, height: 8)
-                    .blur(radius: 6)
-                    .scaleEffect(isPulsing ? 1.18 : 0.88)
-                    .opacity(isPulsing ? 0.64 : 0.26)
-
-                CompactThinkingMoon(color: state.color)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-        .onAppear {
-            withAnimation(.easeInOut(duration: 1.35).repeatForever(autoreverses: true)) {
-                isPulsing = true
-            }
-        }
+        shape
+            .fill(Color(nsColor: .black))
+            .overlay(CompactThinkingMoon(color: state.color))
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
     }
 }
 
@@ -151,8 +129,8 @@ struct CompactThinkingMoon: View {
     let color: Color
 
     var body: some View {
-        MoonPhaseIndicator(diameter: 7, color: color)
-            .shadow(color: color.opacity(0.55), radius: 2)
+        MoonPhaseIndicator(diameter: 9, color: color)
+            .shadow(color: color.opacity(0.4), radius: 2)
     }
 }
 

@@ -312,6 +312,13 @@ final class ResultPanelController {
     }
 
     private func resolvedNotchSize(_ requestedSize: CGSize, on screen: NSScreen?) -> CGSize {
+        // The compact notification is a seamless extension of the physical
+        // notch, so match its height exactly to the notch's bottom edge.
+        if isCompactNotificationSize(requestedSize),
+           let notchBounds = notchBounds(on: screen) {
+            return CGSize(width: requestedSize.width, height: notchBounds.height)
+        }
+
         guard isHoverTargetSize(requestedSize),
               let notchBounds = notchBounds(on: screen) else {
             return requestedSize
@@ -357,8 +364,9 @@ final class ResultPanelController {
     }
 
     private func isCompactNotificationSize(_ size: CGSize) -> Bool {
+        // Identify by width only: the height is resolved to the physical notch
+        // height at display time, so it is not a fixed constant.
         abs(size.width - ResultPanelPresentationStyle.notchCompactSize.width) < 1
-            && abs(size.height - ResultPanelPresentationStyle.notchCompactSize.height) < 1
     }
 
     private func isHoverTargetSize(_ size: CGSize) -> Bool {
@@ -506,12 +514,12 @@ enum ResultPanelPresentationStyle {
         }
     }
 
-    static let notchCompactSize = CGSize(width: 52, height: 32)
+    static let notchCompactSize = CGSize(width: 44, height: 32)
     static let notchHoverTargetSize = CGSize(width: 180, height: 32)
     static let notchEmptyAssistantSize = CGSize(width: 640, height: 220)
     static let notchExpandedSize = CGSize(width: 760, height: 680)
     static let notchAssistantCornerRadius: CGFloat = 30
-    static let notchCompactOverlap: CGFloat = 18
+    static let notchCompactOverlap: CGFloat = 22
     static let notchTopOverscan: CGFloat = 3
 
     var cornerRadius: CGFloat {
