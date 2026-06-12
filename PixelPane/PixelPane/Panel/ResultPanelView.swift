@@ -25,6 +25,7 @@ struct ResultPanelView: View {
     private let smartDefaultSelection: SmartDefaultActionSelection
     private let localAIBackend: any AIBackend = HybridLocalAIBackend()
     private let cloudAIBackend: any AIBackend
+    private let customProviderBackend: any AIBackend
     private let mlxDetector = MLXVisionRuntimeDetector()
     private let mlxModelStore = MLXVisionModelStore()
     private let agentModelConformanceStore = AgentModelConformanceStore()
@@ -93,6 +94,13 @@ struct ResultPanelView: View {
         cloudAIBackend = CloudAIBackend(
             configuration: cloudConfiguration,
             tokenProvider: CloudAuthTokenProvider(baseURL: AIRoutingSettings.cloudBackendBaseURL)
+        )
+        customProviderBackend = CustomProviderAIBackend(
+            configuration: CustomProviderAIBackendConfiguration(
+                provider: routingSettings.customProvider,
+                modelName: routingSettings.customModelName,
+                baseURLOverride: routingSettings.customBaseURLOverride
+            )
         )
         let smartDefaultSelection = SmartDefaultActionSelection(action: .ask, reason: "assistant")
         self.smartDefaultSelection = smartDefaultSelection
@@ -372,14 +380,17 @@ struct ResultPanelView: View {
 
     private var compactNotchStack: some View {
         ZStack {
+            // The notification's black fill spans the whole notch (a seamless
+            // extension of the physical notch), so the entire notch — not just
+            // the loading icon — is the hover and fade target.
             if let compactNotchNotification {
                 CompactNotchNotificationView(state: compactNotchNotification)
-            } else {
-                Color.clear
+                    .transition(.opacity)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
+        .animation(.easeInOut(duration: 0.45), value: compactNotchNotification != nil)
     }
 
     private func expandNotch() {
@@ -990,6 +1001,8 @@ struct ResultPanelView: View {
             "Local"
         case .cloud:
             "Cloud"
+        case .custom:
+            routingSettings.customProvider.displayName
         }
     }
 
@@ -999,6 +1012,8 @@ struct ResultPanelView: View {
             "lock.laptopcomputer"
         case .cloud:
             "cloud"
+        case .custom:
+            "key"
         }
     }
 
@@ -2045,6 +2060,10 @@ struct ResultPanelView: View {
     }
 
     private func imageInput(for action: PanelActionKind) -> CGImage? {
+        // The custom (bring-your-own) route is text-only in v1.
+        if routingSettings.effectiveMode == .custom {
+            return nil
+        }
         if routingSettings.effectiveMode == .cloud {
             guard action.supportsCloudImageInput else { return nil }
             return result.image
@@ -2060,7 +2079,14 @@ struct ResultPanelView: View {
     }
 
     private var selectedAIBackend: any AIBackend {
-        routingSettings.effectiveMode == .cloud ? cloudAIBackend : localAIBackend
+        switch routingSettings.effectiveMode {
+        case .custom:
+            return customProviderBackend
+        case .cloud:
+            return cloudAIBackend
+        case .local:
+            return localAIBackend
+        }
     }
 
     private func backendLabel(for action: PanelActionKind, imageInput: CGImage?) -> String {
@@ -2080,6 +2106,8 @@ struct ResultPanelView: View {
             return Self.mlxVisionBackendLabel
         case .available(.pixelPaneCloud):
             return Self.cloudBackendLabel
+        case .available(.custom):
+            return routingSettings.customProvider.displayName
         case .installing, .unavailable:
             return Self.appleTextBackendLabel
         }
@@ -2351,6 +2379,31 @@ struct ResultPanelView: View {
         // capability instead of the manual Cloud toggle. Cloud is used only when it is
         // enabled AND no local model can meet the run's need.
         let plan = resolveModelPlan(need: agentRouteNeed())
+        // Custom (bring-your-own) route: reach the user's provider through the
+        // generic AIBackend bridge, which drives tools via the text protocol
+        // (same path Cloud uses). Descriptor route is `.cloud` since it is remote.
+        if plan.mode == .custom {
+            let backend = customProviderBackend
+            let capabilities = await backend.capabilities()
+            let modelName = routingSettings.customModelName
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let descriptor = AgentKernelModelDescriptor(
+                id: "custom.\(backend.id).chat",
+                providerKind: .custom,
+                route: .cloud,
+                displayName: "\(routingSettings.customProvider.displayName) · \(modelName)",
+                modelName: modelName
+            )
+            return AgentKernelAIBackendAdapter(
+                descriptor: descriptor,
+                backend: backend,
+                capabilities: AgentKernelModelAdapterCapabilities.aiBackendBridge(
+                    descriptor: descriptor,
+                    backendCapabilities: capabilities
+                ),
+                preferredProvider: .custom
+            )
+        }
         let isCloudRoute = plan.mode == .cloud
         let backend: any AIBackend = isCloudRoute ? cloudAIBackend : localAIBackend
         let capabilities = await backend.capabilities()
@@ -2437,6 +2490,9 @@ struct ResultPanelView: View {
     /// (never silently cloud). The router prefers the strongest agent-ready local model.
     /// Falls back to the stored selection when nothing has been checked yet.
     private func resolveModelPlan(need: AgentModelRunNeed) -> ResolvedModelPlan {
+        if routingSettings.effectiveMode == .custom {
+            return ResolvedModelPlan(mode: .custom, localModel: nil, repositoryID: nil)
+        }
         if routingSettings.effectiveMode == .cloud {
             return ResolvedModelPlan(mode: .cloud, localModel: nil, repositoryID: nil)
         }
@@ -2507,6 +2563,8 @@ struct ResultPanelView: View {
             return .mlxLocal
         case .pixelPaneCloud:
             return .pixelPaneCloud
+        case .custom:
+            return .custom
         case .none:
             return routingSettings.effectiveMode == .cloud ? .pixelPaneCloud : .custom
         }
@@ -2520,6 +2578,8 @@ struct ResultPanelView: View {
             return nil
         case .pixelPaneCloud:
             return debugStatisticValues(named: "Cloud model").last
+        case .custom:
+            return routingSettings.customModelName
         case .none:
             return nil
         }
@@ -2535,6 +2595,8 @@ struct ResultPanelView: View {
             return Self.mlxVisionBackendLabel
         case .pixelPaneCloud:
             return Self.cloudBackendLabel
+        case .custom:
+            return routingSettings.customProvider.displayName
         case .none:
             return fallback
         }
@@ -2842,6 +2904,9 @@ struct ResultPanelView: View {
     }
 
     private func askBackendLabelForNextTurn() -> String {
+        if routingSettings.effectiveMode == .custom {
+            return "\(routingSettings.customProvider.displayName) · \(routingSettings.customModelName)"
+        }
         if routingSettings.effectiveMode == .cloud {
             return Self.cloudBackendLabel
         }

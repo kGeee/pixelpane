@@ -207,6 +207,18 @@ struct ActionRecoveryState: Equatable {
                 secondarySystemImage: nil,
                 secondaryAction: nil
             )
+        case .customProviderNotConfigured, .customProviderKeyMissing:
+            self = ActionRecoveryState(
+                title: reason.label,
+                detail: reason.detail,
+                systemImage: "key",
+                primaryTitle: "Open Settings",
+                primarySystemImage: "gearshape",
+                primaryAction: .openSettings,
+                secondaryTitle: "Retry",
+                secondarySystemImage: "arrow.clockwise",
+                secondaryAction: .refresh
+            )
         case .promptTooLarge, .appleFrameworkUnavailable, .cancelled:
             self = ActionRecoveryState(
                 title: reason.label,

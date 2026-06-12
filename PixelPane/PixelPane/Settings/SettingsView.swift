@@ -6,6 +6,15 @@ private let noMLXModelSelectionID = "__pixelpane_no_mlx_model__"
 struct SettingsView: View {
     @EnvironmentObject private var appState: AppState
     @State private var selectedMLXModelID: String?
+    /// Editable buffer for the API key field. The saved key lives only in the
+    /// Keychain and is never read back, so this stays empty except while typing.
+    @State private var customAPIKeyDraft = ""
+    /// Bumped on key save/remove to re-render key-dependent UI: the key lives in
+    /// the Keychain, not in observable `AppState`, so nothing else triggers it.
+    @State private var customKeyRevision = 0
+    /// nil until a save is attempted; true when the last save couldn't be read
+    /// back from the Keychain (so we can warn instead of silently failing).
+    @State private var customKeySaveFailed: Bool?
 
     var body: some View {
         TabView {
@@ -174,7 +183,11 @@ struct SettingsView: View {
         Form {
             routingModeSection
 
-            modelRouterSection
+            if appState.aiRoutingSettings.customProviderEnabled {
+                customProviderSection
+            } else {
+                modelRouterSection
+            }
         }
         .formStyle(.grouped)
     }
@@ -457,7 +470,7 @@ struct SettingsView: View {
             Picker(
                 "Mode",
                 selection: Binding(
-                    get: { appState.aiRoutingSettings.effectiveMode },
+                    get: { selectedModeIntent },
                     set: { mode in
                         if mode == .local && !hasActiveMLXModel {
                             appState.setAIRoutingMode(.cloud)
@@ -471,18 +484,19 @@ struct SettingsView: View {
                     .tag(AIRoutingMode.local)
                     .disabled(!hasActiveMLXModel)
                 Label("Cloud", systemImage: "cloud").tag(AIRoutingMode.cloud)
+                Label("Custom", systemImage: "key").tag(AIRoutingMode.custom)
             }
             .pickerStyle(.segmented)
 
             LabeledContent("Current routing") {
                 StatusPill(
-                    title: appState.aiRoutingSettings.statusLabel,
-                    systemImage: appState.aiRoutingSettings.effectiveMode == .local ? "lock.shield" : "cloud",
-                    tint: appState.aiRoutingSettings.effectiveMode == .local ? .green : .blue
+                    title: routingStatusTitle,
+                    systemImage: routingStatusIcon,
+                    tint: routingStatusTint
                 )
             }
 
-            Text(appState.aiRoutingSettings.detail)
+            Text(routingDetailText)
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
@@ -505,6 +519,201 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// The mode the user has chosen, which is `.custom` as soon as the custom
+    /// route is enabled — even before a model name makes it the *effective*
+    /// mode — so the segmented control reflects intent rather than lagging.
+    private var selectedModeIntent: AIRoutingMode {
+        appState.aiRoutingSettings.customProviderEnabled ? .custom : appState.aiRoutingSettings.effectiveMode
+    }
+
+    /// The custom route is fully usable only when both a model and an API key
+    /// are present. `isCustomProviderConfigured` (used by `effectiveMode`) can't
+    /// see the Keychain, so the key check lives here in the view.
+    private var isCustomProviderReady: Bool {
+        appState.aiRoutingSettings.isCustomProviderConfigured
+            && appState.hasCustomProviderAPIKey(for: appState.aiRoutingSettings.customProvider)
+    }
+
+    private var routingStatusTitle: String {
+        if selectedModeIntent == .custom {
+            return isCustomProviderReady
+                ? appState.aiRoutingSettings.customProvider.displayName
+                : "Custom — setup needed"
+        }
+        return appState.aiRoutingSettings.statusLabel
+    }
+
+    private var routingStatusIcon: String {
+        switch selectedModeIntent {
+        case .local:
+            "lock.shield"
+        case .cloud:
+            "cloud"
+        case .custom:
+            "key"
+        }
+    }
+
+    private var routingStatusTint: Color {
+        switch selectedModeIntent {
+        case .local:
+            .green
+        case .cloud:
+            .blue
+        case .custom:
+            isCustomProviderReady ? .purple : .orange
+        }
+    }
+
+    private var routingDetailText: String {
+        if selectedModeIntent == .custom, !isCustomProviderReady {
+            if appState.aiRoutingSettings.customModelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return "Choose a model below to finish setting up your provider."
+            }
+            return "Add your \(appState.aiRoutingSettings.customProvider.displayName) API key below to finish setup."
+        }
+        return appState.aiRoutingSettings.detail
+    }
+
+    // MARK: - Custom provider
+
+    private var customProviderSection: some View {
+        Section("Custom Provider") {
+            Picker("Provider", selection: customProviderBinding) {
+                ForEach(CustomProvider.allCases, id: \.self) { provider in
+                    Text(provider.displayName).tag(provider)
+                }
+            }
+
+            Picker("Model", selection: customModelSelectionBinding) {
+                ForEach(appState.aiRoutingSettings.customProvider.presetModelNames, id: \.self) { model in
+                    Text(model).tag(model)
+                }
+                Text("Custom…").tag(Self.customModelSentinel)
+            }
+
+            if isCustomModelEntry {
+                TextField(
+                    "Model name",
+                    text: customModelNameBinding,
+                    prompt: Text(appState.aiRoutingSettings.customProvider.suggestedModelName)
+                )
+            }
+
+            HStack {
+                // A plain TextField (not SecureField) on purpose: SecureField is
+                // a macOS password field, so it triggers Keychain AutoFill that
+                // can inject a saved password in place of the typed key. The key
+                // is only visible while typing — it is never read back.
+                TextField("API key", text: $customAPIKeyDraft)
+                    .textContentType(.none)
+                    .autocorrectionDisabled(true)
+                    .onSubmit(saveCustomAPIKey)
+                Button("Save", action: saveCustomAPIKey)
+                    .disabled(customAPIKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+
+            if let saveFailed = customKeySaveFailed, saveFailed {
+                Label("Couldn't save the key to the Keychain. Check Console for a CustomProviderKeyStore error.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.red)
+            }
+
+            if appState.hasCustomProviderAPIKey(for: appState.aiRoutingSettings.customProvider) {
+                LabeledContent("Stored key") {
+                    HStack(spacing: 8) {
+                        StatusPill(title: "Saved", systemImage: "checkmark.seal.fill", tint: .green)
+                        Button("Remove", role: .destructive, action: removeCustomAPIKey)
+                            .buttonStyle(.borderless)
+                    }
+                }
+            }
+
+            DisclosureGroup("Advanced") {
+                TextField(
+                    "Base URL override",
+                    text: customBaseURLBinding,
+                    prompt: Text(appState.aiRoutingSettings.customProvider.defaultBaseURL.absoluteString)
+                )
+                Text("Leave blank to use the provider's default endpoint. Set this for gateway/proxy endpoints (Azure, OpenRouter, etc.).")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            Text("Your API key is stored in the macOS Keychain and sent only to \(appState.aiRoutingSettings.customProvider.displayName). Custom-provider actions are text-only in this version.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var customProviderBinding: Binding<CustomProvider> {
+        Binding(
+            get: { appState.aiRoutingSettings.customProvider },
+            set: { provider in
+                appState.setCustomProvider(provider)
+                // The draft holds the previous provider's key; clear it so it is
+                // never saved against the newly selected provider's account.
+                customAPIKeyDraft = ""
+            }
+        )
+    }
+
+    private static let customModelSentinel = "__pixelpane_custom_model__"
+
+    /// True when the configured model isn't one of the provider's presets, so
+    /// the free-text field should be shown for manual entry.
+    private var isCustomModelEntry: Bool {
+        !appState.aiRoutingSettings.customProvider.presetModelNames
+            .contains(appState.aiRoutingSettings.customModelName)
+    }
+
+    /// Binds the model dropdown: a preset value selects that model; the sentinel
+    /// switches to manual entry by clearing the model so the text field appears.
+    private var customModelSelectionBinding: Binding<String> {
+        Binding(
+            get: { isCustomModelEntry ? Self.customModelSentinel : appState.aiRoutingSettings.customModelName },
+            set: { selection in
+                if selection == Self.customModelSentinel {
+                    appState.setCustomModelName("")
+                } else {
+                    appState.setCustomModelName(selection)
+                }
+            }
+        )
+    }
+
+    private var customModelNameBinding: Binding<String> {
+        Binding(
+            get: { appState.aiRoutingSettings.customModelName },
+            set: { appState.setCustomModelName($0) }
+        )
+    }
+
+    private var customBaseURLBinding: Binding<String> {
+        Binding(
+            get: { appState.aiRoutingSettings.customBaseURLOverride ?? "" },
+            set: { appState.setCustomBaseURLOverride($0) }
+        )
+    }
+
+    private func saveCustomAPIKey() {
+        let trimmed = customAPIKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let success = appState.setCustomProviderAPIKey(trimmed, for: appState.aiRoutingSettings.customProvider)
+        customKeySaveFailed = !success
+        if success {
+            customAPIKeyDraft = ""
+        }
+        customKeyRevision += 1
+    }
+
+    private func removeCustomAPIKey() {
+        appState.setCustomProviderAPIKey("", for: appState.aiRoutingSettings.customProvider)
+        customAPIKeyDraft = ""
+        customKeySaveFailed = nil
+        customKeyRevision += 1
     }
 
     private var hasActiveMLXModel: Bool {
@@ -648,6 +857,8 @@ struct SettingsView: View {
             return "MLX ready"
         case .available(.pixelPaneCloud):
             return "Cloud ready"
+        case .available(.custom):
+            return "Custom ready"
         case .installing(_, let detail):
             return detail
         case .unavailable(let reason):

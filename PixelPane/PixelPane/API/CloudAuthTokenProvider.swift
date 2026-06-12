@@ -105,6 +105,12 @@ private enum KeychainAccount {
 /// the cloud request with errSecAuthFailed.
 struct KeychainStore: Sendable {
     let service: String
+    /// When false, skip the data-protection keychain entirely and use the
+    /// legacy file-based keychain. The data-protection keychain needs a stable
+    /// keychain access group (a real code-signing identity); on ad-hoc/unsigned
+    /// builds a write can return `errSecSuccess` yet be unreadable, so callers
+    /// that must work on such builds opt out.
+    var usesDataProtection: Bool = true
 
     func string(account: String) throws -> String? {
         guard let data = try data(account: account) else { return nil }
@@ -116,6 +122,9 @@ struct KeychainStore: Sendable {
     }
 
     func data(account: String) throws -> Data? {
+        guard usesDataProtection else {
+            return try read(account: account, useDataProtection: false)
+        }
         do {
             return try read(account: account, useDataProtection: true)
         } catch KeychainStoreError.missingEntitlement {
@@ -124,6 +133,10 @@ struct KeychainStore: Sendable {
     }
 
     func set(_ data: Data, account: String) throws {
+        guard usesDataProtection else {
+            try write(data, account: account, useDataProtection: false)
+            return
+        }
         do {
             try write(data, account: account, useDataProtection: true)
         } catch KeychainStoreError.missingEntitlement {

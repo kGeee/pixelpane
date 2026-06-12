@@ -155,6 +155,7 @@ enum AIBackendProvider: String, Sendable {
     case mlxText
     case mlxVision
     case pixelPaneCloud
+    case custom
 
     nonisolated var displayName: String {
         switch self {
@@ -166,6 +167,8 @@ enum AIBackendProvider: String, Sendable {
             "MLX Vision"
         case .pixelPaneCloud:
             "Pixel Pane Cloud"
+        case .custom:
+            "Custom Provider"
         }
     }
 
@@ -179,6 +182,8 @@ enum AIBackendProvider: String, Sendable {
             "Image-aware local generation has a selected model and passed setup."
         case .pixelPaneCloud:
             "Cloud generation is available when Cloud Mode is enabled."
+        case .custom:
+            "Generation runs against your own provider account using your API key."
         }
     }
 }
@@ -196,6 +201,8 @@ enum AIBackendUnavailableReason: Sendable {
     case mlxGenerationTimeout
     case cloudModeDisabled
     case cloudImageConsentMissing
+    case customProviderNotConfigured
+    case customProviderKeyMissing
     case promptTooLarge(maxCharacters: Int)
     case generationFailed
     case cancelled
@@ -227,6 +234,10 @@ enum AIBackendUnavailableReason: Sendable {
             "Cloud Mode off"
         case .cloudImageConsentMissing:
             "Cloud image consent needed"
+        case .customProviderNotConfigured:
+            "Custom provider not set up"
+        case .customProviderKeyMissing:
+            "Custom provider key missing"
         case .promptTooLarge:
             "Prompt too large"
         case .generationFailed:
@@ -264,6 +275,10 @@ enum AIBackendUnavailableReason: Sendable {
             "Cloud Mode is off. Run this action locally instead."
         case .cloudImageConsentMissing:
             "Sending captured images to cloud requires a separate per-action opt-in."
+        case .customProviderNotConfigured:
+            "Choose a provider and enter a model name in Settings to use a custom provider."
+        case .customProviderKeyMissing:
+            "Add your provider API key in Settings before using the custom provider."
         case .promptTooLarge(let maxCharacters):
             "Keep local prompts under \(maxCharacters) characters."
         case .generationFailed:

@@ -52,17 +52,30 @@ final class AppState: ObservableObject {
         hasCompletedFirstCaptureTutorial = userDefaults.bool(forKey: firstCaptureTutorialCompletedKey)
         let storedUseCloudModels = userDefaults.bool(forKey: AIRoutingDefaults.useCloudModelsKey)
         let storedAllowCloudImageContext = userDefaults.bool(forKey: AIRoutingDefaults.allowCloudImageContextKey)
+        let storedCustomProvider = userDefaults.string(forKey: AIRoutingDefaults.customProviderKey)
+            .flatMap(CustomProvider.init(rawValue:)) ?? .openAI
         aiRoutingSettings = AIRoutingSettings(
             useCloudModels: storedUseCloudModels,
             allowCloudImageContext: storedUseCloudModels
                 ? AIRoutingSettings.cloudBackendAvailable
                 : storedAllowCloudImageContext,
             allowCloudLocationContext: userDefaults.bool(forKey: AIRoutingDefaults.allowCloudLocationContextKey),
-            pinnedLocalModelID: userDefaults.string(forKey: AIRoutingDefaults.pinnedLocalModelIDKey)
+            pinnedLocalModelID: userDefaults.string(forKey: AIRoutingDefaults.pinnedLocalModelIDKey),
+            customProviderEnabled: userDefaults.bool(forKey: AIRoutingDefaults.customProviderEnabledKey),
+            customProvider: storedCustomProvider,
+            customModelName: userDefaults.string(forKey: AIRoutingDefaults.customModelNameKey) ?? "",
+            customBaseURLOverride: userDefaults.string(forKey: AIRoutingDefaults.customBaseURLOverrideKey)
         )
         if mlxVisionSetupSnapshot.selectedModel == nil {
             aiRoutingSettings.useCloudModels = AIRoutingSettings.cloudBackendAvailable
             aiRoutingSettings.allowCloudImageContext = AIRoutingSettings.cloudBackendAvailable
+        }
+        // Repair a custom route that was enabled on an earlier build before a
+        // model was prefilled: without a model name it would silently fall back
+        // to Cloud and read as "setup needed".
+        if aiRoutingSettings.customProviderEnabled,
+           aiRoutingSettings.customModelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            aiRoutingSettings.customModelName = storedCustomProvider.suggestedModelName
         }
         agentModelConformanceProfile = currentAgentModelConformanceProfile(snapshot: mlxVisionSetupSnapshot)
         persistAIRoutingSettings()
@@ -194,6 +207,16 @@ final class AppState: ObservableObject {
     }
 
     func setAIRoutingMode(_ mode: AIRoutingMode) {
+        if mode == .custom {
+            setCustomProviderEnabled(true)
+            return
+        }
+        // Choosing Local or Cloud leaves the custom route, so it must be turned
+        // off first or `effectiveMode` would keep resolving to `.custom`.
+        if aiRoutingSettings.customProviderEnabled {
+            aiRoutingSettings.customProviderEnabled = false
+            persistAIRoutingSettings()
+        }
         if mode == .local && mlxVisionSetupSnapshot.selectedModel == nil {
             setUseCloudModels(true)
             return
@@ -636,6 +659,75 @@ final class AppState: ObservableObject {
         } else {
             userDefaults.removeObject(forKey: AIRoutingDefaults.pinnedLocalModelIDKey)
         }
+        userDefaults.set(aiRoutingSettings.customProviderEnabled, forKey: AIRoutingDefaults.customProviderEnabledKey)
+        userDefaults.set(aiRoutingSettings.customProvider.rawValue, forKey: AIRoutingDefaults.customProviderKey)
+        userDefaults.set(aiRoutingSettings.customModelName, forKey: AIRoutingDefaults.customModelNameKey)
+        if let override = aiRoutingSettings.customBaseURLOverride, !override.isEmpty {
+            userDefaults.set(override, forKey: AIRoutingDefaults.customBaseURLOverrideKey)
+        } else {
+            userDefaults.removeObject(forKey: AIRoutingDefaults.customBaseURLOverrideKey)
+        }
+    }
+
+    // MARK: - Custom provider (bring-your-own-key)
+
+    private let customProviderKeyStore = CustomProviderKeyStore()
+
+    /// Whether the user's own provider should handle every action. Enabling it
+    /// makes `effectiveMode` resolve to `.custom` once a model name is present.
+    func setCustomProviderEnabled(_ isEnabled: Bool) {
+        aiRoutingSettings.customProviderEnabled = isEnabled
+        // Prefill a default model so the route is usable (and the dropdown lands
+        // on a real model) the moment it is enabled.
+        if isEnabled,
+           aiRoutingSettings.customModelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            aiRoutingSettings.customModelName = aiRoutingSettings.customProvider.suggestedModelName
+        }
+        persistAIRoutingSettings()
+        refreshPresentedPanel()
+    }
+
+    func setCustomProvider(_ provider: CustomProvider) {
+        let previousProvider = aiRoutingSettings.customProvider
+        aiRoutingSettings.customProvider = provider
+        // Reset the model to the new provider's default unless the user typed a
+        // model that isn't one of the old provider's presets (a deliberate
+        // custom id). Model ids don't carry across providers, so keeping an old
+        // preset selected would point at a model the new provider can't serve.
+        let currentModel = aiRoutingSettings.customModelName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let wasPresetOrEmpty = currentModel.isEmpty || previousProvider.presetModelNames.contains(currentModel)
+        if wasPresetOrEmpty {
+            aiRoutingSettings.customModelName = provider.suggestedModelName
+        }
+        persistAIRoutingSettings()
+        refreshPresentedPanel()
+    }
+
+    func setCustomModelName(_ modelName: String) {
+        aiRoutingSettings.customModelName = modelName
+        persistAIRoutingSettings()
+        refreshPresentedPanel()
+    }
+
+    func setCustomBaseURLOverride(_ override: String?) {
+        let trimmed = override?.trimmingCharacters(in: .whitespacesAndNewlines)
+        aiRoutingSettings.customBaseURLOverride = (trimmed?.isEmpty ?? true) ? nil : trimmed
+        persistAIRoutingSettings()
+        refreshPresentedPanel()
+    }
+
+    /// Stores (or clears, when empty) the API key for the given provider in the
+    /// Keychain. The key never touches UserDefaults or the settings struct.
+    /// Returns whether the value could be stored and read back.
+    @discardableResult
+    func setCustomProviderAPIKey(_ key: String, for provider: CustomProvider) -> Bool {
+        let success = customProviderKeyStore.setAPIKey(key, for: provider)
+        refreshPresentedPanel()
+        return success
+    }
+
+    func hasCustomProviderAPIKey(for provider: CustomProvider) -> Bool {
+        customProviderKeyStore.hasAPIKey(for: provider)
     }
 
     /// Explicit consent for attaching approximate (city-level) location to

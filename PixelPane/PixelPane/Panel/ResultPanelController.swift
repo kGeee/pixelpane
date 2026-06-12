@@ -229,8 +229,9 @@ final class ResultPanelController {
 
         let rawSize = requestedSize ?? panel.frame.size
         let isHoverTarget = isHoverTargetSize(rawSize)
+        let isCompact = isCompactNotificationSize(rawSize)
         let size = resolvedNotchSize(rawSize, on: screen)
-        let origin = notchOrigin(for: size, on: screen, isHoverTarget: isHoverTarget)
+        let origin = notchOrigin(for: size, on: screen, isHoverTarget: isHoverTarget, isCompact: isCompact)
         panel.setFrame(CGRect(origin: origin, size: size), display: true)
         updateContentCornerMask(for: size)
     }
@@ -249,8 +250,9 @@ final class ResultPanelController {
 
         let screen = screen(for: selectionFrame)
         let isHoverTarget = isHoverTargetSize(size)
+        let isCompact = isCompactNotificationSize(size)
         let size = resolvedNotchSize(size, on: screen)
-        let origin = notchOrigin(for: size, on: screen, isHoverTarget: isHoverTarget)
+        let origin = notchOrigin(for: size, on: screen, isHoverTarget: isHoverTarget, isCompact: isCompact)
         let targetFrame = CGRect(
             x: origin.x,
             y: origin.y,
@@ -280,12 +282,12 @@ final class ResultPanelController {
         layer.cornerCurve = .continuous
     }
 
-    private func notchOrigin(for size: CGSize, on screen: NSScreen?, isHoverTarget: Bool = false) -> CGPoint {
+    private func notchOrigin(for size: CGSize, on screen: NSScreen?, isHoverTarget: Bool = false, isCompact: Bool = false) -> CGPoint {
         let resolvedScreen = screen ?? NSScreen.main
         let screenFrame = resolvedScreen?.frame ?? .zero
         guard resultPresentationStyle == .notchAttached else { return .zero }
 
-        if isCompactNotificationSize(size),
+        if isCompact,
            let origin = compactNotificationOrigin(for: size, on: resolvedScreen, in: screenFrame) {
             return origin
         }
@@ -313,10 +315,16 @@ final class ResultPanelController {
 
     private func resolvedNotchSize(_ requestedSize: CGSize, on screen: NSScreen?) -> CGSize {
         // The compact notification is a seamless extension of the physical
-        // notch, so match its height exactly to the notch's bottom edge.
+        // notch: it covers the whole notch width (so the entire notch is the
+        // hover/fade target) plus a small trailing overlap, because the inside
+        // of the physical notch cutout is occluded — the moon must poke past
+        // the right edge into the menu bar area to stay visible.
         if isCompactNotificationSize(requestedSize),
            let notchBounds = notchBounds(on: screen) {
-            return CGSize(width: requestedSize.width, height: notchBounds.height)
+            return CGSize(
+                width: notchBounds.width + ResultPanelPresentationStyle.notchCompactOverlap,
+                height: notchBounds.height
+            )
         }
 
         guard isHoverTargetSize(requestedSize),
@@ -334,8 +342,10 @@ final class ResultPanelController {
         guard let screen else { return nil }
 
         if let notchBounds = notchBounds(on: screen) {
+            // Anchor at the notch's top-left so the panel covers the notch
+            // exactly; the moon is drawn inside, near the right edge.
             let origin = CGPoint(
-                x: notchBounds.maxX - ResultPanelPresentationStyle.notchCompactOverlap,
+                x: notchBounds.minX,
                 y: notchBounds.maxY - size.height
             )
             return clampNotch(origin: origin, size: size, into: screenFrame)
@@ -521,6 +531,10 @@ enum ResultPanelPresentationStyle {
     static let notchAssistantCornerRadius: CGFloat = 30
     static let notchCompactOverlap: CGFloat = 22
     static let notchTopOverscan: CGFloat = 3
+    /// Radius of the physical notch's bottom corners. Used so the compact
+    /// loading container reads as a seamless extension of the notch. Tune this
+    /// to match the hardware notch exactly.
+    static let notchBottomCornerRadius: CGFloat = 11
 
     var cornerRadius: CGFloat {
         switch self {

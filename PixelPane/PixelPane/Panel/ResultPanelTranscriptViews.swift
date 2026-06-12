@@ -166,6 +166,25 @@ struct FileLinkedAnswerText: View {
 
     var body: some View {
         let lineSegments = Self.lineSegments(in: text, baseDirectoryPaths: baseDirectoryPaths)
+        let hasLinkedPath = lineSegments.contains { line in
+            line.contains { if case .path = $0 { true } else { false } }
+        }
+        // Without file-path chips there's nothing to tokenize for, so render the
+        // whole answer as one Text. A single Text is fully selectable/copyable
+        // and wraps naturally — per-word Texts (needed only for path chips) can't
+        // be selected across, which is why long answers couldn't be copied.
+        if !hasLinkedPath {
+            Text(text)
+                .font(.system(size: 12.5))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            pathLinkedBody(lineSegments: lineSegments)
+        }
+    }
+
+    private func pathLinkedBody(lineSegments: [[Segment]]) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(lineSegments.indices, id: \.self) { index in
                 InlineFlowLayout(horizontalSpacing: 3, verticalSpacing: 4) {

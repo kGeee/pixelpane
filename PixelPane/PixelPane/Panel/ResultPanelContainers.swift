@@ -91,8 +91,8 @@ struct NotchResultContainer<Content: View>: View {
     private var shape: UnevenRoundedRectangle {
         UnevenRoundedRectangle(
             topLeadingRadius: isExpanded && roundsTopCorners ? 30 : 0,
-            bottomLeadingRadius: isExpanded ? 30 : 0,
-            bottomTrailingRadius: isExpanded ? 30 : 8,
+            bottomLeadingRadius: isExpanded ? 30 : ResultPanelPresentationStyle.notchBottomCornerRadius,
+            bottomTrailingRadius: isExpanded ? 30 : ResultPanelPresentationStyle.notchBottomCornerRadius,
             topTrailingRadius: isExpanded && roundsTopCorners ? 30 : 0,
             style: .continuous
         )
@@ -111,8 +111,8 @@ struct CompactNotchNotificationView: View {
     let state: CompactNotchNotificationState
     private let shape = UnevenRoundedRectangle(
         topLeadingRadius: 0,
-        bottomLeadingRadius: 8,
-        bottomTrailingRadius: 8,
+        bottomLeadingRadius: ResultPanelPresentationStyle.notchBottomCornerRadius,
+        bottomTrailingRadius: ResultPanelPresentationStyle.notchBottomCornerRadius,
         topTrailingRadius: 0,
         style: .continuous
     )
@@ -120,8 +120,16 @@ struct CompactNotchNotificationView: View {
     var body: some View {
         shape
             .fill(Color(nsColor: .black))
-            .overlay(CompactThinkingMoon(color: state.color))
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            // Center the moon within the trailing overlap so the WHOLE moon
+            // sits past the notch's right edge in the visible menu bar area
+            // (the inside of the physical notch cutout is occluded). The
+            // overlap is `notchCompactOverlap` wide and the moon is 9pt, so
+            // centering it leaves equal margin on both sides.
+            .overlay(alignment: .trailing) {
+                CompactThinkingMoon(color: state.color)
+                    .padding(.trailing, (ResultPanelPresentationStyle.notchCompactOverlap - 9) / 2)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
