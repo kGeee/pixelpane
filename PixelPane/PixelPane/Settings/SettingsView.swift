@@ -600,33 +600,46 @@ struct SettingsView: View {
                     text: customModelNameBinding,
                     prompt: Text(appState.aiRoutingSettings.customProvider.suggestedModelName)
                 )
-            }
-
-            HStack {
-                // A plain TextField (not SecureField) on purpose: SecureField is
-                // a macOS password field, so it triggers Keychain AutoFill that
-                // can inject a saved password in place of the typed key. The key
-                // is only visible while typing — it is never read back.
-                TextField("API key", text: $customAPIKeyDraft)
-                    .textContentType(.none)
-                    .autocorrectionDisabled(true)
-                    .onSubmit(saveCustomAPIKey)
-                Button("Save", action: saveCustomAPIKey)
-                    .disabled(customAPIKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-
-            if let saveFailed = customKeySaveFailed, saveFailed {
-                Label("Couldn't save the key to the Keychain. Check Console for a CustomProviderKeyStore error.", systemImage: "exclamationmark.triangle.fill")
-                    .font(.callout)
-                    .foregroundStyle(.red)
+                .textFieldStyle(.roundedBorder)
             }
 
             if appState.hasCustomProviderAPIKey(for: appState.aiRoutingSettings.customProvider) {
-                LabeledContent("Stored key") {
+                // A key is stored; hide the entry field and just confirm it,
+                // with a Remove button to replace it.
+                LabeledContent("API key") {
                     HStack(spacing: 8) {
                         StatusPill(title: "Saved", systemImage: "checkmark.seal.fill", tint: .green)
                         Button("Remove", role: .destructive, action: removeCustomAPIKey)
                             .buttonStyle(.borderless)
+                    }
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("API key")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        // A plain TextField (not SecureField) on purpose: SecureField
+                        // is a macOS password field, so it triggers Keychain AutoFill
+                        // that can inject a saved password in place of the typed key.
+                        // The key is only visible while typing — never read back.
+                        TextField(
+                            "API key",
+                            text: $customAPIKeyDraft,
+                            prompt: Text("Paste your \(appState.aiRoutingSettings.customProvider.displayName) API key")
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .textContentType(.none)
+                        .autocorrectionDisabled(true)
+                        .onSubmit(saveCustomAPIKey)
+                        Button("Save", action: saveCustomAPIKey)
+                            .disabled(customAPIKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+
+                    if customKeySaveFailed == true {
+                        Label("Couldn't save the key to the Keychain. Check Console for a CustomProviderKeyStore error.", systemImage: "exclamationmark.triangle.fill")
+                            .font(.callout)
+                            .foregroundStyle(.red)
                     }
                 }
             }
@@ -637,6 +650,7 @@ struct SettingsView: View {
                     text: customBaseURLBinding,
                     prompt: Text(appState.aiRoutingSettings.customProvider.defaultBaseURL.absoluteString)
                 )
+                .textFieldStyle(.roundedBorder)
                 Text("Leave blank to use the provider's default endpoint. Set this for gateway/proxy endpoints (Azure, OpenRouter, etc.).")
                     .font(.callout)
                     .foregroundStyle(.secondary)

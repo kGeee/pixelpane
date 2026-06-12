@@ -557,6 +557,9 @@ struct ResultPanelView: View {
         // Cloud Mode is an explicit single route; Local Mode auto-routes among
         // checked local models (or honors a user-pinned model), so the header
         // advertises the actual policy.
+        if routingSettings.effectiveMode == .custom {
+            return "\(routingSettings.customProvider.displayName) · \(Self.compactModelName(routingSettings.customModelName))"
+        }
         if routingSettings.effectiveMode == .cloud {
             return "Cloud"
         }

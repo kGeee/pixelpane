@@ -181,7 +181,12 @@ final class CustomProviderAIBackend: AIBackend, @unchecked Sendable {
             throw AIBackendError.generationFailed("The provider returned an invalid response.")
         }
         guard (200..<300).contains(httpResponse.statusCode) else {
-            let detail = Self.providerErrorMessage(from: data) ?? "HTTP \(httpResponse.statusCode)"
+            // Keep both the HTTP status and the provider's message: Anthropic's
+            // 404 message is literally "model: <id>", which is meaningless
+            // without the status that flags it as a not-found.
+            let detail = [Self.providerErrorMessage(from: data), "HTTP \(httpResponse.statusCode)"]
+                .compactMap { $0 }
+                .joined(separator: " — ")
             throw AIBackendError.generationFailed("\(configuration.provider.displayName) request failed: \(detail)")
         }
     }

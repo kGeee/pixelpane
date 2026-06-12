@@ -133,13 +133,19 @@ enum CustomProvider: String, CaseIterable, Equatable, Sendable {
         case .openAI:
             ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"]
         case .anthropic:
-            ["claude-3-5-haiku-latest", "claude-3-5-sonnet-latest", "claude-3-opus-latest"]
+            ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-8"]
         }
     }
 
-    /// A sensible, inexpensive default model to prefill the settings field.
+    /// The model prefilled when a provider is first selected. Not necessarily
+    /// the first preset (e.g. Anthropic defaults to Sonnet, the balanced pick).
     var suggestedModelName: String {
-        presetModelNames.first ?? ""
+        switch self {
+        case .openAI:
+            "gpt-4o-mini"
+        case .anthropic:
+            "claude-sonnet-4-6"
+        }
     }
 
     /// Keychain account used to store this provider's API key.
