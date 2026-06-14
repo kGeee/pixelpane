@@ -214,6 +214,14 @@ struct KeychainStore: Sendable {
         }
     }
 
+    /// Deletes the stored item outright (in both keychain implementations).
+    /// Callers clearing a secret must use this rather than storing an empty
+    /// value: SecItemUpdate rejects zero-length data on some macOS versions,
+    /// so "write empty" is not a reliable way to remove a key.
+    func remove(account: String) {
+        removeItem(account: account)
+    }
+
     private func query(
         account: String,
         useDataProtection: Bool,

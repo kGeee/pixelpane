@@ -591,19 +591,10 @@ struct SettingsView: View {
                 ForEach(appState.aiRoutingSettings.customProvider.presetModelNames, id: \.self) { model in
                     Text(model).tag(model)
                 }
-                Text("Custom…").tag(Self.customModelSentinel)
             }
+            .onAppear(perform: normalizeCustomModelSelection)
 
-            if isCustomModelEntry {
-                TextField(
-                    "Model name",
-                    text: customModelNameBinding,
-                    prompt: Text(appState.aiRoutingSettings.customProvider.suggestedModelName)
-                )
-                .textFieldStyle(.roundedBorder)
-            }
-
-            if appState.hasCustomProviderAPIKey(for: appState.aiRoutingSettings.customProvider) {
+            if hasStoredCustomAPIKey(revision: customKeyRevision) {
                 // A key is stored; hide the entry field and just confirm it,
                 // with a Remove button to replace it.
                 LabeledContent("API key") {
@@ -635,13 +626,13 @@ struct SettingsView: View {
                         Button("Save", action: saveCustomAPIKey)
                             .disabled(customAPIKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
-
-                    if customKeySaveFailed == true {
-                        Label("Couldn't save the key to the Keychain. Check Console for a CustomProviderKeyStore error.", systemImage: "exclamationmark.triangle.fill")
-                            .font(.callout)
-                            .foregroundStyle(.red)
-                    }
                 }
+            }
+
+            if customKeySaveFailed == true {
+                Label("Couldn't update the key in the Keychain. Check Console for a CustomProviderKeyStore error.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.callout)
+                    .foregroundStyle(.red)
             }
 
             DisclosureGroup("Advanced") {
@@ -667,6 +658,9 @@ struct SettingsView: View {
             get: { appState.aiRoutingSettings.customProvider },
             set: { provider in
                 appState.setCustomProvider(provider)
+                // Model ids don't carry across providers, and manual entry is
+                // gone, so any non-preset leftover snaps to the new default.
+                normalizeCustomModelSelection()
                 // The draft holds the previous provider's key; clear it so it is
                 // never saved against the newly selected provider's account.
                 customAPIKeyDraft = ""
@@ -674,35 +668,26 @@ struct SettingsView: View {
         )
     }
 
-    private static let customModelSentinel = "__pixelpane_custom_model__"
-
-    /// True when the configured model isn't one of the provider's presets, so
-    /// the free-text field should be shown for manual entry.
-    private var isCustomModelEntry: Bool {
-        !appState.aiRoutingSettings.customProvider.presetModelNames
-            .contains(appState.aiRoutingSettings.customModelName)
-    }
-
-    /// Binds the model dropdown: a preset value selects that model; the sentinel
-    /// switches to manual entry by clearing the model so the text field appears.
+    /// Binds the model dropdown to the provider's presets only. A stored value
+    /// that isn't a preset (legacy manual entry, or empty) displays as the
+    /// provider's suggested model; `normalizeCustomModelSelection` persists
+    /// that fallback so the stored settings match what the picker shows.
     private var customModelSelectionBinding: Binding<String> {
         Binding(
-            get: { isCustomModelEntry ? Self.customModelSentinel : appState.aiRoutingSettings.customModelName },
-            set: { selection in
-                if selection == Self.customModelSentinel {
-                    appState.setCustomModelName("")
-                } else {
-                    appState.setCustomModelName(selection)
-                }
-            }
+            get: {
+                let provider = appState.aiRoutingSettings.customProvider
+                let current = appState.aiRoutingSettings.customModelName
+                return provider.presetModelNames.contains(current) ? current : provider.suggestedModelName
+            },
+            set: { appState.setCustomModelName($0) }
         )
     }
 
-    private var customModelNameBinding: Binding<String> {
-        Binding(
-            get: { appState.aiRoutingSettings.customModelName },
-            set: { appState.setCustomModelName($0) }
-        )
+    private func normalizeCustomModelSelection() {
+        let provider = appState.aiRoutingSettings.customProvider
+        if !provider.presetModelNames.contains(appState.aiRoutingSettings.customModelName) {
+            appState.setCustomModelName(provider.suggestedModelName)
+        }
     }
 
     private var customBaseURLBinding: Binding<String> {
@@ -724,10 +709,18 @@ struct SettingsView: View {
     }
 
     private func removeCustomAPIKey() {
-        appState.setCustomProviderAPIKey("", for: appState.aiRoutingSettings.customProvider)
+        let success = appState.setCustomProviderAPIKey("", for: appState.aiRoutingSettings.customProvider)
         customAPIKeyDraft = ""
-        customKeySaveFailed = nil
+        customKeySaveFailed = success ? nil : true
         customKeyRevision += 1
+    }
+
+    /// The Keychain isn't observable, so the saved/entry UI is keyed off this
+    /// read. Taking the revision counter as a parameter makes the body depend
+    /// on it — without that read, SwiftUI never re-renders after Save/Remove
+    /// (their other state mutations are only read by the opposite branch).
+    private func hasStoredCustomAPIKey(revision: Int) -> Bool {
+        appState.hasCustomProviderAPIKey(for: appState.aiRoutingSettings.customProvider)
     }
 
     private var hasActiveMLXModel: Bool {

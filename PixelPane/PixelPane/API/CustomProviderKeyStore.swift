@@ -44,7 +44,13 @@ struct CustomProviderKeyStore: Sendable {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             clearAPIKey(for: provider)
-            return true
+            // Verify the delete the same way saves verify the write, so a
+            // failed removal surfaces instead of silently "succeeding".
+            let cleared = !hasAPIKey(for: provider)
+            if !cleared {
+                Self.log.error("Keychain delete left a readable key for \(provider.keychainAccount, privacy: .public)")
+            }
+            return cleared
         }
         do {
             try keychain.setString(trimmed, account: provider.keychainAccount)
@@ -60,8 +66,8 @@ struct CustomProviderKeyStore: Sendable {
     }
 
     func clearAPIKey(for provider: CustomProvider) {
-        // KeychainStore exposes no public delete, so persist an empty string,
-        // which the read path treats as absent.
-        try? keychain.setString("", account: provider.keychainAccount)
+        // A real delete: storing an empty string instead is rejected by
+        // SecItemUpdate on some macOS versions, leaving the old key in place.
+        keychain.remove(account: provider.keychainAccount)
     }
 }

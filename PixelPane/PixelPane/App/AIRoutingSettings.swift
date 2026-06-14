@@ -125,9 +125,8 @@ enum CustomProvider: String, CaseIterable, Equatable, Sendable {
         }
     }
 
-    /// A few common models offered as a dropdown so users don't have to recall
-    /// exact model ids. The list isn't exhaustive — the settings UI also allows
-    /// entering any other model name manually.
+    /// The models offered in the settings dropdown. Selection is preset-only:
+    /// the UI deliberately has no free-text model entry.
     var presetModelNames: [String] {
         switch self {
         case .openAI:
